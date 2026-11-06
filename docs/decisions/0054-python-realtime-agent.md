@@ -12,11 +12,11 @@ informed:
 ## Context and Problem Statement
 
 Python Agent Framework has mature request/response agent and chat-client abstractions, but no realtime agent API for
-live audio and text. Realtime work spans two architectures. In a **direct realtime model** (phase 1), one provider
-session takes audio or text in and streams audio, transcripts, tool calls and control events out over a live
-connection. In a **sandwich pipeline** (phase 2), speech-to-text feeds a normal agent and text-to-speech renders its
-reply. Both look like "a voice agent" to a caller, but they differ in turn detection, barge-in, tool timing and failure
-modes, so one conversation model must not hide those differences.
+live audio and text. Realtime work spans two architectures. In a **direct realtime model**, phase 1, one provider
+session takes audio or text in and streams audio, transcripts, tool calls and control events out over a live connection.
+In a **sandwich pipeline**, phase 2, speech-to-text feeds a normal agent and text-to-speech renders its reply. Both look
+like "a voice agent" to a caller, but they differ in turn detection, barge-in, tool timing and failure modes, so one
+conversation model must not hide those differences.
 
 This ADR continues ADR 0035, proposed in [Python: Add realtime agent ADR](https://github.com/microsoft/agent-framework/pull/6831)
 ([ADR text](https://github.com/eavanvalkenburg/agent-framework/blob/python-realtime-agent-adr/docs/decisions/0035-python-realtime-agent.md))
@@ -47,7 +47,7 @@ Related decisions and designs:
 ### Terminology
 
 - **Realtime session**: the provider's live session for one connection, holding the active instructions, tools, voice
-  and turn detection. An **agent session** (`AgentSession`) is Agent Framework's persisted state, which outlives it.
+  and turn detection. An **agent session**, `AgentSession`, is Agent Framework's persisted state, which outlives it.
 - **Live conversation**: full-duplex interaction in which caller input and agent output flow at the same time until
   it's closed. A **half-duplex run** sends input and waits for the complete response.
 - **Control call**: an operation the app or a tool issues to steer a live conversation: a session update, an explicit
@@ -141,10 +141,10 @@ or on Azure OpenAI for bad offsets. See [Control calls](../specs/006-python-real
 ### Event kinds
 
 Provider clients tag every event with an Agent Framework kind, and keep `service_event_type` verbatim. Payloads use
-existing content types, pure signals become `realtime_event` content, and everything else passes through under its
-wire name. Kinds replace ADR 0035's `event_type` categories, so apps never match wire names. Under ADR 0035, the
-accelerator's four most-used signals (barge-in, both transcripts, content filtering) needed provider-specific string
-matching. Final transcripts carry `status="completed"`, and content filtering arrives as
+existing content types, pure signals become `realtime_event` content, and everything else passes through under its wire
+name. Kinds replace ADR 0035's `event_type` categories, so apps never match wire names. Under ADR 0035, the accelerator
+needed provider-specific string matching for its four most-used signals: barge-in, both transcripts and content
+filtering. Final transcripts carry `status="completed"`, and content filtering arrives as
 `finish_reason="content_filter"`. Renaming Voice Live's preview events to GA names was rejected, because it would make
 OpenAI's wire protocol the neutral API that phase 2 and other providers must imitate. Provider-defined kinds were
 rejected, so the set stays one that core understands. See
@@ -152,12 +152,12 @@ rejected, so the set stays one that core understands. See
 
 ### Tool loop
 
-Each response's tool calls run as one batch through the existing `_execute_function_calls` once `response_done`
-arrives, in a background task beside the receive loop, followed by one follow-up response. That keeps chat's batch
-rules (approvals, declaration-only tools, concurrency, function middleware) at little cost, because `response.create`
-can't go out while a response is active anyway. The cost shows with Azure TTS voices, where `response.done` can follow a
-call by up to 2.5 s. Starting each call as it arrives, as the OpenAI Agents SDK, LiveKit and Pipecat do, was rejected
-for losing those rules, and so was a follow-up per result, which fails when one response holds several calls.
+Each response's tool calls run as one batch through the existing `_execute_function_calls` once `response_done` arrives,
+in a background task beside the receive loop, followed by one follow-up response. That keeps chat's batch rules for
+approvals, declaration-only tools, concurrency and function middleware at little cost, because `response.create` can't
+go out while a response is active anyway. The cost shows with Azure TTS voices, where `response.done` can follow a call
+by up to 2.5 s. Starting each call as it arrives, as the OpenAI Agents SDK, LiveKit and Pipecat do, was rejected for
+losing those rules, and so was a follow-up per result, which fails when one response holds several calls.
 
 Tools reach the conversation through `FunctionInvocationContext.realtime_conversation`, so a handoff tool's session
 update takes effect before its result. Results are always strings. The "Azure Realtime hangs on non-string results"
@@ -173,9 +173,9 @@ History holds the provider conversation's authored turns as text, in spoken orde
 cut-off turn. A live conversation reports history to context providers one exchange at a time during the call, through
 the same `after_run` a run uses, and every close path reports the rest. This replaces ADR 0035's authored-turn ledger
 finalized at close. Reporting per exchange keeps chat's inputs-then-outputs order, keeps all but the last exchange if
-the process dies, and keeps close fast. Storing audio, ordering by arrival (late transcripts land after their replies)
-and dropping text-less caller turns (replies look unprompted) were rejected. See
-[History](../specs/006-python-realtime-agents.md#history).
+the process dies, and keeps close fast. Storing audio, ordering by arrival and dropping text-less caller turns were
+rejected. Ordering by arrival puts late transcripts after their replies, and dropping text-less turns makes replies look
+unprompted. See [History](../specs/006-python-realtime-agents.md#history).
 
 ### In-session handoffs
 
@@ -206,7 +206,7 @@ Full-duplex traffic enters middleware and telemetry at these points:
 Telemetry never records audio, even with sensitive data on, and records transcripts instead. Middleware sees audio as
 `data` content and must not assume an update has text.
 
-Conversation middleware (`ConversationMiddleware`) is a new category, so one guardrail covers live calls and `run()`.
+Conversation middleware, `ConversationMiddleware`, is a new category, so one guardrail covers live calls and `run()`.
 Agent middleware can't wrap a live call safely, because it reads a final result and may re-enter `call_next()`.
 Telemetry lives at the agent layer, in core. Each call is one `invoke_agent` span, with a `realtime_inference` span per
 response and its tool and control spans beneath it, following semantic-conventions-genai at `750e42c`, which is
@@ -232,9 +232,9 @@ differences rather than a typed capability API. See
 
 One `ExperimentalFeature.REALTIME` covers the family, so it graduates together. The Foundry voice agent classes use
 `FOUNDRY_VOICE_AGENTS`, so the family needn't wait for a preview service. This ADR proposes shipping the family as
-experimental in 1.x rather than waiting for the next major version; changes to stable APIs are additive (see
-[Changes to existing packages](../specs/006-python-realtime-agents.md#changes-to-existing-packages)). The maintainers
-make the final call.
+experimental in 1.x rather than waiting for the next major version; changes to stable APIs are additive, as
+[Changes to existing packages](../specs/006-python-realtime-agents.md#changes-to-existing-packages) lists. The
+maintainers make the final call.
 
 ### Phase 2 and deferred decisions
 
@@ -283,9 +283,10 @@ nobody has verified that the project-scoped route serves realtime.
 
 1. Review of this ADR and [spec 006](../specs/006-python-realtime-agents.md) validates the design before
    implementation.
-2. A [prototype](https://github.com/adamdougal/agent-framework/tree/prototype/realtime-voice-loop/python/packages/realtime-prototype)
-   ran the accelerator's voice loop on this design against Voice Live (managed and BYOM), Azure OpenAI and a Foundry
-   voice agent: 14 live scenarios, with 50 checks passed, 1 failed and 15 observations
+2. A
+   [prototype](https://github.com/adamdougal/agent-framework/tree/prototype/realtime-voice-loop/python/packages/realtime-prototype)
+   ran the accelerator's voice loop on this design against managed and BYOM Voice Live, Azure OpenAI and a Foundry voice
+   agent: 14 live scenarios, with 50 checks passed, 1 failed and 15 observations
    ([findings](https://github.com/adamdougal/agent-framework/blob/prototype/realtime-voice-loop/python/packages/realtime-prototype/FINDINGS.md)).
    The failure is the `FunctionTool.invoke` cancellation gap this design fixes. `run()`, approvals, app-run tools,
    context-provider instructions and tools, barge-in on a two-message reply, and OpenAI weren't exercised.

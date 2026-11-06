@@ -190,8 +190,8 @@ outside the topology, and app input for a call id the conversation isn't trackin
   the provider ignores one, the client warns when `session.updated` echoes the old voice.
 - **Tools.** A call resolves against the executable set when its `function_call` arrives. Replacing tools doesn't cancel
   running calls, and a call for a tool missing from the current set gets an error result.
-- **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked. Out-of-band responses
-  (`conversation: "none"`), input-buffer commit and clear, item delete, `output_audio_buffer.clear` and untyped session
+- **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked. Out-of-band responses with
+  `conversation: "none"`, input-buffer commit and clear, item delete, `output_audio_buffer.clear` and untyped session
   fields stay raw. A raw `session.update` that changes tools or instructions leaves the executable tool set out of step
   with the provider's, so those changes go through `update_session(...)`.
 - **Samples** start control calls from the update loop as tasks, so the loop keeps reading updates.
@@ -199,7 +199,7 @@ outside the topology, and app input for a call id the conversation isn't trackin
 ### Barge-in
 
 - The app stops its playback on `speech_started` and calls `interrupt(played_ms=...)`. Turn detection has already
-  cancelled the response (`interrupt_response`).
+  cancelled the response, through `interrupt_response`.
 - `played_ms` counts the response's audio across its assistant messages in order. The conversation truncates the
   message where playback stopped, clamped below its generated length, and doesn't cut a message heard to within 40 ms of
   its end.
@@ -319,8 +319,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 ## History
 
 - **Contents.** History holds the provider conversation's authored turns as text: each caller audio item as its final
-  caller transcript (`role="user"`), each assistant message item as its final agent transcript, app input as sent
-  (including `create_response=False` context), function calls with their settled results, and approval requests and
+  caller transcript with `role="user"`, each assistant message item as its final agent transcript, app input as sent,
+  `create_response=False` context included, function calls with their settled results, and approval requests and
   responses. It holds no realtime-event content, `error` content, usage, session updates, out-of-band responses or
   hosted-tool events. Each conversation item is one message with the provider's item id as `message_id`.
 - **Text-less caller turns.** A caller turn whose transcription failed, wasn't configured, or was still pending after
@@ -331,9 +331,10 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `audio_end_ms / generated audio length`, as `status="incomplete"`, and leaves out a turn cut at 0 ms. A response cut
   short without a truncation keeps the text generated so far, as `status="incomplete"`. The full generated text isn't
   kept, and a truncation that arrives after its exchange was reported changes nothing.
-- **Order.** History follows `item_added` order (`previous_item_id`), falling back to the order of each item's first
-  event. A caller turn keeps its place before the reply even when its transcript arrives later; text fills in by item
-  id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's reported.
+- **Order.** History follows `item_added` order, linked by `previous_item_id`, falling back to the order of each item's
+  first event. A caller turn keeps its place before the reply even when its transcript arrives later; text fills in by
+  item id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
+  reported.
 - **Attribution.** A live conversation writes to the session passed to `start_conversation(session=...)`, through the
   starting agent's context providers. Assistant and tool messages carry the `author_name` of the agent that was active
   when their response was created; the response holding a handoff call belongs to the old agent.
@@ -346,11 +347,11 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   exchange's `AgentResponse` carries its summed usage and the last response's id and finish reason.
 - **Context provider failures.** A failing `after_run` streams a non-fatal `error` update naming the provider. That
   provider's exchanges stay queued and retry with the next report and at close; other providers continue. If it still
-  fails at close, `close()` raises after cleanup (an exception group for several). Providers must tolerate seeing an
-  exchange twice.
+  fails at close, `close()` raises after cleanup, with an exception group when several fail. Providers must tolerate
+  seeing an exchange twice.
 - **Replay.** Opening a realtime session with an agent session replays the loaded history as conversation items: user
-  and system text, agent turns as assistant text (`output_text` on GA-protocol services, `text` on Voice Live), each
-  call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay.
+  and system text, agent turns as assistant text, typed `output_text` on GA-protocol services and `text` on Voice Live,
+  each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay.
 - **`run(...)`.** Each run is one exchange. Text input is stored as given, and audio input as its caller transcript.
   The run's session closes through the close sequence before `after_run`. Context providers get the response without
   audio. A failed run reports nothing.
@@ -361,8 +362,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 
 ### Close
 
-Every close path (`close()`, context exit, hang-up, a provider or receive-loop failure, `MiddlewareFailure`, task
-cancellation) runs this sequence:
+These close paths all run the sequence below: `close()`, context exit, hang-up, a provider or receive-loop failure,
+`MiddlewareFailure` and task cancellation.
 
 1. Stop accepting input.
 2. If the socket is open, wait for pending caller transcripts, up to about 3 seconds. Skip caller turns whose response
@@ -380,11 +381,11 @@ cancellation) runs this sequence:
   rejection or timeout it raises, and the previous agent stays active. The target must use the conversation's client
   instance.
 - **`handoff_completed`.** On success, `handoff(...)` emits one update carrying `source` and `target`, named as
-  `HandoffSentEvent` names agents (`name`, else `id`), before it returns. Nothing is emitted at start.
+  `HandoffSentEvent` names agents, by `name`, else `id`, before it returns. Nothing is emitted at start.
 - **What changes.** `handoff(...)` recomputes instructions, tools, voice and `tool_choice` as `start_conversation(...)`
   computed them, with the target in place of the starting agent:
-  - instructions are the target's, with the call-wide instructions appended (those in a built handoff agent's
-    `default_options`, in the start options, and from context providers);
+  - instructions are the target's, with the call-wide instructions appended, meaning those in a built handoff agent's
+    `default_options`, in the start options and from context providers;
   - tools are the target's, plus the start tools, context-provider tools and `handoff(tools=...)`;
   - voice and `tool_choice` are the target's, unless the start options set one, which then holds for the call.
 
@@ -395,12 +396,12 @@ cancellation) runs this sequence:
   handoff counts as one chain. Each call runs through the function middleware of the agent active when it arrived. A
   target's MCP tools connect before the session update.
 - **`RealtimeHandoffBuilder`** in `agent-framework-orchestrations` shares an internal topology base with
-  `HandoffBuilder`, which stays chat-only: `participants(...)`, `with_start_agent(...)` (required),
+  `HandoffBuilder`, which stays chat-only: `participants(...)`, the required `with_start_agent(...)`,
   `add_handoff(source, targets, *, description=...)`, the default all-to-all mesh and their validation are identical.
-  Chat's turn-based options (checkpointing, termination conditions, autonomous mode, return-to-previous, output
-  selection) don't exist on it, and a built agent can't be a participant.
-- **The built agent** takes `name`, `description`, `context_providers`, call-wide `default_options` (whose instructions
-  are appended to every participant's), `function_invocation_configuration` and `middleware`. Participants are realtime
+  Chat's turn-based options don't exist on it: checkpointing, termination conditions, autonomous mode,
+  return-to-previous and output selection. A built agent can't be a participant.
+- **The built agent** takes `name`, `description`, `context_providers`, call-wide `default_options`, whose instructions
+  are appended to every participant's, `function_invocation_configuration` and `middleware`. Participants are realtime
   agents on one client instance and supply instructions, tools, voice, `tool_choice`, function middleware and MCP tools;
   `build()` warns about participant settings that won't apply. `build()` returns a realtime agent with `RealtimeAgent`'s
   layers, whose conversations start with the start agent active and its handoff tools installed. `async with` it enters
@@ -414,8 +415,8 @@ cancellation) runs this sequence:
   start agent.
 - **Foundry voice agents.** Only the start agent can be a `FoundryVoiceAgent`; other participants use its client. Its
   instructions, tools, voice and tool choice come from the captured agent definition, at start and on a handoff back.
-  Definitions published by Semantic Kernel (tool names such as `<Plugin>-<function>` and `Handoff-handoff_to_<name>`)
-  must be republished to match Agent Framework's tool names.
+  Definitions published by Semantic Kernel use tool names such as `<Plugin>-<function>` and `Handoff-handoff_to_<name>`,
+  so they must be republished to match Agent Framework's tool names.
 
 ## Middleware
 
@@ -424,14 +425,14 @@ cancellation) runs this sequence:
   `categorize_middleware(supported_categories=...)` skips bare chat middleware with a warning and raises for a bundle
   with a chat member, so the agent-hooks bundle raises. Function middleware is unchanged. A chat `Agent` skips
   conversation middleware with a warning.
-- **`ConversationMiddleware`** has `process(context, call_next)`. A plain function is conversation middleware when its
-  parameter is annotated `ConversationContext` (`MiddlewareType.CONVERSATION`). The chain runs once whenever a realtime
-  session opens, in `start_conversation(...)` and inside each `run(...)`.
+- **`ConversationMiddleware`** has `process(context, call_next)`. A plain function whose parameter is annotated
+  `ConversationContext` is conversation middleware, of type `MiddlewareType.CONVERSATION`. The chain runs once whenever
+  a realtime session opens, in `start_conversation(...)` and inside each `run(...)`.
 - **`ConversationContext`** holds the starting agent, `session`, `options`, `tools` and `metadata`, which middleware can
   change before `call_next()`, and `conversation` once the session is open.
-- **Hooks.** Middleware registers send hooks (every value passed to `send(...)`, after normalization), update hooks
-  (every update yielded, audio included) and close hooks (once, after history is reported, with the exception that
-  ended the conversation or `None`). Control calls and the tool loop's own results get no hooks.
+- **Hooks.** Middleware registers three kinds of hook. Send hooks see every value passed to `send(...)`, after
+  normalization. Update hooks see every update yielded, audio included. Close hooks run once, after history is reported,
+  with the exception that ended the conversation or `None`. Control calls and the tool loop's own results get no hooks.
 - **Outcomes.** A send or update hook returns a replacement, or `None` to keep the item. `MiddlewareTermination` in a
   hook drops the item; in `process()` before `call_next()`, it refuses the session, and `start_conversation(...)` or
   `run(...)` raises it. Any other exception ends the conversation fail-closed, and close-hook failures raise from
@@ -462,11 +463,11 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 ```
 
 - **Conversation span.** `invoke_agent {owner}` opens at `start_conversation(...)` under the current span and ends at
-  close; `run(...)` gets the same tree. It names the agent that started the conversation (a built handoff agent names
-  itself), carries chat `invoke_agent`'s attributes plus `gen_ai.realtime_session.id`, and sums usage over every
-  response. Every task the conversation starts (receive loop, tool batches, exchange reports) runs in a copy of the
-  context captured inside it, so `realtime_inference` and `execute_tool` spans are its children and siblings of each
-  other.
+  close; `run(...)` gets the same tree. It names the agent that started the conversation, which for a built handoff
+  agent is the built agent itself. It carries chat `invoke_agent`'s attributes plus `gen_ai.realtime_session.id`, and
+  sums usage over every response. The receive loop, tool batches, exchange reports and every other task the conversation
+  starts run in a copy of the context captured inside it, so `realtime_inference` and `execute_tool` spans are its
+  children and siblings of each other.
 - **Control spans.** Each public `update_session(...)`, `create_response(...)`, `say(...)` and `interrupt(...)` gets an
   INTERNAL `realtime.<name>` span with the realtime session id, provider and any created response id. It records a
   claimed error with the provider's code as `error.type` and ERROR status, except the `response_cancel_not_active`
@@ -479,15 +480,15 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 - **Conventions.** Realtime follows semantic-conventions-genai at commit `750e42c`, unreleased, in Agent Framework's
   latest mode; under the v1.36 baseline it emits the same spans, with mode-dependent attributes following the mode. The
   [per-provider mapping table](https://github.com/adamdougal/agent-framework/blob/research/realtime-telemetry-mapping/docs/research/realtime-telemetry-mapping.md#mapping-table)
-  is normative, with these corrections: reasoning tokens sit inside `text_tokens` (plus an undocumented
-  `reasoning_tokens`), `gpt-transcribe` reports `duration`, Voice Live reports no transcription usage, failed Voice Live
-  responses report `server_error`, and content-filter blocks never carry a category. Where the table and this section
-  differ, this section wins.
-- **Identity.** Provider names are `openai`, `azure.ai.openai` with Azure routing, and `azure.ai.foundry` for Voice
-  Live and Foundry voice agents. `gen_ai.conversation.id` follows chat's rule (a host-supplied id, else a string
-  `service_session_id`), captured at start. `gen_ai.realtime_session.id` comes from `session_created`. The event logger
-  emits `gen_ai.client.realtime_session.started` and `.ended` for every realtime session, INFO or WARN with
-  `error.type` when the session dies.
+  is normative, with these corrections: reasoning tokens sit inside `text_tokens`, with an undocumented
+  `reasoning_tokens` alongside, `gpt-transcribe` reports `duration`, Voice Live reports no transcription usage, failed
+  Voice Live responses report `server_error`, and content-filter blocks never carry a category. Where the table and this
+  section differ, this section wins.
+- **Identity.** Provider names are `openai`, `azure.ai.openai` with Azure routing, and `azure.ai.foundry` for Voice Live
+  and Foundry voice agents. `gen_ai.conversation.id` follows chat's rule and is captured at start: a host-supplied id,
+  else a string `service_session_id`. `gen_ai.realtime_session.id` comes from `session_created`. The event logger emits
+  `gen_ai.client.realtime_session.started` and `.ended` for every realtime session, INFO or WARN with `error.type` when
+  the session dies.
 - **Responses.** Span finish reasons are `stop`, `tool_call`, `content_filter` or `length`; the provider's verbatim
   `turn_detected` or `client_cancelled`, else `interrupted`, for cancelled responses and a response still running at
   close; and `error`, with `error.type` and ERROR status, for failed responses and sessions that die mid-response.
@@ -500,9 +501,9 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   `gen_ai.operation.name=realtime_inference`; there are no realtime-specific metrics.
 - **Errors.** A session that dies marks the conversation span ERROR with `error.type` and any close code; a normal close
   leaves it unset, and a `close()` that raises marks it ERROR. Unclaimed provider errors and context provider failures
-  become `agent_framework.realtime.error` events (message only with sensitive data on) and never change a span's
-  status. Each `item_truncated` becomes an `agent_framework.realtime.item_truncated` event with the response id, item
-  id and `audio_end_ms`. Exchange reports get no spans.
+  become `agent_framework.realtime.error` events, which carry the message only with sensitive data on, and never change
+  a span's status. Each `item_truncated` becomes an `agent_framework.realtime.item_truncated` event with the response
+  id, item id and `audio_end_ms`. Exchange reports get no spans.
 - **Cancelled tools.** `FunctionTool.invoke` records a cancelled call as ERROR with `error.type` `cancelled`, or
   `conversation_closed` when closing the conversation cancelled it. Calls that never ran get no span.
 - **Content.** Telemetry never records audio. With sensitive data on, `realtime_inference` spans record the agent
@@ -510,8 +511,8 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   before the span ends, and `gen_ai.system_instructions` as of the response's creation. The live conversation span
   records no messages; `run(...)`'s records input and output as chat does.
 - **Azure SDKs.** Each Azure client warns once when its SDK's instrumentor is active, naming the duplicate spans and how
-  to turn it off. `VoiceLiveInstrumentor` adds a span per outbound event, including each audio append (1,176 spans in a
-  30-second call). `FoundryVoiceAgentClient` injects `traceparent` and `tracestate`, never baggage, from the
+  to turn it off. `VoiceLiveInstrumentor` adds a span per outbound event, including each audio append, so a 30-second
+  call produced 1,176 spans. `FoundryVoiceAgentClient` injects `traceparent` and `tracestate`, never baggage, from the
   conversation span when it connects, unless the app's `AIProjectInstrumentor` already does.
 
 ## Provider clients
@@ -524,11 +525,11 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 
 - **Shared base session.** `OpenAIRealtimeSession`, public in `agent-framework-openai`, implements the typed control
   methods, kinds, string tool outputs, replay, error claiming and the barge-in cut for services that speak the OpenAI
-  Realtime protocol. It maps wire JSON over an `OpenAIRealtimeConnection` (`send`, `receive`, `close`) that each client
-  opens through its service's SDK, with no other SDK models and compression off. The connection maps transport errors
-  and closes to the realtime exceptions. Voice Live's and Foundry's sessions subclass it privately.
-- **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint`, `api_key` or `credential` (the
-  `cognitiveservices` scope), the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks. It connects through
+  Realtime protocol. It maps wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each
+  client opens through its service's SDK, with no other SDK models and compression off. The connection maps transport
+  errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions subclass it privately.
+- **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint`, `api_key` or a `credential` for the
+  `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks. It connects through
   `AsyncOpenAI(websocket_base_url=".../openai/v1")` without an `api_version`, and raises when given an
   `AsyncAzureOpenAI` client. Model variables are `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`, falling back
   to `*_MODEL`.
@@ -550,7 +551,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   `tools=` supplies implementations matched by name; a definition function without one gets an error result and a
   warning at start. Added tools are declared alongside the definition's tools, re-sent as published; with nothing added,
   no `tools` key is sent. Both `conversation.item.created` and `.added` map to `item_added`.
-- **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]` (`websockets>=13,<16`).
+- **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]`, with `websockets>=13,<16`.
   `agent-framework-foundry[realtime]` adds `azure-ai-voicelive[aiohttp]>=1.3.1,<2` and raises `azure-ai-projects` to
   `>=2.7,<2.8`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
   `agent_framework.foundry` re-export the classes. Fields the base session writes go in the `openai` metadata namespace,
@@ -584,7 +585,7 @@ report `client_cancelled`. With an Azure TTS voice, `response.done` can follow a
 
 ## Changes to existing packages
 
-Under `REALTIME` (or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes):
+Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
 
 - `agent-framework-core`: the `realtime_event` content type and `Content.from_realtime_event(kind=...)`, accepted by
   `ContentType` and `Content.from_dict`; the kind types; `FunctionInvocationContext.realtime_conversation`;
@@ -600,8 +601,8 @@ Under `REALTIME` (or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes)
   `FOUNDRY_VOICE_AGENTS`.
 
 On stable APIs, all additive: `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
-text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR
-(its own PR, first); the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base
+text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR,
+in its own PR first; the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base
 shared by `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.
 
