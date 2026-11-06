@@ -1,0 +1,238 @@
+{
+  "id": "two-handoffs",
+  "title": "Two handoff calls in one response",
+  "provider": "voicelive-byom",
+  "started": 1793964986.5470562,
+  "seconds": 30.6,
+  "checks": [
+    {
+      "name": "First handoff wins; the other gets an error result",
+      "passed": true,
+      "evidence": "{\"results\": [[\"handoff_to_billing\", \"{\\\"handoff_to\\\": \\\"billing\\\"}\", null], [\"handoff_to_support\", \"Error: Function failed.\", \"Another handoff in this response already won.\"]], \"active\": \"billing\"}"
+    }
+  ],
+  "notes": [],
+  "metrics": {},
+  "error": null,
+  "calls": [
+    {
+      "history": [
+        {
+          "role": "assistant",
+          "author": "receptionist",
+          "id": "item_EhCX8losErdu1tjDDtu0O",
+          "text": "Hello! Welcome to Acme Corporation. How can I help you today\u2014are you calling about an order, a delivery slot, billing, or a support issue?",
+          "status": "completed"
+        },
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCXJcL27mW6vHSgDBJ51",
+          "text": "I need billing and technical support at the same time. Call both your transfer functions right now, in parallel, in a single step.",
+          "status": "completed"
+        },
+        {
+          "role": "assistant",
+          "author": "receptionist",
+          "id": "item_EhCXSBwtEpZxF1oKO3clk",
+          "call": "handoff_to_billing",
+          "call_id": "call_7zhaC1SnLKisFuB5"
+        },
+        {
+          "role": "tool",
+          "author": "receptionist",
+          "id": null,
+          "result": "{\"handoff_to\": \"billing\"}",
+          "call_id": "call_7zhaC1SnLKisFuB5",
+          "exception": null
+        },
+        {
+          "role": "assistant",
+          "author": "receptionist",
+          "id": "item_EhCXUEPIr3Js0aWzxfttq",
+          "call": "handoff_to_support",
+          "call_id": "call_aKQ0Bym7TNzKfayj"
+        },
+        {
+          "role": "tool",
+          "author": "receptionist",
+          "id": null,
+          "result": "Error: Function failed.",
+          "call_id": "call_aKQ0Bym7TNzKfayj",
+          "exception": "Another handoff in this response already won."
+        },
+        {
+          "role": "assistant",
+          "author": "billing",
+          "id": "item_EhCXUPepIMkZV40GokSiV",
+          "call": "handoff_to_support",
+          "call_id": "call_yBpkCqaBajUgaMGb"
+        },
+        {
+          "role": "tool",
+          "author": "billing",
+          "id": null,
+          "result": "{\"handoff_to\": \"support\"}",
+          "call_id": "call_yBpkCqaBajUgaMGb",
+          "exception": null
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 2,
+        "abandoned_tools": 0,
+        "interruptions": 0,
+        "responses": 3,
+        "usage": {
+          "input_token_count": 2728,
+          "output_token_count": 525,
+          "total_token_count": 3253,
+          "cache_read_input_token_count": 768,
+          "audio_input_token_count": 178,
+          "text_input_token_count": 2550,
+          "audio_output_token_count": 195,
+          "text_output_token_count": 330
+        }
+      },
+      "interrupts": [
+        {
+          "t": 11.22,
+          "response_id": "resp_EhCX8tnIVTwGUo27KrVfG",
+          "played_ms": 9787,
+          "was_playing": false
+        }
+      ],
+      "stats": {
+        "close_transcript_wait_s": 0.0,
+        "update_hook_s": 0.0005127062322571874,
+        "updates": 207
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          202
+        ],
+        [
+          "response.created",
+          148
+        ],
+        [
+          "session.updated",
+          83
+        ],
+        [
+          "response.created",
+          92
+        ],
+        [
+          "session.updated",
+          78
+        ],
+        [
+          "response.created",
+          76
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (30581.0 ms)\n  invoke_agent contact_centre (30580.6 ms) name=contact_centre\n    realtime.create_response (148.3 ms)\n    realtime_inference gpt-realtime-2.1 (1615.6 ms) name=receptionist, finish_reasons=['stop']\n    realtime.interrupt (0.1 ms)\n    realtime_inference gpt-realtime-2.1 (1963.9 ms) name=receptionist, finish_reasons=['tool_call']\n    execute_tool handoff_to_billing (84.1 ms) name=handoff_to_billing, name=billing\n    execute_tool handoff_to_support (4.0 ms) [ERROR] name=handoff_to_support, type=RealtimeError\n    realtime_inference gpt-realtime-2.1 (2174.0 ms) name=billing, finish_reasons=['tool_call']\n    execute_tool handoff_to_support (79.4 ms) name=handoff_to_support, name=support\n    realtime_inference gpt-realtime-2.1 (2547.3 ms) name=support, finish_reasons=['interrupted']",
+      "events": [
+        {
+          "t": 0.0,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "receptionist",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 1.61,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "receptionist",
+            "text": "Hello! Welcome to Acme Corporation. How can I help you today\u2014are you calling about an order, a delivery slot, billing, or a support issue?"
+          }
+        },
+        {
+          "t": 1.615,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "receptionist",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "stop"
+          }
+        },
+        {
+          "t": 11.22,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 20.695,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "user",
+            "text": "I need billing and technical support at the same time. Call both your transfer functions right now, in parallel, in a single step."
+          }
+        },
+        {
+          "t": 21.803,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "receptionist",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "tool_calls"
+          }
+        },
+        {
+          "t": 21.889,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "billing",
+            "source": "receptionist",
+            "isHandoff": true
+          }
+        },
+        {
+          "t": 24.155,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "billing",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "tool_calls"
+          }
+        },
+        {
+          "t": 24.235,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "support",
+            "source": "billing",
+            "isHandoff": true
+          }
+        }
+      ]
+    }
+  ],
+  "log": [
+    "[   0.00] AgentSwitch: {'agentName': 'receptionist', 'isHandoff': False}",
+    "[   1.61] Transcription: {'speaker': 'receptionist', 'text': 'Hello! Welcome to Acme Corporation. How can I help you today\u2014are you calling about an order, a delivery slot, billing, or a support issue?'}",
+    "[   1.61] ResponseDone: {'agent': 'receptionist', 'status': 'completed', 'reason': None, 'finishReason': 'stop'}",
+    "--- Caller asks for billing and support at once (attempt 1)",
+    "[  10.57] caller says 'two_handoffs'",
+    "[  11.22] caller spoke after playback: interrupt(resp_EhCX8tnIVTwGUo27KrVfG, played_ms=9787)",
+    "[  11.22] StopAudio: ",
+    "[  20.70] Transcription: {'speaker': 'user', 'text': 'I need billing and technical support at the same time. Call both your transfer functions right now, in parallel, in a single step.'}",
+    "[  21.80] ResponseDone: {'agent': 'receptionist', 'status': 'completed', 'reason': None, 'finishReason': 'tool_calls'}",
+    "[  21.89] AgentSwitch: {'agentName': 'billing', 'source': 'receptionist', 'isHandoff': True}",
+    "[PASS] First handoff wins; the other gets an error result: {\"results\": [[\"handoff_to_billing\", \"{\\\"handoff_to\\\": \\\"billing\\\"}\", null], [\"handoff_to_support\", \"Error: Function failed.\", \"Another handoff in this response already won.\"]], \"active\": \"billing\"}",
+    "[  24.16] ResponseDone: {'agent': 'billing', 'status': 'completed', 'reason': None, 'finishReason': 'tool_calls'}",
+    "[  24.23] AgentSwitch: {'agentName': 'support', 'source': 'billing', 'isHandoff': True}"
+  ],
+  "core_changes": [
+    "Content.from_realtime_event(kind=...) and a 'realtime_event' ContentType: Content's constructor accepts the unknown type at runtime, but ContentType and Content.from_dict's type check (_types.py:2047) reject it, so a serialised update with realtime-event content wouldn't round-trip.",
+    "FunctionInvocationContext.realtime_conversation: set by an internal function middleware the conversation always installs, because _auto_invoke_function builds the context itself and only passes a context to tools without middleware when the tool declares a ctx parameter.",
+    "Content.from_text(status=): Content() already takes status, and text merges keep the latest status (_types.py:2142), so only the factory keyword is missing. The prototype calls Content('text', status=...)."
+  ]
+}

@@ -1,0 +1,397 @@
+{
+  "id": "barge-in",
+  "title": "Barge-in keeps only the heard text",
+  "provider": "voicelive-byom",
+  "started": 1793965017.133621,
+  "seconds": 42.9,
+  "checks": [
+    {
+      "name": "Barge-in with interrupt(played_ms=) keeps only the heard text, marked incomplete",
+      "passed": true,
+      "evidence": "{\"played_ms\": 1556, \"generated_ms\": 20000, \"kept\": \"Connectivity troubleshooting, step by step:\\nFirst, check your internet\", \"kept_chars\": 70, \"generated_chars\": 939}"
+    },
+    {
+      "name": "item_truncated streams as a first-class update",
+      "passed": true,
+      "evidence": "[{\"t\": 37.301, \"kind\": \"Update\", \"data\": {\"role\": \"assistant\", \"author\": null, \"responseId\": null, \"messageId\": null, \"mergeMode\": null, \"finishReason\": null, \"contents\": [{\"type\": \"item_truncated\", \"item_id\": \"item_EhCY5TBMw4lvBU8QwpUhX\", \"content_index\": 0, \"audio_end_ms\": 1556}]}}]"
+    },
+    {
+      "name": "item_truncated recorded as an event on the conversation span",
+      "passed": true,
+      "evidence": "1"
+    }
+  ],
+  "notes": [],
+  "metrics": {},
+  "error": null,
+  "calls": [
+    {
+      "history": [
+        {
+          "role": "assistant",
+          "author": "receptionist",
+          "id": "item_EhCXaKZjhzzKJTMprNcdU",
+          "text": "Hello! Thanks for contacting Acme Corporation. How can I help you today?\n\nIf you\u2019re calling about an order or delivery slots, I can assist. For billing questions like payments or invoices, or technical support issues, I can route you to the right specialist.",
+          "status": "completed"
+        },
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCXri1wRFDh48Z0fSQKg",
+          "text": "Can you walk me through every troubleshooting step you have for connectivity, login, and performance problems? Please go through each one slowly and in detail.",
+          "status": "completed"
+        },
+        {
+          "role": "assistant",
+          "author": "receptionist",
+          "id": "item_EhCY1fJmw3erjhBZ9ZPGa",
+          "call": "handoff_to_support",
+          "call_id": "call_SJWNNK0SmIe97cpo"
+        },
+        {
+          "role": "tool",
+          "author": "receptionist",
+          "id": null,
+          "result": "{\"handoff_to\": \"support\"}",
+          "call_id": "call_SJWNNK0SmIe97cpo",
+          "exception": null
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCY3qDzPaWQyIPX4pblr",
+          "text": "I\u2019ll pull the official troubleshooting steps for each category and then walk you through them clearly.",
+          "status": "completed"
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCY4b4SxgngMrDJgUQDF",
+          "call": "get_troubleshooting_steps",
+          "call_id": "call_qIjIqzs0u7QlqkVb"
+        },
+        {
+          "role": "tool",
+          "author": "support",
+          "id": null,
+          "result": "1. Check your internet connection. 2. Restart your router. 3. Clear browser cache.",
+          "call_id": "call_qIjIqzs0u7QlqkVb",
+          "exception": null
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCY53W4CUYKicwy8HYeD",
+          "call": "get_troubleshooting_steps",
+          "call_id": "call_TuQwIaYK666tlslZ"
+        },
+        {
+          "role": "tool",
+          "author": "support",
+          "id": null,
+          "result": "1. Verify your username and password. 2. Check caps lock. 3. Try password reset.",
+          "call_id": "call_TuQwIaYK666tlslZ",
+          "exception": null
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCY5s2uAxyLWgdQksOaC",
+          "call": "get_troubleshooting_steps",
+          "call_id": "call_TVahqzftKZ8tKrip"
+        },
+        {
+          "role": "tool",
+          "author": "support",
+          "id": null,
+          "result": "1. Close unused applications. 2. Clear temporary files. 3. Restart your device.",
+          "call_id": "call_TVahqzftKZ8tKrip",
+          "exception": null
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCY5TBMw4lvBU8QwpUhX",
+          "text": "Connectivity troubleshooting, step by step:\nFirst, check your internet",
+          "status": "incomplete"
+        },
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCYBotTG7oFuEA2PyUVf",
+          "text": "Sorry, stop there. Actually, never mind.",
+          "status": "completed"
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 1,
+        "abandoned_tools": 0,
+        "interruptions": 1,
+        "responses": 4,
+        "usage": {
+          "input_token_count": 3832,
+          "output_token_count": 1269,
+          "total_token_count": 5101,
+          "cache_read_input_token_count": 1664,
+          "audio_input_token_count": 321,
+          "text_input_token_count": 3511,
+          "audio_output_token_count": 816,
+          "text_output_token_count": 453
+        }
+      },
+      "interrupts": [
+        {
+          "t": 17.175,
+          "response_id": "resp_EhCXaqltAEkdXmlGODyPs",
+          "played_ms": 15712,
+          "was_playing": false
+        },
+        {
+          "t": 37.201,
+          "response_id": "resp_EhCY5PCpcNCDWKnvxdwWp",
+          "played_ms": 1556,
+          "was_playing": true
+        }
+      ],
+      "stats": {
+        "close_transcript_wait_s": 0.916,
+        "update_hook_s": 0.00138485140632838,
+        "updates": 512
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          182
+        ],
+        [
+          "response.created",
+          79
+        ],
+        [
+          "session.updated",
+          81
+        ],
+        [
+          "response.created",
+          101
+        ],
+        [
+          "response.created",
+          104
+        ],
+        [
+          "conversation.item.truncated",
+          97
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (42859.3 ms)\n  invoke_agent contact_centre (42858.5 ms) name=contact_centre\n    realtime.create_response (78.9 ms)\n    realtime_inference gpt-realtime-2.1 (2373.5 ms) name=receptionist, finish_reasons=['stop']\n    realtime.interrupt (0.0 ms)\n    realtime_inference gpt-realtime-2.1 (967.2 ms) name=receptionist, finish_reasons=['tool_call']\n    execute_tool handoff_to_support (82.1 ms) name=handoff_to_support, name=support\n    realtime_inference gpt-realtime-2.1 (2107.1 ms) name=support, finish_reasons=['tool_call']\n    execute_tool get_troubleshooting_steps (1.3 ms) name=get_troubleshooting_steps\n    execute_tool get_troubleshooting_steps (0.9 ms) name=get_troubleshooting_steps\n    execute_tool get_troubleshooting_steps (0.8 ms) name=get_troubleshooting_steps\n    realtime_inference gpt-realtime-2.1 (6434.4 ms) name=support, finish_reasons=['turn_detected']\n    realtime.interrupt (97.1 ms)\n    realtime_inference gpt-realtime-2.1 (1422.1 ms) name=support, finish_reasons=['interrupted']",
+      "events": [
+        {
+          "t": 0.001,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "receptionist",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 2.373,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "receptionist",
+            "text": "Hello! Thanks for contacting Acme Corporation. How can I help you today?\n\nIf you\u2019re calling about an order or delivery slots, I can assist. For billing questions like payments or invoices, or technical support issues, I can route you to the right specialist."
+          }
+        },
+        {
+          "t": 2.374,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "receptionist",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "stop"
+          }
+        },
+        {
+          "t": 17.175,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 28.295,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "user",
+            "text": "Can you walk me through every troubleshooting step you have for connectivity, login, and performance problems? Please go through each one slowly and in detail."
+          }
+        },
+        {
+          "t": 28.452,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "receptionist",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "tool_calls"
+          }
+        },
+        {
+          "t": 28.535,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "support",
+            "source": "receptionist",
+            "isHandoff": true
+          }
+        },
+        {
+          "t": 30.691,
+          "kind": "FunctionCall",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "arguments": "{\"issue_type\": \"connectivity\"}",
+            "callId": "call_qIjIqzs0u7QlqkVb"
+          }
+        },
+        {
+          "t": 30.692,
+          "kind": "FunctionCall",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "arguments": "{\"issue_type\": \"login\"}",
+            "callId": "call_TuQwIaYK666tlslZ"
+          }
+        },
+        {
+          "t": 30.693,
+          "kind": "FunctionCall",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "arguments": "{\"issue_type\": \"performance\"}",
+            "callId": "call_TVahqzftKZ8tKrip"
+          }
+        },
+        {
+          "t": 30.743,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "support",
+            "text": "I\u2019ll pull the official troubleshooting steps for each category and then walk you through them clearly."
+          }
+        },
+        {
+          "t": 30.745,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "support",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "tool_calls"
+          }
+        },
+        {
+          "t": 30.748,
+          "kind": "FunctionResult",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "result": "1. Check your internet connection. 2. Restart your router. 3. Clear browser cache.",
+            "callId": "call_qIjIqzs0u7QlqkVb",
+            "exception": null
+          }
+        },
+        {
+          "t": 30.748,
+          "kind": "FunctionResult",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "result": "1. Verify your username and password. 2. Check caps lock. 3. Try password reset.",
+            "callId": "call_TuQwIaYK666tlslZ",
+            "exception": null
+          }
+        },
+        {
+          "t": 30.748,
+          "kind": "FunctionResult",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "result": "1. Close unused applications. 2. Clear temporary files. 3. Restart your device.",
+            "callId": "call_TVahqzftKZ8tKrip",
+            "exception": null
+          }
+        },
+        {
+          "t": 37.201,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 37.287,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "support",
+            "text": "Connectivity troubleshooting, step by step:\nFirst, check your internet connection. Make sure you\u2019re actually online, and if you\u2019re on Wi\u2011Fi, verify you\u2019re connected to the right network.\nNext, restart your router. Power it off, wait a few seconds, then power it back on and let it fully reconnect.\nFinally, clear your browser cache. Then try the connection again.\n\nLogin troubleshooting, step by step:\nFirst, verify your username and password. Type them carefully and use the exact values you set.\nNext, check caps lock. A single uppercase letter can make the login fail.\nFinally, try a password reset if you\u2019re still blocked, then log in with the new password.\n\nPerformance troubleshooting, step by step:\nFirst, close unused applications. Freeing up memory and CPU can help a lot.\nNext, clear temporary files. This can reduce clutter and improve responsiveness.\nFinally, restart your device to reset resources and apply any stuck changes."
+          }
+        },
+        {
+          "t": 37.287,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "support",
+            "status": "cancelled",
+            "reason": "turn_detected",
+            "finishReason": null
+          }
+        },
+        {
+          "t": 41.508,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "user",
+            "text": "Sorry, stop there. Actually, never mind."
+          }
+        }
+      ]
+    }
+  ],
+  "log": [
+    "[   0.00] AgentSwitch: {'agentName': 'receptionist', 'isHandoff': False}",
+    "[   2.37] Transcription: {'speaker': 'receptionist', 'text': 'Hello! Thanks for contacting Acme Corporation. How can I help you today?\\n\\nIf you\u2019re calling about an order or delivery slots, I can assist. For billing questions like payments or invoices, or technical support issues, I can route you to the right specialist.'}",
+    "[   2.37] ResponseDone: {'agent': 'receptionist', 'status': 'completed', 'reason': None, 'finishReason': 'stop'}",
+    "--- Caller asks for every troubleshooting step: a long reply",
+    "[  16.51] caller says 'long_answer'",
+    "[  17.18] caller spoke after playback: interrupt(resp_EhCXaqltAEkdXmlGODyPs, played_ms=15712)",
+    "[  17.18] StopAudio: ",
+    "[  28.30] Transcription: {'speaker': 'user', 'text': 'Can you walk me through every troubleshooting step you have for connectivity, login, and performance problems? Please go through each one slowly and in detail.'}",
+    "[  28.45] ResponseDone: {'agent': 'receptionist', 'status': 'completed', 'reason': None, 'finishReason': 'tool_calls'}",
+    "[  28.54] AgentSwitch: {'agentName': 'support', 'source': 'receptionist', 'isHandoff': True}",
+    "[  30.69] FunctionCall: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'arguments': '{\"issue_type\": \"connectivity\"}', 'callId': 'call_qIjIqzs0u7QlqkVb'}",
+    "[  30.69] FunctionCall: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'arguments': '{\"issue_type\": \"login\"}', 'callId': 'call_TuQwIaYK666tlslZ'}",
+    "[  30.69] FunctionCall: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'arguments': '{\"issue_type\": \"performance\"}', 'callId': 'call_TVahqzftKZ8tKrip'}",
+    "[  30.74] Transcription: {'speaker': 'support', 'text': 'I\u2019ll pull the official troubleshooting steps for each category and then walk you through them clearly.'}",
+    "[  30.75] ResponseDone: {'agent': 'support', 'status': 'completed', 'reason': None, 'finishReason': 'tool_calls'}",
+    "[  30.75] FunctionResult: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'result': '1. Check your internet connection. 2. Restart your router. 3. Clear browser cache.', 'callId': 'call_qIjIqzs0u7QlqkVb', 'exception': None}",
+    "[  30.75] FunctionResult: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'result': '1. Verify your username and password. 2. Check caps lock. 3. Try password reset.', 'callId': 'call_TuQwIaYK666tlslZ', 'exception': None}",
+    "[  30.75] FunctionResult: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'result': '1. Close unused applications. 2. Clear temporary files. 3. Restart your device.', 'callId': 'call_TVahqzftKZ8tKrip', 'exception': None}",
+    "--- Caller talks over the agent about 4 s into the reply",
+    "[  36.57] caller says 'interrupt'",
+    "[  37.20] barge-in: interrupt(resp_EhCY5PCpcNCDWKnvxdwWp, played_ms=1556)",
+    "[  37.20] StopAudio: ",
+    "[  37.29] Transcription: {'speaker': 'support', 'text': 'Connectivity troubleshooting, step by step:\\nFirst, check your internet connection. Make sure you\u2019re actually online, and if you\u2019re on Wi\u2011Fi, verify you\u2019re connected to the right network.\\nNext, restart your router. Power it off, wait a few seconds, then power it back on and let it fully reconnect.\\nFinally, clear your browser cache. Then try the connection again.\\n\\nLogin troubleshooting, step by step:\\nFirst, verify your username and password. Type them carefully and use the exact values you set.\\nNext, check caps lock. A single uppercase letter can make the login fail.\\nFinally, try a password reset if you\u2019re still blocked, then log in with the new password.\\n\\nPerformance troubleshooting, step by step:\\nFirst, close unused applications. Freeing up memory and CPU can help a lot.\\nNext, clear temporary files. This can reduce clutter and improve responsiveness.\\nFinally, restart your device to reset resources and apply any stuck changes.'}",
+    "[  37.29] ResponseDone: {'agent': 'support', 'status': 'cancelled', 'reason': 'turn_detected', 'finishReason': None}",
+    "[PASS] Barge-in with interrupt(played_ms=) keeps only the heard text, marked incomplete: {\"played_ms\": 1556, \"generated_ms\": 20000, \"kept\": \"Connectivity troubleshooting, step by step:\\nFirst, check your internet\", \"kept_chars\": 70, \"generated_chars\": 939}",
+    "[PASS] item_truncated streams as a first-class update: [{\"t\": 37.301, \"kind\": \"Update\", \"data\": {\"role\": \"assistant\", \"author\": null, \"responseId\": null, \"messageId\": null, \"mergeMode\": null, \"finishReason\": null, \"contents\": [{\"type\": \"item_truncated\", \"item_id\": \"item_EhCY5TBMw4lvBU8QwpUhX\", \"content_index\": 0, \"audio_end_ms\": 1556}]}}]",
+    "[  41.51] Transcription: {'speaker': 'user', 'text': 'Sorry, stop there. Actually, never mind.'}",
+    "[PASS] item_truncated recorded as an event on the conversation span: 1"
+  ],
+  "core_changes": [
+    "Content.from_realtime_event(kind=...) and a 'realtime_event' ContentType: Content's constructor accepts the unknown type at runtime, but ContentType and Content.from_dict's type check (_types.py:2047) reject it, so a serialised update with realtime-event content wouldn't round-trip.",
+    "FunctionInvocationContext.realtime_conversation: set by an internal function middleware the conversation always installs, because _auto_invoke_function builds the context itself and only passes a context to tools without middleware when the tool declares a ctx parameter.",
+    "Content.from_text(status=): Content() already takes status, and text merges keep the latest status (_types.py:2142), so only the factory keyword is missing. The prototype calls Content('text', status=...)."
+  ]
+}

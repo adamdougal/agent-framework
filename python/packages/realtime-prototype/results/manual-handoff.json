@@ -1,0 +1,265 @@
+{
+  "id": "manual-handoff",
+  "title": "App-driven handoff",
+  "provider": "voicelive",
+  "started": 1793964875.083286,
+  "seconds": 55.1,
+  "checks": [
+    {
+      "name": "App-driven handoff swaps the session and installs support's handoff tools",
+      "passed": true,
+      "evidence": "{\"label\": {\"agentName\": \"support\", \"source\": \"receptionist\", \"isHandoff\": true}, \"tools\": [\"check_system_status\", \"create_support_ticket\", \"get_troubleshooting_steps\", \"handoff_to_receptionist\", \"handoff_to_billing\"], \"voice\": {\"name\": \"en-GB-AlfieNeural\", \"type\": \"azure-standard\", \"temperature\": null, \"custom_lexicon_url\": null, \"custom_text_normalization_url\": null, \"prefer_locales\": null, \"locale\": null, \"style\": null, \"pitch\": null, \"rate\": null, \"volume\": null}}"
+    },
+    {
+      "name": "Non-participant handoff raises without a session update",
+      "passed": true,
+      "evidence": "stranger isn't a participant of contact_centre."
+    },
+    {
+      "name": "Support answers in its own voice",
+      "passed": true,
+      "evidence": "{\"role\": \"assistant\", \"author\": \"support\", \"id\": \"item_EhCVamXmGn9PkJDZG45At\", \"text\": \"Let\\u2019s go step by step.\\n\\nFirst, double-check you\\u2019re using the correct username and password, and that Caps Lock isn\\u2019t on (or that your keyboard layout hasn\\u2019t changed).\\n\\nIf it still rejects the password, try a password reset from the login screen. After resetting, copy and paste the new password carefully, and then try signing in again.\\n\\nIf you\\u2019ve reset it and it still fails, tell me what error message you see (if any), and what device/browser you\\u2019re using, and I\\u2019ll help you dig deeper.\", \"status\": \"completed\"}"
+    },
+    {
+      "name": "handoff() outside a tool gets a realtime.handoff span with source and target",
+      "passed": true,
+      "evidence": "{\"agent_framework.handoff.source\": \"receptionist\", \"agent_framework.handoff.target\": \"support\"}"
+    }
+  ],
+  "notes": [],
+  "metrics": {},
+  "error": null,
+  "calls": [
+    {
+      "history": [
+        {
+          "role": "assistant",
+          "author": "receptionist",
+          "id": "item_EhCVIRUx3sd5Jm9lrqgH4",
+          "text": "Hello! Thanks for calling Acme Corporation. What can I help you with today\u2014an order, delivery slot, billing question, or a technical issue?",
+          "status": "completed"
+        },
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCVTmkY3UoEoM48rYmB7",
+          "text": "I'm having trouble logging in to my account. It keeps rejecting my password.",
+          "status": "completed"
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCVZVmkhiAAnw84QGJXE",
+          "text": "I\u2019m going to pull in some standard Acme login troubleshooting guidance so we can walk through it step by step.",
+          "status": "completed"
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCVZOHz5eB9pEHCmiAi5",
+          "call": "get_troubleshooting_steps",
+          "call_id": "call_SrRmLbLXkfhOwMYr"
+        },
+        {
+          "role": "tool",
+          "author": "support",
+          "id": null,
+          "result": "1. Verify your username and password. 2. Check caps lock. 3. Try password reset.",
+          "call_id": "call_SrRmLbLXkfhOwMYr",
+          "exception": null
+        },
+        {
+          "role": "assistant",
+          "author": "support",
+          "id": "item_EhCVamXmGn9PkJDZG45At",
+          "text": "Let\u2019s go step by step.\n\nFirst, double-check you\u2019re using the correct username and password, and that Caps Lock isn\u2019t on (or that your keyboard layout hasn\u2019t changed).\n\nIf it still rejects the password, try a password reset from the login screen. After resetting, copy and paste the new password carefully, and then try signing in again.\n\nIf you\u2019ve reset it and it still fails, tell me what error message you see (if any), and what device/browser you\u2019re using, and I\u2019ll help you dig deeper.",
+          "status": "completed"
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 1,
+        "abandoned_tools": 0,
+        "interruptions": 0,
+        "responses": 3,
+        "usage": {
+          "input_token_count": 2544,
+          "output_token_count": 1129,
+          "total_token_count": 3673,
+          "cache_read_input_token_count": 768,
+          "audio_input_token_count": 114,
+          "text_input_token_count": 2430,
+          "audio_output_token_count": 908,
+          "text_output_token_count": 221
+        }
+      },
+      "interrupts": [
+        {
+          "t": 10.728,
+          "response_id": "resp_EhCVIEmDTO6RsDxtwV3C3",
+          "played_ms": 9425,
+          "was_playing": false
+        }
+      ],
+      "stats": {
+        "close_transcript_wait_s": 0.0,
+        "update_hook_s": 0.0007234610384330153,
+        "updates": 323
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          384
+        ],
+        [
+          "response.created",
+          85
+        ],
+        [
+          "session.updated",
+          84
+        ],
+        [
+          "response.created",
+          84
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (55121.5 ms)\n  invoke_agent contact_centre (55121.2 ms) name=contact_centre\n    realtime.create_response (85.4 ms)\n    realtime_inference gpt-realtime-2.1 (1375.2 ms) name=receptionist, finish_reasons=['stop']\n    realtime.handoff (87.5 ms) target=support\n    realtime.interrupt (0.0 ms)\n    realtime_inference gpt-realtime-2.1 (1260.8 ms) name=support, finish_reasons=['tool_call']\n    execute_tool get_troubleshooting_steps (0.4 ms) name=get_troubleshooting_steps\n    realtime_inference gpt-realtime-2.1 (7729.9 ms) name=support, finish_reasons=['stop']",
+      "events": [
+        {
+          "t": 0.001,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "receptionist",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 1.375,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "receptionist",
+            "text": "Hello! Thanks for calling Acme Corporation. What can I help you with today\u2014an order, delivery slot, billing question, or a technical issue?"
+          }
+        },
+        {
+          "t": 1.375,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "receptionist",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "stop"
+          }
+        },
+        {
+          "t": 10.097,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "support",
+            "source": "receptionist",
+            "isHandoff": true
+          }
+        },
+        {
+          "t": 10.728,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 16.663,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "user",
+            "text": "I'm having trouble logging in to my account. It keeps rejecting my password."
+          }
+        },
+        {
+          "t": 16.787,
+          "kind": "FunctionCall",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "arguments": "{\"issue_type\":\"login\"}",
+            "callId": "call_SrRmLbLXkfhOwMYr"
+          }
+        },
+        {
+          "t": 17.337,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "support",
+            "text": "I\u2019m going to pull in some standard Acme login troubleshooting guidance so we can walk through it step by step."
+          }
+        },
+        {
+          "t": 17.338,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "support",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "tool_calls"
+          }
+        },
+        {
+          "t": 17.34,
+          "kind": "FunctionResult",
+          "data": {
+            "agent": "support",
+            "function": "get_troubleshooting_steps",
+            "result": "1. Verify your username and password. 2. Check caps lock. 3. Try password reset.",
+            "callId": "call_SrRmLbLXkfhOwMYr",
+            "exception": null
+          }
+        },
+        {
+          "t": 25.154,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "support",
+            "text": "Let\u2019s go step by step.\n\nFirst, double-check you\u2019re using the correct username and password, and that Caps Lock isn\u2019t on (or that your keyboard layout hasn\u2019t changed).\n\nIf it still rejects the password, try a password reset from the login screen. After resetting, copy and paste the new password carefully, and then try signing in again.\n\nIf you\u2019ve reset it and it still fails, tell me what error message you see (if any), and what device/browser you\u2019re using, and I\u2019ll help you dig deeper."
+          }
+        },
+        {
+          "t": 25.154,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "support",
+            "status": "completed",
+            "reason": null,
+            "finishReason": "stop"
+          }
+        }
+      ]
+    }
+  ],
+  "log": [
+    "[   0.00] AgentSwitch: {'agentName': 'receptionist', 'isHandoff': False}",
+    "[   1.38] Transcription: {'speaker': 'receptionist', 'text': 'Hello! Thanks for calling Acme Corporation. What can I help you with today\u2014an order, delivery slot, billing question, or a technical issue?'}",
+    "[   1.38] ResponseDone: {'agent': 'receptionist', 'status': 'completed', 'reason': None, 'finishReason': 'stop'}",
+    "--- App escalates: conversation.handoff(support), outside any tool",
+    "[  10.10] AgentSwitch: {'agentName': 'support', 'source': 'receptionist', 'isHandoff': True}",
+    "[PASS] App-driven handoff swaps the session and installs support's handoff tools: {\"label\": {\"agentName\": \"support\", \"source\": \"receptionist\", \"isHandoff\": true}, \"tools\": [\"check_system_status\", \"create_support_ticket\", \"get_troubleshooting_steps\", \"handoff_to_receptionist\", \"handoff_to_billing\"], \"voice\": {\"name\": \"en-GB-AlfieNeural\", \"type\": \"azure-standard\", \"temperature\": nu",
+    "--- Handoff to an agent outside the topology raises before sending",
+    "[PASS] Non-participant handoff raises without a session update: stranger isn't a participant of contact_centre.",
+    "--- Caller describes a login problem: support answers",
+    "[  10.10] caller says 'tech_issue'",
+    "[  10.73] caller spoke after playback: interrupt(resp_EhCVIEmDTO6RsDxtwV3C3, played_ms=9425)",
+    "[  10.73] StopAudio: ",
+    "[  16.66] Transcription: {'speaker': 'user', 'text': \"I'm having trouble logging in to my account. It keeps rejecting my password.\"}",
+    "[  16.79] FunctionCall: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'arguments': '{\"issue_type\":\"login\"}', 'callId': 'call_SrRmLbLXkfhOwMYr'}",
+    "[  17.34] Transcription: {'speaker': 'support', 'text': 'I\u2019m going to pull in some standard Acme login troubleshooting guidance so we can walk through it step by step.'}",
+    "[  17.34] ResponseDone: {'agent': 'support', 'status': 'completed', 'reason': None, 'finishReason': 'tool_calls'}",
+    "[  17.34] FunctionResult: {'agent': 'support', 'function': 'get_troubleshooting_steps', 'result': '1. Verify your username and password. 2. Check caps lock. 3. Try password reset.', 'callId': 'call_SrRmLbLXkfhOwMYr', 'exception': None}",
+    "[  25.15] Transcription: {'speaker': 'support', 'text': 'Let\u2019s go step by step.\\n\\nFirst, double-check you\u2019re using the correct username and password, and that Caps Lock isn\u2019t on (or that your keyboard layout hasn\u2019t changed).\\n\\nIf it still rejects the password, try a password reset from the login screen. After resetting, copy and paste the new password carefully, and then try signing in again.\\n\\nIf you\u2019ve reset it and it still fails, tell me what error message you see (if any), and what device/browser you\u2019re using, and I\u2019ll help you dig deeper.'}",
+    "[  25.15] ResponseDone: {'agent': 'support', 'status': 'completed', 'reason': None, 'finishReason': 'stop'}",
+    "[PASS] Support answers in its own voice: {\"role\": \"assistant\", \"author\": \"support\", \"id\": \"item_EhCVamXmGn9PkJDZG45At\", \"text\": \"Let\\u2019s go step by step.\\n\\nFirst, double-check you\\u2019re using the correct username and password, and that Caps Lock isn\\u2019t on (or that your keyboard layout hasn\\u2019t changed).\\n\\nIf it still rejects ",
+    "[PASS] handoff() outside a tool gets a realtime.handoff span with source and target: {\"agent_framework.handoff.source\": \"receptionist\", \"agent_framework.handoff.target\": \"support\"}"
+  ],
+  "core_changes": [
+    "Content.from_realtime_event(kind=...) and a 'realtime_event' ContentType: Content's constructor accepts the unknown type at runtime, but ContentType and Content.from_dict's type check (_types.py:2047) reject it, so a serialised update with realtime-event content wouldn't round-trip.",
+    "FunctionInvocationContext.realtime_conversation: set by an internal function middleware the conversation always installs, because _auto_invoke_function builds the context itself and only passes a context to tools without middleware when the tool declares a ctx parameter.",
+    "Content.from_text(status=): Content() already takes status, and text merges keep the latest status (_types.py:2142), so only the factory keyword is missing. The prototype calls Content('text', status=...)."
+  ]
+}

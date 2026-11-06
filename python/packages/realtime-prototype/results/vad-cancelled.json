@@ -1,0 +1,1304 @@
+{
+  "id": "vad-cancelled",
+  "title": "Empty cancelled responses under default VAD",
+  "provider": "voicelive",
+  "started": 1793966214.8902369,
+  "seconds": 55.8,
+  "checks": [
+    {
+      "name": "Voice Live's default turn detection",
+      "passed": null,
+      "evidence": "{\"type\": \"server_vad\", \"threshold\": 0.5, \"prefix_padding_ms\": 300, \"silence_duration_ms\": 500, \"create_response\": true, \"interrupt_response\": true, \"idle_timeout_ms\": null, \"speech_duration_ms\": null, \"auto_truncate\": false, \"appended_text_after_truncation\": null}"
+    },
+    {
+      "name": "Empty cancelled responses become realtime_inference spans (Voice Live's default)",
+      "passed": null,
+      "evidence": "{\"responses\": 1, \"cancelled_empty\": 0, \"reasons\": [], \"span_finish_reasons\": [[\"interrupted\"]]}"
+    },
+    {
+      "name": "Empty cancelled responses become realtime_inference spans (silence_duration_ms=200)",
+      "passed": true,
+      "evidence": "{\"responses\": 3, \"cancelled_empty\": 2, \"reasons\": [\"turn_detected\", \"turn_detected\"], \"span_finish_reasons\": [[\"turn_detected\"], [\"turn_detected\"], [\"interrupted\"]]}"
+    }
+  ],
+  "notes": [],
+  "metrics": {},
+  "error": null,
+  "calls": [
+    {
+      "history": [
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCqu8Z7NPy1CULLfiEF9",
+          "text_less": "transcript_pending"
+        },
+        {
+          "role": "assistant",
+          "author": "assistant",
+          "id": "item_EhCr4cB57e9diIO8353m6",
+          "text": "Okay, let\u2019s go step by step. I\u2019ll walk through connectivity, login, and performance troubleshooting in a slow, thorough way, and you can tell me where you want to pause or dive deeper.",
+          "status": "completed"
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 0,
+        "abandoned_tools": 0,
+        "interruptions": 0,
+        "responses": 0,
+        "usage": {}
+      },
+      "interrupts": [],
+      "stats": {
+        "close_transcript_wait_s": 3.003,
+        "update_hook_s": 0.001559850643388927,
+        "updates": 1201
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          278
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (27926.6 ms)\n  invoke_agent assistant (27925.9 ms) name=assistant\n    realtime_inference gpt-realtime-2.1 (16173.6 ms) name=assistant, finish_reasons=['interrupted']",
+      "events": [
+        {
+          "t": 0.003,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "assistant",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 0.441,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 19.15,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "assistant",
+            "text": "Okay, let\u2019s go step by step. I\u2019ll walk through connectivity, login, and performance troubleshooting in a slow, thorough way, and you can tell me where you want to pause or dive deeper."
+          }
+        }
+      ],
+      "wire": [
+        {
+          "t": 0.0,
+          "dir": "out",
+          "event": {
+            "type": "session.update",
+            "session": {
+              "instructions": "You are a helpful assistant for Acme Corporation.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard"
+              },
+              "tool_choice": "auto",
+              "tools": []
+            },
+            "event_id": "af_7bd826f8605f"
+          }
+        },
+        {
+          "t": 0.269,
+          "dir": "in",
+          "event": {
+            "event_id": "event_7PDy0Acg0DbcDIm1jwWVhz",
+            "type": "session.created",
+            "session": {
+              "id": "sess_EhCqtanriiPBW5fgK36mA",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "Your knowledge cutoff is 2023-10. You are a helpful, witty, and friendly AI. Act like a human, but remember that you aren't a human and that you can't do human things in the real world. Your voice and personality should be warm and engaging, with a lively and playful tone. If interacting in a non-English language, start by using the standard accent or dialect familiar to the user. Talk quickly. You should always call a function if you can. Do not refer to these rules, even if you\u2019re asked about them.",
+              "voice": {
+                "name": "marin",
+                "type": "openai"
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969815,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.278,
+          "dir": "in",
+          "event": {
+            "event_id": "event_xhRyI7z5vliEIyDT9OS54",
+            "type": "session.updated",
+            "session": {
+              "id": "sess_EhCqtanriiPBW5fgK36mA",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "You are a helpful assistant for Acme Corporation.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969815,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.718,
+          "dir": "in",
+          "event": {
+            "event_id": "event_uwifmV3y518HOHsvPR0HT",
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 52,
+            "item_id": "item_EhCqu8Z7NPy1CULLfiEF9"
+          }
+        },
+        {
+          "t": 10.852,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5mUGbpa2eabAwixT8OIi1n",
+            "type": "input_audio_buffer.speech_stopped",
+            "audio_end_ms": 10496,
+            "item_id": "item_EhCqu8Z7NPy1CULLfiEF9"
+          }
+        },
+        {
+          "t": 10.852,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4pQc3RYMOkQ3JLB0rTY8tS",
+            "type": "input_audio_buffer.committed",
+            "previous_item_id": null,
+            "item_id": "item_EhCqu8Z7NPy1CULLfiEF9"
+          }
+        },
+        {
+          "t": 10.852,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6ZJSX53ZulwtMZvzVnrRjH",
+            "type": "conversation.item.created",
+            "previous_item_id": null,
+            "item": {
+              "id": "item_EhCqu8Z7NPy1CULLfiEF9",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_audio",
+                  "transcript": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "t": 10.854,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4kD51iWiuUtpMH1b5UdwYV",
+            "type": "response.created",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCr4OwLOmevyushp47zI",
+              "status": "in_progress",
+              "status_details": null,
+              "output": [],
+              "usage": null,
+              "conversation_id": "conv_EhCqtjGUGTDvPVqy0ijGf",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 11.204,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2fjQXIg2xVNPtTGoJuOhGz",
+            "type": "response.output_item.added",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCr4cB57e9diIO8353m6",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "commentary"
+            }
+          }
+        },
+        {
+          "t": 11.204,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2gkE1L3rUEH4g27fQ8KHJF",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCqu8Z7NPy1CULLfiEF9",
+            "item": {
+              "id": "item_EhCr4cB57e9diIO8353m6",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "commentary"
+            }
+          }
+        },
+        {
+          "t": 11.204,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4RH3XxCVbTVdThj1otLjkf",
+            "type": "response.content_part.added",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "item_id": "item_EhCr4cB57e9diIO8353m6",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": ""
+            }
+          }
+        },
+        {
+          "t": 11.843,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4E3fBeiTqagWvTjKemLZwv",
+            "type": "response.output_item.added",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "output_index": 1,
+            "item": {
+              "id": "item_EhCr5yqvWKHJp3rzvBMsB",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 11.843,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6sf8tmPY7m37uZtQ3Wsf1e",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCr4cB57e9diIO8353m6",
+            "item": {
+              "id": "item_EhCr5yqvWKHJp3rzvBMsB",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 19.428,
+          "dir": "in",
+          "event": {
+            "event_id": "event_WcZUPF5NMkDRpgZqD48Ue",
+            "type": "response.audio.done",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "item_id": "item_EhCr4cB57e9diIO8353m6",
+            "output_index": 0,
+            "content_index": 0
+          }
+        },
+        {
+          "t": 19.428,
+          "dir": "in",
+          "event": {
+            "event_id": "event_JryIgfzCpGPIlfDWAH8V",
+            "type": "response.audio_transcript.done",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "item_id": "item_EhCr4cB57e9diIO8353m6",
+            "output_index": 0,
+            "content_index": 0,
+            "transcript": "Okay, let\u2019s go step by step. I\u2019ll walk through connectivity, login, and performance troubleshooting in a slow, thorough way, and you can tell me where you want to pause or dive deeper."
+          }
+        },
+        {
+          "t": 19.428,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4OBf1bYbNumOocDnPqfuO3",
+            "type": "response.content_part.done",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "item_id": "item_EhCr4cB57e9diIO8353m6",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": "Okay, let\u2019s go step by step. I\u2019ll walk through connectivity, login, and performance troubleshooting in a slow, thorough way, and you can tell me where you want to pause or dive deeper."
+            }
+          }
+        },
+        {
+          "t": 19.428,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1CYeAeCR3CLZuiRMyvqL02",
+            "type": "response.output_item.done",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCr4cB57e9diIO8353m6",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "audio",
+                  "transcript": "Okay, let\u2019s go step by step. I\u2019ll walk through connectivity, login, and performance troubleshooting in a slow, thorough way, and you can tell me where you want to pause or dive deeper."
+                }
+              ],
+              "phase": "commentary"
+            }
+          }
+        },
+        {
+          "t": 19.428,
+          "dir": "in",
+          "event": {
+            "event_id": "event_7dnWGRx1auK19dQRzUULYC",
+            "type": "response.content_part.added",
+            "response_id": "resp_EhCr4OwLOmevyushp47zI",
+            "item_id": "item_EhCr5yqvWKHJp3rzvBMsB",
+            "output_index": 1,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "history": [
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCrMAurPm0gpPiOJEHIj",
+          "text_less": "transcript_pending"
+        },
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCrTFD1Jl9l1dSPCjBIX",
+          "text_less": "transcript_pending"
+        },
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCrVJZdkIsyKxIcAX9T8",
+          "text_less": "transcript_pending"
+        },
+        {
+          "role": "assistant",
+          "author": "assistant",
+          "id": "item_EhCrW3enCrQUk79qQWIUv",
+          "text": "Okay, let\u2019s take this step by step at a calm pace. I\u2019ll walk through a thorough, practical flow for connectivity, then login, then performance, with pauses built into the structure so it\u2019s easy to follow.",
+          "status": "completed"
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 0,
+        "abandoned_tools": 0,
+        "interruptions": 2,
+        "responses": 2,
+        "usage": {
+          "input_token_count": 0,
+          "output_token_count": 0,
+          "total_token_count": 0,
+          "cache_read_input_token_count": 0,
+          "audio_input_token_count": 0,
+          "text_input_token_count": 0,
+          "audio_output_token_count": 0,
+          "text_output_token_count": 0
+        }
+      },
+      "interrupts": [],
+      "stats": {
+        "close_transcript_wait_s": 3.003,
+        "update_hook_s": 0.0011834468459710479,
+        "updates": 1141
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          215
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (27879.4 ms)\n  invoke_agent assistant (27878.6 ms) name=assistant\n    realtime_inference gpt-realtime-2.1 (160.0 ms) name=assistant, finish_reasons=['turn_detected']\n    realtime_inference gpt-realtime-2.1 (60.9 ms) name=assistant, finish_reasons=['turn_detected']\n    realtime_inference gpt-realtime-2.1 (16419.7 ms) name=assistant, finish_reasons=['interrupted']",
+      "events": [
+        {
+          "t": 0.012,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "assistant",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 0.46,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 7.209,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 7.211,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "assistant",
+            "status": "cancelled",
+            "reason": "turn_detected",
+            "finishReason": null
+          }
+        },
+        {
+          "t": 9.249,
+          "kind": "StopAudio"
+        },
+        {
+          "t": 9.254,
+          "kind": "ResponseDone",
+          "data": {
+            "agent": "assistant",
+            "status": "cancelled",
+            "reason": "turn_detected",
+            "finishReason": null
+          }
+        },
+        {
+          "t": 19.083,
+          "kind": "Transcription",
+          "data": {
+            "speaker": "assistant",
+            "text": "Okay, let\u2019s take this step by step at a calm pace. I\u2019ll walk through a thorough, practical flow for connectivity, then login, then performance, with pauses built into the structure so it\u2019s easy to follow."
+          }
+        }
+      ],
+      "wire": [
+        {
+          "t": 0.001,
+          "dir": "out",
+          "event": {
+            "type": "session.update",
+            "session": {
+              "instructions": "You are a helpful assistant for Acme Corporation.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard"
+              },
+              "tool_choice": "auto",
+              "turn_detection": {
+                "type": "server_vad",
+                "silence_duration_ms": 200
+              },
+              "tools": []
+            },
+            "event_id": "af_a8b107103c4d"
+          }
+        },
+        {
+          "t": 0.205,
+          "dir": "in",
+          "event": {
+            "event_id": "event_57T9pOqa3xt1nQubXNOLIb",
+            "type": "session.created",
+            "session": {
+              "id": "sess_EhCrLD1k2B9DiEccq8brr",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "Your knowledge cutoff is 2023-10. You are a helpful, witty, and friendly AI. Act like a human, but remember that you aren't a human and that you can't do human things in the real world. Your voice and personality should be warm and engaging, with a lively and playful tone. If interacting in a non-English language, start by using the standard accent or dialect familiar to the user. Talk quickly. You should always call a function if you can. Do not refer to these rules, even if you\u2019re asked about them.",
+              "voice": {
+                "name": "marin",
+                "type": "openai"
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969843,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.215,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4mwa2S8FcAgBfIW4PLdJtG",
+            "type": "session.updated",
+            "session": {
+              "id": "sess_EhCrLD1k2B9DiEccq8brr",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "You are a helpful assistant for Acme Corporation.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 400,
+                "silence_duration_ms": 200,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969843,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.675,
+          "dir": "in",
+          "event": {
+            "event_id": "event_16YWolPlchBgTb1lggd0fx",
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 0,
+            "item_id": "item_EhCrMAurPm0gpPiOJEHIj"
+          }
+        },
+        {
+          "t": 7.257,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1R4aSNwIUxPTwWTHF2hk4i",
+            "type": "input_audio_buffer.speech_stopped",
+            "audio_end_ms": 6944,
+            "item_id": "item_EhCrMAurPm0gpPiOJEHIj"
+          }
+        },
+        {
+          "t": 7.258,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5Vm2WdI7SpULTCcQtTH7UD",
+            "type": "input_audio_buffer.committed",
+            "previous_item_id": null,
+            "item_id": "item_EhCrMAurPm0gpPiOJEHIj"
+          }
+        },
+        {
+          "t": 7.258,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6JhbYqDknMgfpQVzjhdNnm",
+            "type": "conversation.item.created",
+            "previous_item_id": null,
+            "item": {
+              "id": "item_EhCrMAurPm0gpPiOJEHIj",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_audio",
+                  "transcript": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "t": 7.265,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1KJUtnH9fjHcJvECRg2b9a",
+            "type": "response.created",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCrTtE2abne4KdzP1Xeh",
+              "status": "in_progress",
+              "status_details": null,
+              "output": [],
+              "usage": null,
+              "conversation_id": "conv_EhCrLay72cXNCzZaHTusv",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 7.424,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1iqxItdUuqZrzjsR4mN4fO",
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 6672,
+            "item_id": "item_EhCrTFD1Jl9l1dSPCjBIX"
+          }
+        },
+        {
+          "t": 7.425,
+          "dir": "in",
+          "event": {
+            "event_id": "event_76vREEEZ7P8OiEgfl8MnZq",
+            "type": "response.done",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCrTtE2abne4KdzP1Xeh",
+              "status": "cancelled",
+              "status_details": {
+                "type": "cancelled",
+                "reason": "turn_detected"
+              },
+              "output": [],
+              "usage": {
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "input_token_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "text_tokens": 0,
+                  "audio_tokens": 0,
+                  "image_tokens": 0,
+                  "cached_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0
+                  }
+                },
+                "output_token_details": {
+                  "text_tokens": 0,
+                  "audio_tokens": 0,
+                  "reasoning_tokens": 0
+                }
+              },
+              "conversation_id": "conv_EhCrLay72cXNCzZaHTusv",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 9.403,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1or9bELr0alGbYajAK5P4V",
+            "type": "input_audio_buffer.speech_stopped",
+            "audio_end_ms": 9088,
+            "item_id": "item_EhCrTFD1Jl9l1dSPCjBIX"
+          }
+        },
+        {
+          "t": 9.403,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3XeAk6ut5yd3BOFb5J4W2L",
+            "type": "input_audio_buffer.committed",
+            "previous_item_id": "item_EhCrMAurPm0gpPiOJEHIj",
+            "item_id": "item_EhCrTFD1Jl9l1dSPCjBIX"
+          }
+        },
+        {
+          "t": 9.403,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6TldNNzYUO4yJFAnSRnHCC",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCrMAurPm0gpPiOJEHIj",
+            "item": {
+              "id": "item_EhCrTFD1Jl9l1dSPCjBIX",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_audio",
+                  "transcript": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "t": 9.409,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3eeTyo1raPGDbGKqWHBwzA",
+            "type": "response.created",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCrVIzMuyxCxLWcqc7WB",
+              "status": "in_progress",
+              "status_details": null,
+              "output": [],
+              "usage": null,
+              "conversation_id": "conv_EhCrLay72cXNCzZaHTusv",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 9.464,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3IdP7GGTXKqLFZP5HmofU0",
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 8720,
+            "item_id": "item_EhCrVJZdkIsyKxIcAX9T8"
+          }
+        },
+        {
+          "t": 9.47,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5LKtpulCYbtKt3ekf2mI30",
+            "type": "response.done",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCrVIzMuyxCxLWcqc7WB",
+              "status": "cancelled",
+              "status_details": {
+                "type": "cancelled",
+                "reason": "turn_detected"
+              },
+              "output": [],
+              "usage": {
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "input_token_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "text_tokens": 0,
+                  "audio_tokens": 0,
+                  "image_tokens": 0,
+                  "cached_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0
+                  }
+                },
+                "output_token_details": {
+                  "text_tokens": 0,
+                  "audio_tokens": 0,
+                  "reasoning_tokens": 0
+                }
+              },
+              "conversation_id": "conv_EhCrLay72cXNCzZaHTusv",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 10.515,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1v5S5B3mVox2vsdWv7XSYB",
+            "type": "input_audio_buffer.speech_stopped",
+            "audio_end_ms": 10208,
+            "item_id": "item_EhCrVJZdkIsyKxIcAX9T8"
+          }
+        },
+        {
+          "t": 10.515,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5EYP5NQWH91tZpt1T2AApI",
+            "type": "input_audio_buffer.committed",
+            "previous_item_id": "item_EhCrTFD1Jl9l1dSPCjBIX",
+            "item_id": "item_EhCrVJZdkIsyKxIcAX9T8"
+          }
+        },
+        {
+          "t": 10.515,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6ZdnruStU6fWi5xdASyFD8",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCrTFD1Jl9l1dSPCjBIX",
+            "item": {
+              "id": "item_EhCrVJZdkIsyKxIcAX9T8",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_audio",
+                  "transcript": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "t": 10.515,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3ijHQ0IsP3DoX9BcYOcLI0",
+            "type": "response.created",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCrWQYyISkmya4LggUVY",
+              "status": "in_progress",
+              "status_details": null,
+              "output": [],
+              "usage": null,
+              "conversation_id": "conv_EhCrLay72cXNCzZaHTusv",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 11.757,
+          "dir": "in",
+          "event": {
+            "event_id": "event_662FVLUBjB0tsomBIa7Er6",
+            "type": "response.output_item.added",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCrW3enCrQUk79qQWIUv",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "commentary"
+            }
+          }
+        },
+        {
+          "t": 11.757,
+          "dir": "in",
+          "event": {
+            "event_id": "event_72nLHik0HKgiDo8bHr21Jy",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCrVJZdkIsyKxIcAX9T8",
+            "item": {
+              "id": "item_EhCrW3enCrQUk79qQWIUv",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "commentary"
+            }
+          }
+        },
+        {
+          "t": 11.758,
+          "dir": "in",
+          "event": {
+            "event_id": "event_7ebV1tM1Cp0cF2xqYgMCVs",
+            "type": "response.content_part.added",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "item_id": "item_EhCrW3enCrQUk79qQWIUv",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": ""
+            }
+          }
+        },
+        {
+          "t": 12.157,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5OrmwLxNwsJrgiawwgTUvX",
+            "type": "response.output_item.added",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "output_index": 1,
+            "item": {
+              "id": "item_EhCrXDzFaiHDAxDpf5aLW",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 12.157,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2bkHlHIcMcg5Mjnc9gLZrh",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCrW3enCrQUk79qQWIUv",
+            "item": {
+              "id": "item_EhCrXDzFaiHDAxDpf5aLW",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 19.298,
+          "dir": "in",
+          "event": {
+            "event_id": "event_7Pr1EOX1yLMefaBqm31Bt5",
+            "type": "response.audio.done",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "item_id": "item_EhCrW3enCrQUk79qQWIUv",
+            "output_index": 0,
+            "content_index": 0
+          }
+        },
+        {
+          "t": 19.298,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5X3vdMT5MJFvwC2CHm56E4",
+            "type": "response.audio_transcript.done",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "item_id": "item_EhCrW3enCrQUk79qQWIUv",
+            "output_index": 0,
+            "content_index": 0,
+            "transcript": "Okay, let\u2019s take this step by step at a calm pace. I\u2019ll walk through a thorough, practical flow for connectivity, then login, then performance, with pauses built into the structure so it\u2019s easy to follow."
+          }
+        },
+        {
+          "t": 19.298,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2SGcA5rhcpK7gW3MhZJGp",
+            "type": "response.content_part.done",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "item_id": "item_EhCrW3enCrQUk79qQWIUv",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": "Okay, let\u2019s take this step by step at a calm pace. I\u2019ll walk through a thorough, practical flow for connectivity, then login, then performance, with pauses built into the structure so it\u2019s easy to follow."
+            }
+          }
+        },
+        {
+          "t": 19.298,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2kjKhJG74iQCzcot6XgfXl",
+            "type": "response.output_item.done",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCrW3enCrQUk79qQWIUv",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "audio",
+                  "transcript": "Okay, let\u2019s take this step by step at a calm pace. I\u2019ll walk through a thorough, practical flow for connectivity, then login, then performance, with pauses built into the structure so it\u2019s easy to follow."
+                }
+              ],
+              "phase": "commentary"
+            }
+          }
+        },
+        {
+          "t": 19.298,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5JD0quUarMN9AILxsUJgM2",
+            "type": "response.content_part.added",
+            "response_id": "resp_EhCrWQYyISkmya4LggUVY",
+            "item_id": "item_EhCrXDzFaiHDAxDpf5aLW",
+            "output_index": 1,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": ""
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "log": [
+    "[NOTE] Voice Live's default turn detection: {\"type\": \"server_vad\", \"threshold\": 0.5, \"prefix_padding_ms\": 300, \"silence_duration_ms\": 500, \"create_response\": true, \"interrupt_response\": true, \"idle_timeout_ms\": null, \"speech_duration_ms\": null, \"auto_truncate\": false, \"appended_text_after_truncation\": null}",
+    "--- A long caller turn with pauses (Voice Live's default)",
+    "[   0.00] caller says 'long_answer'",
+    "[   0.00] AgentSwitch: {'agentName': 'assistant', 'isHandoff': False}",
+    "[   0.44] StopAudio: ",
+    "[  19.15] Transcription: {'speaker': 'assistant', 'text': 'Okay, let\u2019s go step by step. I\u2019ll walk through connectivity, login, and performance troubleshooting in a slow, thorough way, and you can tell me where you want to pause or dive deeper.'}",
+    "[NOTE] Empty cancelled responses become realtime_inference spans (Voice Live's default): {\"responses\": 1, \"cancelled_empty\": 0, \"reasons\": [], \"span_finish_reasons\": [[\"interrupted\"]]}",
+    "--- A long caller turn with pauses (silence_duration_ms=200)",
+    "[   0.00] caller says 'long_answer'",
+    "[   0.01] AgentSwitch: {'agentName': 'assistant', 'isHandoff': False}",
+    "[   0.46] StopAudio: ",
+    "[   7.21] StopAudio: ",
+    "[   7.21] ResponseDone: {'agent': 'assistant', 'status': 'cancelled', 'reason': 'turn_detected', 'finishReason': None}",
+    "[   9.25] StopAudio: ",
+    "[   9.25] ResponseDone: {'agent': 'assistant', 'status': 'cancelled', 'reason': 'turn_detected', 'finishReason': None}",
+    "[  19.08] Transcription: {'speaker': 'assistant', 'text': 'Okay, let\u2019s take this step by step at a calm pace. I\u2019ll walk through a thorough, practical flow for connectivity, then login, then performance, with pauses built into the structure so it\u2019s easy to follow.'}",
+    "[PASS] Empty cancelled responses become realtime_inference spans (silence_duration_ms=200): {\"responses\": 3, \"cancelled_empty\": 2, \"reasons\": [\"turn_detected\", \"turn_detected\"], \"span_finish_reasons\": [[\"turn_detected\"], [\"turn_detected\"], [\"interrupted\"]]}"
+  ],
+  "core_changes": [
+    "Content.from_realtime_event(kind=...) and a 'realtime_event' ContentType: Content's constructor accepts the unknown type at runtime, but ContentType and Content.from_dict's type check (_types.py:2047) reject it, so a serialised update with realtime-event content wouldn't round-trip.",
+    "FunctionInvocationContext.realtime_conversation: set by an internal function middleware the conversation always installs, because _auto_invoke_function builds the context itself and only passes a context to tools without middleware when the tool declares a ctx parameter.",
+    "Content.from_text(status=): Content() already takes status, and text merges keep the latest status (_types.py:2142), so only the factory keyword is missing. The prototype calls Content('text', status=...)."
+  ]
+}

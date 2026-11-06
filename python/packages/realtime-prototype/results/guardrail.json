@@ -1,0 +1,995 @@
+{
+  "id": "guardrail",
+  "title": "Guardrail middleware and hook cost",
+  "provider": "voicelive",
+  "started": 1793965907.92848,
+  "seconds": 87.4,
+  "checks": [
+    {
+      "name": "A guardrail hook interrupts and drops the rest of the response",
+      "passed": true,
+      "evidence": "{\"tripped\": \"resp_EhCm3FkJm4L7VitYSYNZM\", \"status\": \"cancelled\", \"dropped_updates\": 23}"
+    },
+    {
+      "name": "Update-hook cost per update (\u00b5s) with 1 vs 21 hooks, audio chunks included",
+      "passed": null,
+      "evidence": "{\"0\": 12.4, \"20\": 21.2}"
+    }
+  ],
+  "notes": [],
+  "metrics": {},
+  "error": null,
+  "calls": [
+    {
+      "history": [
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhClxPHOIEMbNXp4GmBIA",
+          "text_less": "transcript_pending"
+        },
+        {
+          "role": "assistant",
+          "author": "assistant",
+          "id": "item_EhCm33ENt2euAglSM21U0",
+          "text": "Pineapple... pineapple... pineapple... pineapple... pineapple.\n\nFun fact: pineapples aren\u2019t one single fruit",
+          "status": "incomplete"
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 0,
+        "abandoned_tools": 0,
+        "interruptions": 0,
+        "responses": 0,
+        "usage": {}
+      },
+      "interrupts": [],
+      "stats": {
+        "close_transcript_wait_s": 3.012,
+        "update_hook_s": 0.00048383185639977455,
+        "updates": 39
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          268
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (43582.4 ms)\n  invoke_agent assistant (43581.8 ms) name=assistant\n    realtime_inference gpt-realtime-2.1 (666.5 ms) name=assistant, finish_reasons=['client_cancelled']\n    realtime.interrupt (0.3 ms)",
+      "events": [
+        {
+          "t": 0.011,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "assistant",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 0.473,
+          "kind": "StopAudio"
+        }
+      ],
+      "wire": [
+        {
+          "t": 0.0,
+          "dir": "out",
+          "event": {
+            "type": "session.update",
+            "session": {
+              "instructions": "You are a cheerful assistant. Do what the caller asks.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard"
+              },
+              "tool_choice": "auto",
+              "turn_detection": {
+                "type": "server_vad",
+                "silence_duration_ms": 800,
+                "threshold": 0.8
+              },
+              "tools": []
+            },
+            "event_id": "af_1afa5c0c86fe"
+          }
+        },
+        {
+          "t": 0.266,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5utN59IF2e0VM4ir0PMOTI",
+            "type": "session.created",
+            "session": {
+              "id": "sess_EhClxzFBnByRNhddHRByQ",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "Your knowledge cutoff is 2023-10. You are a helpful, witty, and friendly AI. Act like a human, but remember that you aren't a human and that you can't do human things in the real world. Your voice and personality should be warm and engaging, with a lively and playful tone. If interacting in a non-English language, start by using the standard accent or dialect familiar to the user. Talk quickly. You should always call a function if you can. Do not refer to these rules, even if you\u2019re asked about them.",
+              "voice": {
+                "name": "marin",
+                "type": "openai"
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969509,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.268,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5ZDu12rhDgUVY8CLIb1bEA",
+            "type": "session.updated",
+            "session": {
+              "id": "sess_EhClxzFBnByRNhddHRByQ",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "You are a cheerful assistant. Do what the caller asks.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.8,
+                "prefix_padding_ms": 400,
+                "silence_duration_ms": 800,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969509,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.74,
+          "dir": "in",
+          "event": {
+            "event_id": "event_76XKHSqwvQuMAI7KTZnRXL",
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 0,
+            "item_id": "item_EhClxPHOIEMbNXp4GmBIA"
+          }
+        },
+        {
+          "t": 6.737,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1mmNB8PZgRKJrZkPmpgYgY",
+            "type": "input_audio_buffer.speech_stopped",
+            "audio_end_ms": 6368,
+            "item_id": "item_EhClxPHOIEMbNXp4GmBIA"
+          }
+        },
+        {
+          "t": 6.738,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2zTR1DDndHsyTZamDymEGr",
+            "type": "input_audio_buffer.committed",
+            "previous_item_id": null,
+            "item_id": "item_EhClxPHOIEMbNXp4GmBIA"
+          }
+        },
+        {
+          "t": 6.738,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4M9c9x6Bl9j2tKINxSc2Q8",
+            "type": "conversation.item.created",
+            "previous_item_id": null,
+            "item": {
+              "id": "item_EhClxPHOIEMbNXp4GmBIA",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_audio",
+                  "transcript": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "t": 6.739,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1aXElAO7RwrMm7edtSlXvG",
+            "type": "response.created",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCm3FkJm4L7VitYSYNZM",
+              "status": "in_progress",
+              "status_details": null,
+              "output": [],
+              "usage": null,
+              "conversation_id": "conv_EhClxNIgjkwnQktVOul4N",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 7.321,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2QgeXjCl8W0iwKgxzCCqqm",
+            "type": "response.output_item.added",
+            "response_id": "resp_EhCm3FkJm4L7VitYSYNZM",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCm33ENt2euAglSM21U0",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 7.321,
+          "dir": "in",
+          "event": {
+            "event_id": "event_SglyXCZPhiz4DsYLHafZo",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhClxPHOIEMbNXp4GmBIA",
+            "item": {
+              "id": "item_EhCm33ENt2euAglSM21U0",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 7.328,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6R3jlyvubSRPmGWiGGmYCm",
+            "type": "response.content_part.added",
+            "response_id": "resp_EhCm3FkJm4L7VitYSYNZM",
+            "item_id": "item_EhCm33ENt2euAglSM21U0",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": ""
+            }
+          }
+        },
+        {
+          "t": 7.329,
+          "dir": "out",
+          "event": {
+            "type": "response.cancel",
+            "event_id": "af_52bea15fa32c"
+          }
+        },
+        {
+          "t": 7.376,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2Mp2io8wnGaXxAf25tc1Ci",
+            "type": "response.audio.done",
+            "response_id": "resp_EhCm3FkJm4L7VitYSYNZM",
+            "item_id": "item_EhCm33ENt2euAglSM21U0",
+            "output_index": 0,
+            "content_index": 0
+          }
+        },
+        {
+          "t": 7.402,
+          "dir": "in",
+          "event": {
+            "event_id": "event_61gEO56YRx2zmiHFZ5BtTF",
+            "type": "response.audio_transcript.done",
+            "response_id": "resp_EhCm3FkJm4L7VitYSYNZM",
+            "item_id": "item_EhCm33ENt2euAglSM21U0",
+            "output_index": 0,
+            "content_index": 0,
+            "transcript": "Pineapple... pineapple... pineapple... pineapple... pineapple.\n\nFun fact: pineapples aren\u2019t one single fruit"
+          }
+        },
+        {
+          "t": 7.402,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4uZXxVzfQP8J2aSFlRXcYE",
+            "type": "response.content_part.done",
+            "response_id": "resp_EhCm3FkJm4L7VitYSYNZM",
+            "item_id": "item_EhCm33ENt2euAglSM21U0",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": "Pineapple... pineapple... pineapple... pineapple... pineapple.\n\nFun fact: pineapples aren\u2019t one single fruit"
+            }
+          }
+        },
+        {
+          "t": 7.402,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1XjwvF5Iksxa83mjCFBM7u",
+            "type": "response.output_item.done",
+            "response_id": "resp_EhCm3FkJm4L7VitYSYNZM",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCm33ENt2euAglSM21U0",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "incomplete",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "audio",
+                  "transcript": "Pineapple... pineapple... pineapple... pineapple... pineapple.\n\nFun fact: pineapples aren\u2019t one single fruit"
+                }
+              ],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 7.406,
+          "dir": "in",
+          "event": {
+            "event_id": "event_42LBz6pgDD53L9Lseopeo8",
+            "type": "response.done",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCm3FkJm4L7VitYSYNZM",
+              "status": "cancelled",
+              "status_details": {
+                "type": "cancelled",
+                "reason": "client_cancelled"
+              },
+              "output": [
+                {
+                  "id": "item_EhCm33ENt2euAglSM21U0",
+                  "object": "realtime.item",
+                  "type": "message",
+                  "status": "incomplete",
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "audio",
+                      "transcript": "Pineapple... pineapple... pineapple... pineapple... pineapple.\n\nFun fact: pineapples aren\u2019t one single fruit"
+                    }
+                  ],
+                  "phase": "final_answer"
+                }
+              ],
+              "usage": {
+                "total_tokens": 137,
+                "input_tokens": 90,
+                "output_tokens": 47,
+                "input_token_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "text_tokens": 27,
+                  "audio_tokens": 63,
+                  "image_tokens": 0,
+                  "cached_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0
+                  }
+                },
+                "output_token_details": {
+                  "text_tokens": 47,
+                  "audio_tokens": 0,
+                  "reasoning_tokens": 0
+                }
+              },
+              "conversation_id": "conv_EhClxNIgjkwnQktVOul4N",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "history": [
+        {
+          "role": "user",
+          "author": null,
+          "id": "item_EhCmfhaN1vtvf7klflW37",
+          "text_less": "transcript_pending"
+        },
+        {
+          "role": "assistant",
+          "author": "assistant",
+          "id": "item_EhCmlCfUFOQRLBCDpqEvS",
+          "text": "pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple.\n\nFun fact: pineapples aren\u2019t a single fruit\u2014they\u2019re a bunch of individual flowers",
+          "status": "incomplete"
+        }
+      ],
+      "signals": {
+        "content_filter_count": 0,
+        "handoff_count": 0,
+        "abandoned_tools": 0,
+        "interruptions": 0,
+        "responses": 0,
+        "usage": {}
+      },
+      "interrupts": [],
+      "stats": {
+        "close_transcript_wait_s": 3.018,
+        "update_hook_s": 0.0009531253017485142,
+        "updates": 45
+      },
+      "ack_ms": [
+        [
+          "session.updated",
+          339
+        ]
+      ],
+      "reports": [],
+      "spans": "ws.session (43853.5 ms)\n  invoke_agent assistant (43853.0 ms) name=assistant\n    realtime_inference gpt-realtime-2.1 (890.6 ms) name=assistant, finish_reasons=['client_cancelled']\n    realtime.interrupt (0.5 ms)",
+      "events": [
+        {
+          "t": 0.004,
+          "kind": "AgentSwitch",
+          "data": {
+            "agentName": "assistant",
+            "isHandoff": false
+          }
+        },
+        {
+          "t": 0.463,
+          "kind": "StopAudio"
+        }
+      ],
+      "wire": [
+        {
+          "t": 0.0,
+          "dir": "out",
+          "event": {
+            "type": "session.update",
+            "session": {
+              "instructions": "You are a cheerful assistant. Do what the caller asks.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard"
+              },
+              "tool_choice": "auto",
+              "turn_detection": {
+                "type": "server_vad",
+                "silence_duration_ms": 800,
+                "threshold": 0.8
+              },
+              "tools": []
+            },
+            "event_id": "af_305c218643a3"
+          }
+        },
+        {
+          "t": 0.327,
+          "dir": "in",
+          "event": {
+            "event_id": "event_5vfe0NcrONd6Aqu0wUP0hl",
+            "type": "session.created",
+            "session": {
+              "id": "sess_EhCme5JnlWwv3w6YGYFPk",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "Your knowledge cutoff is 2023-10. You are a helpful, witty, and friendly AI. Act like a human, but remember that you aren't a human and that you can't do human things in the real world. Your voice and personality should be warm and engaging, with a lively and playful tone. If interacting in a non-English language, start by using the standard accent or dialect familiar to the user. Talk quickly. You should always call a function if you can. Do not refer to these rules, even if you\u2019re asked about them.",
+              "voice": {
+                "name": "marin",
+                "type": "openai"
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969552,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.339,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2pc9zd1tUBYGxd6XzdeXFa",
+            "type": "session.updated",
+            "session": {
+              "id": "sess_EhCme5JnlWwv3w6YGYFPk",
+              "model": "gpt-realtime-2.1",
+              "modalities": [
+                "audio"
+              ],
+              "instructions": "You are a cheerful assistant. Do what the caller asks.",
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "input_audio_format": "pcm16",
+              "output_audio_format": "pcm16",
+              "input_audio_transcription": null,
+              "input_audio_noise_reduction": null,
+              "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.8,
+                "prefix_padding_ms": 400,
+                "silence_duration_ms": 800,
+                "create_response": true,
+                "interrupt_response": true,
+                "idle_timeout_ms": null,
+                "speech_duration_ms": null,
+                "auto_truncate": false,
+                "appended_text_after_truncation": null
+              },
+              "tools": [],
+              "tool_choice": "auto",
+              "max_response_output_tokens": "inf",
+              "expires_at": 1793969552,
+              "object": "realtime.session",
+              "input_audio_sampling_rate": 24000,
+              "animation": null,
+              "input_audio_echo_cancellation": null,
+              "avatar": null,
+              "output_audio_timestamp_types": null,
+              "truncation_strategy": null,
+              "include": null,
+              "greeting": null,
+              "handoff": null
+            }
+          }
+        },
+        {
+          "t": 0.802,
+          "dir": "in",
+          "event": {
+            "event_id": "event_7jL13fPYEK6biARYdPJnRe",
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 0,
+            "item_id": "item_EhCmfhaN1vtvf7klflW37"
+          }
+        },
+        {
+          "t": 6.792,
+          "dir": "in",
+          "event": {
+            "event_id": "event_4vVhdNNy9F1RPMmDkWGRUu",
+            "type": "input_audio_buffer.speech_stopped",
+            "audio_end_ms": 6368,
+            "item_id": "item_EhCmfhaN1vtvf7klflW37"
+          }
+        },
+        {
+          "t": 6.792,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2wE6wnFvHuTPiY81017ig4",
+            "type": "input_audio_buffer.committed",
+            "previous_item_id": null,
+            "item_id": "item_EhCmfhaN1vtvf7klflW37"
+          }
+        },
+        {
+          "t": 6.792,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3jXRqwNMb6qVsMteTLCG0x",
+            "type": "conversation.item.created",
+            "previous_item_id": null,
+            "item": {
+              "id": "item_EhCmfhaN1vtvf7klflW37",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_audio",
+                  "transcript": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "t": 6.792,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3fB5yuGuk5L0dGTGcRqe5D",
+            "type": "response.created",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+              "status": "in_progress",
+              "status_details": null,
+              "output": [],
+              "usage": null,
+              "conversation_id": "conv_EhCmedMcZ2PbPfnOnaRJl",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        },
+        {
+          "t": 7.402,
+          "dir": "in",
+          "event": {
+            "event_id": "event_22KbRS3o7brhISYCXFiIEI",
+            "type": "response.output_item.added",
+            "response_id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCmlCfUFOQRLBCDpqEvS",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 7.402,
+          "dir": "in",
+          "event": {
+            "event_id": "event_1m2W5FsbBLrF5jihb5rMP0",
+            "type": "conversation.item.created",
+            "previous_item_id": "item_EhCmfhaN1vtvf7klflW37",
+            "item": {
+              "id": "item_EhCmlCfUFOQRLBCDpqEvS",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "in_progress",
+              "role": "assistant",
+              "content": [],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 7.402,
+          "dir": "in",
+          "event": {
+            "event_id": "event_6sTgb8wGeY5bwGzTFJfOkO",
+            "type": "response.content_part.added",
+            "response_id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+            "item_id": "item_EhCmlCfUFOQRLBCDpqEvS",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": ""
+            }
+          }
+        },
+        {
+          "t": 7.404,
+          "dir": "out",
+          "event": {
+            "type": "response.cancel",
+            "event_id": "af_a7f1c5cfbc58"
+          }
+        },
+        {
+          "t": 7.452,
+          "dir": "in",
+          "event": {
+            "event_id": "event_2YHqEDs8tatX2Z2c1APdbf",
+            "type": "response.audio.done",
+            "response_id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+            "item_id": "item_EhCmlCfUFOQRLBCDpqEvS",
+            "output_index": 0,
+            "content_index": 0
+          }
+        },
+        {
+          "t": 7.676,
+          "dir": "in",
+          "event": {
+            "event_id": "event_44MOuFysfA81JinfKOuoz3",
+            "type": "response.audio_transcript.done",
+            "response_id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+            "item_id": "item_EhCmlCfUFOQRLBCDpqEvS",
+            "output_index": 0,
+            "content_index": 0,
+            "transcript": "pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple.\n\nFun fact: pineapples aren\u2019t a single fruit\u2014they\u2019re a bunch of individual flowers"
+          }
+        },
+        {
+          "t": 7.677,
+          "dir": "in",
+          "event": {
+            "event_id": "event_wRYj6FlLmzDQZU5xJkdHQ",
+            "type": "response.content_part.done",
+            "response_id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+            "item_id": "item_EhCmlCfUFOQRLBCDpqEvS",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+              "type": "audio",
+              "transcript": "pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple.\n\nFun fact: pineapples aren\u2019t a single fruit\u2014they\u2019re a bunch of individual flowers"
+            }
+          }
+        },
+        {
+          "t": 7.677,
+          "dir": "in",
+          "event": {
+            "event_id": "event_3bWJYrcCyMT8EgTk1Nzccw",
+            "type": "response.output_item.done",
+            "response_id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+            "output_index": 0,
+            "item": {
+              "id": "item_EhCmlCfUFOQRLBCDpqEvS",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "incomplete",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "audio",
+                  "transcript": "pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple.\n\nFun fact: pineapples aren\u2019t a single fruit\u2014they\u2019re a bunch of individual flowers"
+                }
+              ],
+              "phase": "final_answer"
+            }
+          }
+        },
+        {
+          "t": 7.683,
+          "dir": "in",
+          "event": {
+            "event_id": "event_642X38G1MrGTb8gtRy964V",
+            "type": "response.done",
+            "response": {
+              "object": "realtime.response",
+              "id": "resp_EhCmlZTP0VoP9bqKEzCdc",
+              "status": "cancelled",
+              "status_details": {
+                "type": "cancelled",
+                "reason": "client_cancelled"
+              },
+              "output": [
+                {
+                  "id": "item_EhCmlCfUFOQRLBCDpqEvS",
+                  "object": "realtime.item",
+                  "type": "message",
+                  "status": "incomplete",
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "audio",
+                      "transcript": "pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple\u2026 pineapple.\n\nFun fact: pineapples aren\u2019t a single fruit\u2014they\u2019re a bunch of individual flowers"
+                    }
+                  ],
+                  "phase": "final_answer"
+                }
+              ],
+              "usage": {
+                "total_tokens": 144,
+                "input_tokens": 90,
+                "output_tokens": 54,
+                "input_token_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "text_tokens": 27,
+                  "audio_tokens": 63,
+                  "image_tokens": 0,
+                  "cached_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0
+                  }
+                },
+                "output_token_details": {
+                  "text_tokens": 54,
+                  "audio_tokens": 0,
+                  "reasoning_tokens": 0
+                }
+              },
+              "conversation_id": "conv_EhCmedMcZ2PbPfnOnaRJl",
+              "modalities": [
+                "audio"
+              ],
+              "voice": {
+                "name": "en-US-AvaMultilingualNeural",
+                "type": "azure-standard",
+                "temperature": null,
+                "custom_lexicon_url": null,
+                "custom_text_normalization_url": null,
+                "prefer_locales": null,
+                "locale": null,
+                "style": null,
+                "pitch": null,
+                "rate": null,
+                "volume": null
+              },
+              "output_audio_format": "pcm16",
+              "temperature": null,
+              "max_output_tokens": "inf",
+              "metadata": null
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "log": [
+    "--- Caller asks for 'pineapple' five times; the guardrail interrupts on the first one (0 no-op hooks)",
+    "[   0.00] caller says 'pineapple'",
+    "[   0.01] AgentSwitch: {'agentName': 'assistant', 'isHandoff': False}",
+    "[   0.47] StopAudio: ",
+    "[PASS] A guardrail hook interrupts and drops the rest of the response: {\"tripped\": \"resp_EhCm3FkJm4L7VitYSYNZM\", \"status\": \"cancelled\", \"dropped_updates\": 23}",
+    "--- Caller asks for 'pineapple' five times; the guardrail interrupts on the first one (20 no-op hooks)",
+    "[   0.00] caller says 'pineapple'",
+    "[   0.00] AgentSwitch: {'agentName': 'assistant', 'isHandoff': False}",
+    "[   0.46] StopAudio: ",
+    "[NOTE] Update-hook cost per update (\u00b5s) with 1 vs 21 hooks, audio chunks included: {\"0\": 12.4, \"20\": 21.2}"
+  ],
+  "core_changes": [
+    "Content.from_realtime_event(kind=...) and a 'realtime_event' ContentType: Content's constructor accepts the unknown type at runtime, but ContentType and Content.from_dict's type check (_types.py:2047) reject it, so a serialised update with realtime-event content wouldn't round-trip.",
+    "FunctionInvocationContext.realtime_conversation: set by an internal function middleware the conversation always installs, because _auto_invoke_function builds the context itself and only passes a context to tools without middleware when the tool declares a ctx parameter.",
+    "Content.from_text(status=): Content() already takes status, and text merges keep the latest status (_types.py:2142), so only the factory keyword is missing. The prototype calls Content('text', status=...)."
+  ]
+}

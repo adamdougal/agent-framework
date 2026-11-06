@@ -1,0 +1,416 @@
+<!doctype html>
+<!-- PROTOTYPE, never merged (adamdougal/agent-framework#10). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE · Realtime voice loop on the extended API</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #fff; --ink: #1b1d21; --muted: #6b7280; --line: #e5e7eb;
+    --accent: #2563eb; --accent-soft: #eff4ff; --ok: #15803d; --bad: #b91c1c; --note: #92400e;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; color: var(--ink);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); }
+  header { padding: 20px 28px 0; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; background: #fef3c7; color: var(--note); }
+  h1 { font-size: 26px; margin: 10px 0 6px; letter-spacing: -.01em; }
+  .question { color: var(--muted); max-width: 980px; line-height: 1.45; }
+  nav { display: flex; gap: 4px; margin-top: 14px; }
+  nav button { border: 0; background: none; padding: 8px 14px; border-radius: 8px 8px 0 0; color: var(--muted); font-size: 14px; cursor: pointer; }
+  nav button[aria-selected="true"] { background: var(--bg); color: var(--ink); font-weight: 600; }
+  main { padding: 20px 28px; }
+  .grid { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); gap: 20px; align-items: start; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  button.act { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  button.act:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .45; cursor: default; }
+  select, input[type=text] { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+  .status { font-size: 13px; color: var(--muted); }
+  .agent { padding: 10px 12px; background: var(--accent-soft); border-radius: 10px; margin-bottom: 12px; }
+  .agent b { font-size: 16px; }
+  .agent small { color: var(--muted); }
+  .transcript { height: 380px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fcfcfd; }
+  .msg { margin: 6px 0; max-width: 88%; padding: 8px 10px; border-radius: 10px; line-height: 1.4; }
+  .msg.user { margin-left: auto; background: #eef2f7; }
+  .msg.agent { background: var(--accent-soft); }
+  .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .sys { font-size: 12px; color: var(--muted); text-align: center; margin: 8px 0; }
+  .tool { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: #f4f5f7; border-radius: 6px; padding: 4px 8px; margin: 6px 0; color: #374151; }
+  .tool.err { background: #fef2f2; color: var(--bad); }
+  .tabs2 { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+  .tabs2 button { border: 0; background: none; padding: 6px 10px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  .tabs2 button[aria-selected="true"] { color: var(--ink); border-color: var(--accent); }
+  .panel { max-height: 620px; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: #f3f4f6; color: #374151; }
+  .badge.incomplete { background: #fef3c7; color: var(--note); }
+  .badge.completed { background: #dcfce7; color: var(--ok); }
+  .badge.err { background: #fee2e2; color: var(--bad); }
+  pre { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; }
+  .log div { font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 1px 0; border-bottom: 1px dotted #f0f0f0; }
+  .muted { color: var(--muted); }
+  .scenario-list button { display: block; width: 100%; text-align: left; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; }
+  .scenario-list button[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .scenario-list small { color: var(--muted); }
+  .check { padding: 8px 10px; border-radius: 8px; margin: 6px 0; border: 1px solid var(--line); }
+  .check.pass { border-color: #bbf7d0; background: #f0fdf4; }
+  .check.fail { border-color: #fecaca; background: #fef2f2; }
+  .check.note { border-color: #fde68a; background: #fffbeb; }
+  .check b { display: block; margin-bottom: 4px; }
+  .steps li.done { color: var(--muted); }
+  .steps li.now { font-weight: 600; }
+  .scen-grid { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="pill">PROTOTYPE · NEVER MERGED</span>
+  <h1>The accelerator's voice loop on the extended realtime API</h1>
+  <div class="question">Can the AI Contact Centre accelerator's core voice loop (Voice Live, barge-in, one tool call, one in-session handoff, content-filter fallback speech) run on a rough prototype of the extended ADR 0035 API instead of Semantic Kernel, and what breaks or feels wrong? <a href="https://github.com/adamdougal/agent-framework/issues/10" target="_blank">#10</a></div>
+  <nav role="tablist">
+    <button role="tab" aria-selected="true" data-page="call">Call</button>
+    <button role="tab" aria-selected="false" data-page="scenarios">Scenarios</button>
+    <button role="tab" aria-selected="false" data-page="core">Core changes</button>
+  </nav>
+</header>
+<main>
+  <section id="page-call">
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>Call</h2>
+          <div class="row">
+            <select id="provider" title="Provider"></select>
+            <select id="mode" title="Caller input">
+              <option value="mic">Microphone</option>
+              <option value="clips">Clips only (no mic)</option>
+            </select>
+            <button class="act primary" id="start">Start call</button>
+            <button class="act danger" id="hangup" disabled>Hang up</button>
+          </div>
+          <div class="status" id="status" style="margin-bottom:10px">Not connected. voicelive-byom is the accelerator's setup with content filtering; hosted voicelive models never filter.</div>
+          <div class="agent"><b id="agentName">No agent</b><br><small>Set from the start agent, then from each <code>handoff_completed</code> update.</small></div>
+          <div class="row"><label class="muted"><input type="checkbox" id="showHandoffs"> Show handoff calls (the app hides them by the <code>handoff_to_</code> prefix)</label></div>
+          <div class="transcript" id="transcript"></div>
+        </div>
+        <div class="card">
+          <h2>Caller says (TTS clips, streamed at real time)</h2>
+          <div class="row" id="clips"></div>
+        </div>
+        <div class="card">
+          <h2>App controls</h2>
+          <div class="row">
+            <button class="act" data-control="say">say(fallback)</button>
+            <button class="act" data-control="interrupt">interrupt()</button>
+            <button class="act" data-control="create_response">create_response()</button>
+          </div>
+          <div class="row" id="handoffButtons"></div>
+          <div class="row">
+            <input type="text" id="text" placeholder="Text input, sent with send()" size="40">
+            <button class="act" data-control="send_text">send()</button>
+          </div>
+          <div class="log" id="controlLog"></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>State</h2>
+          <div class="tabs2" id="stateTabs"></div>
+          <div class="panel" id="statePanel"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-scenarios" hidden>
+    <div class="scen-grid">
+      <div class="scenario-list" id="scenarioList"></div>
+      <div>
+        <div class="card" id="scenarioDetail"></div>
+        <div class="grid">
+          <div class="card"><h2>Checks</h2><div id="checks"></div></div>
+          <div class="card"><h2>Call</h2><div class="transcript" id="scenarioTranscript"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-core" hidden>
+    <div class="card"><h2>Changes the prototype makes to agent-framework-core, in memory</h2><div id="coreChanges"></div></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (text) => String(text ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+let INFO = null;
+
+document.querySelectorAll("nav button").forEach((button) => {
+  button.onclick = () => {
+    document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", b === button));
+    ["call", "scenarios", "core"].forEach((page) => $("page-" + page).hidden = page !== button.dataset.page);
+  };
+});
+
+// Plays agent audio and knows how much of each response the caller heard, for interrupt(played_ms=).
+class Player {
+  constructor() { this.ctx = null; this.next = 0; this.sources = new Set(); this.responses = new Map(); this.last = null; }
+  ensure() { if (!this.ctx) this.ctx = new AudioContext({ sampleRate: 24000 }); return this.ctx; }
+  play(b64, responseId) {
+    const ctx = this.ensure();
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const pcm = new Int16Array(bytes.buffer);
+    if (!pcm.length) return;
+    const buffer = ctx.createBuffer(1, pcm.length, 24000);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer; source.connect(ctx.destination);
+    const start = Math.max(this.next, ctx.currentTime);
+    source.start(start);
+    this.next = start + buffer.duration;
+    this.sources.add(source); source.onended = () => this.sources.delete(source);
+    let response = this.responses.get(responseId);
+    if (!response) { response = { start, duration: 0 }; this.responses.set(responseId, response); this.last = responseId; }
+    response.duration += buffer.duration;
+  }
+  stop() {
+    for (const source of this.sources) { try { source.stop(); } catch (e) {} }
+    this.sources.clear();
+    const response = this.last && this.responses.get(this.last);
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    this.next = 0;
+    if (!response) return null;
+    return Math.round(Math.max(0, Math.min(response.duration, now - response.start)) * 1000);
+  }
+}
+
+function makeTranscript(element, showHandoffs) {
+  const calls = new Map();
+  const add = (node) => { element.appendChild(node); element.scrollTop = element.scrollHeight; };
+  const div = (cls, html) => { const d = document.createElement("div"); d.className = cls; d.innerHTML = html; return d; };
+  return {
+    clear() { element.innerHTML = ""; calls.clear(); },
+    event(e) {
+      const data = e.data || {};
+      switch (e.kind) {
+        case "Transcription":
+          add(div("msg " + (data.speaker === "user" ? "user" : "agent"), `<div class="who">${esc(data.speaker === "user" ? "caller" : data.speaker)}</div>${esc(data.text)}`));
+          break;
+        case "AgentSwitch":
+          if (data.isHandoff) add(div("sys", `handoff_completed: ${esc(data.source)} → <b>${esc(data.agentName)}</b>`));
+          break;
+        case "FunctionCall": {
+          const node = div("tool", `${esc(data.agent)} → ${esc(data.function)}(${esc(data.arguments)})`);
+          calls.set(data.callId, node); add(node); break;
+        }
+        case "FunctionResult": {
+          const node = calls.get(data.callId);
+          const text = ` ⇒ ${esc(data.result)}${data.exception ? ` <span class="badge err">${esc(data.exception)}</span>` : ""}`;
+          if (node) { node.innerHTML += text; if (data.exception) node.classList.add("err"); }
+          break;
+        }
+        case "ResponseDone":
+          if (data.finishReason === "content_filter") add(div("sys", "finish_reason=content_filter → fallback line via say()"));
+          else if (data.status === "cancelled") add(div("sys", `response cancelled (${esc(data.reason)})`));
+          break;
+        case "Update":
+          if (showHandoffs()) for (const c of data.contents || []) {
+            if (c.type === "function_call" && (c.name || "").startsWith("handoff_to_")) add(div("tool", `${esc(data.author)} → ${esc(c.name)}() <span class="badge">hidden in the app</span>`));
+          }
+          break;
+        case "Error": case "LoopError":
+          add(div("sys", `<span class="badge err">error</span> ${esc(e.message)} ${esc(e.code || "")}`)); break;
+        case "Step":
+          add(div("sys", `<b>${esc(e.text)}</b>`)); break;
+      }
+    },
+  };
+}
+
+const STATE_TABS = ["History", "Exchanges", "Tool calls", "Signals", "Updates", "Timings", "Spans", "Wire"];
+let stateTab = "History";
+let lastState = null, endState = null;
+const updates = [];
+function renderStateTabs() {
+  $("stateTabs").innerHTML = STATE_TABS.map((t) => `<button aria-selected="${t === stateTab}">${t}</button>`).join("");
+  [...$("stateTabs").children].forEach((b) => b.onclick = () => { stateTab = b.textContent; renderStateTabs(); renderState(); });
+}
+function historyTable(rows) {
+  if (!rows?.length) return `<p class="muted">Empty.</p>`;
+  return `<table><tr><th>role</th><th>author</th><th>content</th></tr>${rows.map((r) => `<tr><td>${esc(r.role)}</td><td>${esc(r.author || "")}</td><td>${
+    r.textLess ? `<span class="badge incomplete">text-less: ${esc(r.textLess)}</span>` : ""}${(r.contents || []).map((c) =>
+    c.type === "text" ? `${esc(c.text)} <span class="badge ${esc(c.status)}">${esc(c.status || "")}</span>`
+    : c.type === "function_call" ? `<code>${esc(c.name)}(${esc(c.arguments)})</code>`
+    : `<code>⇒ ${esc(c.result)}</code>${c.exception ? ` <span class="badge err">${esc(c.exception)}</span>` : ""}`).join("<br>")}</td></tr>`).join("")}</table>`;
+}
+function spanTree(nodes, depth = 0) {
+  return (nodes || []).map((n) => {
+    const a = n.attributes || {};
+    const extra = ["gen_ai.agent.name", "gen_ai.response.finish_reasons", "error.type", "gen_ai.transfer.target.name", "agent_framework.handoff.target"]
+      .filter((k) => k in a).map((k) => `${k.split(".").pop()}=${a[k]}`).join(", ");
+    return `<div style="padding-left:${depth * 16}px">${esc(n.name)} <span class="muted">${n.duration_ms} ms ${n.status !== "UNSET" ? n.status : ""} ${esc(extra)}</span></div>` + spanTree(n.children, depth + 1);
+  }).join("");
+}
+function renderState() {
+  const s = lastState || {};
+  const p = $("statePanel");
+  switch (stateTab) {
+    case "History":
+      p.innerHTML = `<p class="muted">conversation.history: authored turns as text, in conversation order. Current exchange: ${s.exchange ?? "-"}.</p>` + historyTable(s.history); break;
+    case "Exchanges":
+      p.innerHTML = `<p class="muted">One after_run per exchange, reported during the call.</p>` + (s.reports?.length
+        ? `<table><tr><th>provider</th><th>exchange</th><th>inputs</th><th>outputs</th><th>at close</th></tr>${s.reports.map((r) => `<tr><td>${esc(r.provider)}</td><td>${r.exchange}</td><td>${r.inputs}</td><td>${r.outputs}</td><td>${r.closing}</td></tr>`).join("")}</table>`
+        : `<p class="muted">Nothing reported yet.</p>`); break;
+    case "Tool calls":
+      p.innerHTML = s.calls?.length ? `<table><tr><th>call</th><th>agent</th><th>state</th></tr>${s.calls.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.agent)}</td><td>${esc(c.state)}</td></tr>`).join("")}</table>` : `<p class="muted">No calls yet.</p>`; break;
+    case "Signals":
+      p.innerHTML = `<p class="muted">The accelerator's cc.* signals, rebuilt from AF updates only.</p><pre>${esc(JSON.stringify(s.signals, null, 2))}</pre>`; break;
+    case "Updates":
+      p.innerHTML = `<p class="muted">Every update by kind; no wire event names. Audio chunks omitted.</p><div class="log">${updates.slice(-300).reverse().map((u) =>
+        `<div>${esc(u.role || "")} ${esc(u.author || "")} ${(u.contents || []).map((c) => esc(c.type) + (c.text ? `: ${esc(c.text)}` : "") + (c.status ? ` [${esc(c.status)}]` : "")).join(", ")}${u.finishReason ? ` finish=${esc(u.finishReason)}` : ""}</div>`).join("")}</div>`; break;
+    case "Timings":
+      p.innerHTML = `<p class="muted">Control acknowledgements (ms), update-hook cost, close's transcript wait, say() correlations without a metadata echo.</p><pre>${esc(JSON.stringify({ ackTimings: s.ackTimings, stats: s.stats, unechoedCorrelations: s.unechoedCorrelations, sessionId: s.sessionId }, null, 2))}</pre>`; break;
+    case "Spans":
+      p.innerHTML = endState ? spanTree(endState.spans) : `<p class="muted">Available after hang-up.</p>`; break;
+    case "Wire":
+      p.innerHTML = endState ? `<p class="muted">Raw provider events, for debugging the prototype only. The app never reads them.</p><div class="log">${endState.wire.map((w) => `<div>${w.t} ${w.dir} ${esc(w.event.type)} ${esc(JSON.stringify(w.event).slice(0, 220))}</div>`).join("")}</div>` : `<p class="muted">Available after hang-up.</p>`; break;
+  }
+}
+
+const player = new Player();
+const transcript = makeTranscript($("transcript"), () => $("showHandoffs").checked);
+let ws = null, media = null, processor = null;
+function setStatus(text) { $("status").textContent = text; }
+function controlLog(text) { const d = document.createElement("div"); d.textContent = text; $("controlLog").prepend(d); }
+async function startCall() {
+  transcript.clear(); updates.length = 0; lastState = null; endState = null; renderState();
+  const mode = $("mode").value;
+  player.ensure(); await player.ctx.resume();
+  if (mode === "mic") {
+    media = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 24000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  }
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?provider=${$("provider").value}&mode=${mode}`);
+  setStatus("Connecting…");
+  $("start").disabled = true; $("hangup").disabled = false;
+  ws.onopen = () => { setStatus("Connected"); if (media) startCapture(); };
+  ws.onclose = () => { setStatus("Ended"); stopCapture(); $("start").disabled = false; $("hangup").disabled = true; };
+  ws.onmessage = (message) => {
+    const e = JSON.parse(message.data);
+    switch (e.kind) {
+      case "AudioData": player.play(e.audioData.data, e.responseId); return;
+      case "StopAudio": {
+        const played = player.stop();
+        if (played !== null) ws.send(JSON.stringify({ kind: "Interrupt", playedMs: played }));
+        break;
+      }
+      case "AgentSwitch": $("agentName").textContent = e.data.agentName; break;
+      case "State": lastState = e.data; renderState(); return;
+      case "Ended": endState = e; renderState(); return;
+      case "Started": setStatus(`Connected · ${e.provider} · ${e.sessionId}`); return;
+      case "ControlResult": controlLog(`${e.action}: ${e.ok ? "ok" : e.error}`); return;
+      case "Update": updates.push(e.data); break;
+    }
+    transcript.event(e);
+  };
+}
+function startCapture() {
+  const ctx = player.ctx;
+  const source = ctx.createMediaStreamSource(media);
+  processor = ctx.createScriptProcessor(2048, 1, 1);
+  processor.onaudioprocess = (event) => {
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    const input = event.inputBuffer.getChannelData(0);
+    const pcm = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) { const s = Math.max(-1, Math.min(1, input[i])); pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
+    let binary = ""; const bytes = new Uint8Array(pcm.buffer);
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    ws.send(JSON.stringify({ kind: "AudioData", audioData: { data: btoa(binary) } }));
+  };
+  source.connect(processor); processor.connect(ctx.destination);
+}
+function stopCapture() {
+  processor?.disconnect(); processor = null;
+  media?.getTracks().forEach((t) => t.stop()); media = null;
+  player.stop();
+}
+function control(action, extra = {}) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: "Control", action, ...extra })); }
+$("start").onclick = () => startCall().catch((e) => { setStatus("Error: " + e.message); $("start").disabled = false; });
+$("hangup").onclick = () => control("hangup");
+document.querySelectorAll("[data-control]").forEach((b) => b.onclick = () => {
+  const action = b.dataset.control;
+  control(action, action === "send_text" ? { text: $("text").value } : {});
+});
+
+let selected = null;
+const scenarioPlayer = new Player();
+const scenarioTranscript = makeTranscript($("scenarioTranscript"), () => true);
+function renderScenarioList() {
+  $("scenarioList").innerHTML = INFO.scenarios.map((s) => `<button data-id="${s.id}" aria-selected="${selected?.id === s.id}"><b>${esc(s.title)}</b><br><small>${esc(s.tickets)} · ${esc(s.provider)}</small></button>`).join("");
+  [...$("scenarioList").children].forEach((b) => b.onclick = () => selectScenario(b.dataset.id));
+}
+function selectScenario(id) {
+  selected = INFO.scenarios.find((s) => s.id === id);
+  renderScenarioList();
+  $("scenarioDetail").innerHTML = `<h2>${esc(selected.tickets)} · ${esc(selected.provider)}</h2>
+    <h3 style="margin:0 0 8px">${esc(selected.title)}</h3>
+    <p>${esc(selected.description)}</p>
+    <p><b>Watch for:</b> ${esc(selected.watch)}</p>
+    <ol class="steps" id="steps">${selected.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>
+    <div class="row"><button class="act primary" id="runScenario">Run live</button><label class="muted"><input type="checkbox" id="playScenario" checked> Play agent audio</label><span class="status" id="scenarioStatus"></span></div>`;
+  $("checks").innerHTML = ""; scenarioTranscript.clear();
+  $("runScenario").onclick = runScenario;
+}
+function runScenario() {
+  $("checks").innerHTML = ""; scenarioTranscript.clear();
+  $("runScenario").disabled = true; $("scenarioStatus").textContent = "Running…";
+  scenarioPlayer.ensure(); scenarioPlayer.ctx.resume();
+  let stepIndex = -1;
+  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/scenario?id=${selected.id}`);
+  socket.onmessage = (message) => {
+    const e = JSON.parse(message.data);
+    if (e.kind === "AudioData") { if ($("playScenario").checked) scenarioPlayer.play(e.audioData.data, e.responseId); return; }
+    if (e.kind === "StopAudio") { scenarioPlayer.stop(); return; }
+    if (e.kind === "Step") {
+      stepIndex++;
+      [...$("steps").children].forEach((li, i) => li.className = i < stepIndex ? "done" : i === stepIndex ? "now" : "");
+    }
+    if (e.kind === "Check") {
+      const cls = e.passed === true ? "pass" : e.passed === false ? "fail" : "note";
+      const label = e.passed === true ? "PASS" : e.passed === false ? "FAIL" : "OBSERVED";
+      $("checks").insertAdjacentHTML("beforeend", `<div class="check ${cls}"><b>${label} · ${esc(e.name)}</b><pre>${esc(e.evidence)}</pre></div>`);
+    }
+    if (e.kind === "ScenarioDone") {
+      const r = e.result;
+      const passed = r.checks.filter((c) => c.passed === true).length, failed = r.checks.filter((c) => c.passed === false).length;
+      $("scenarioStatus").textContent = `Done in ${r.seconds} s: ${passed} passed, ${failed} failed${r.error ? ", error" : ""}`;
+      if (r.error) $("checks").insertAdjacentHTML("beforeend", `<div class="check fail"><b>Scenario error</b><pre>${esc(r.error)}</pre></div>`);
+      for (const call of r.calls) $("checks").insertAdjacentHTML("beforeend", `<div class="check"><b>History</b>${historyTable(call.history.map((h) => ({ role: h.role, author: h.author, textLess: h.text_less, contents: h.call ? [{ type: "function_call", name: h.call, arguments: "" }] : h.result !== undefined ? [{ type: "function_result", result: h.result, exception: h.exception }] : h.text !== undefined ? [{ type: "text", text: h.text, status: h.status }] : [] })))}<b style="margin-top:8px">Spans</b><pre>${esc(call.spans)}</pre></div>`);
+      $("runScenario").disabled = false;
+    }
+    scenarioTranscript.event(e);
+  };
+  socket.onclose = () => { $("runScenario").disabled = false; };
+}
+
+fetch("/api/info").then((r) => r.json()).then((info) => {
+  INFO = info;
+  $("provider").innerHTML = info.providers.map((p) => `<option ${p === "voicelive-byom" ? "selected" : ""}>${p}</option>`).join("");
+  $("clips").innerHTML = Object.entries(info.clips).map(([name, text]) => `<button class="act" title="${esc(text)}" data-clip="${name}">${esc(name)}</button>`).join("");
+  [...$("clips").children].forEach((b) => b.onclick = () => control("clip", { clip: b.dataset.clip }));
+  $("handoffButtons").innerHTML = ["receptionist", "billing", "support"].map((a) => `<button class="act" data-target="${a}">handoff(${a})</button>`).join("");
+  [...$("handoffButtons").children].forEach((b) => b.onclick = () => control("handoff", { target: b.dataset.target }));
+  $("coreChanges").innerHTML = `<ol>${info.coreChanges.map((c) => `<li style="margin-bottom:8px">${esc(c)}</li>`).join("")}</ol>`;
+  renderStateTabs(); renderState(); renderScenarioList(); selectScenario(info.scenarios[0].id);
+});
+</script>
+</body>
+</html>
