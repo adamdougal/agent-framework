@@ -272,8 +272,8 @@ nobody has verified that the project-scoped route serves realtime.
 - Bad, because history estimates the heard part of a cut-off turn proportionally, every `run(...)` replays the whole
   history, and a context provider may see an exchange twice after a retry.
 - Bad, because exporters receive the conversation span only at close, so a crash loses it. History and telemetry don't
-  see changes that conversation middleware's hooks make. .NET instruments realtime at the client and Python at the
-  agent, so their traces differ.
+  see changes that conversation middleware's update hooks make. .NET instruments realtime at the client and Python at
+  the agent, so their traces differ.
 - Bad, because on Voice Live a pre-generated `say(...)` can't detect a lost race, and Foundry definitions published by
   Semantic Kernel need republishing.
 - Bad, because the `[realtime]` extras constrain dependencies: `websockets` below 16, and `azure-ai-projects` 2.7 with

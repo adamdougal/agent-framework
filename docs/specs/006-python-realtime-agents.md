@@ -166,15 +166,15 @@ outside the topology, and app input for a call id the conversation isn't trackin
 | `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
 | `create_response(*, options=None) -> str` | Per-response options. Returns the response id when the response's own `response.created` arrives. |
 | `say(text) -> str` | Verbatim speech. With an Azure voice, Voice Live and Foundry send `pre_generated_assistant_message`. OpenAI, Azure OpenAI, and Foundry with an OpenAI voice request a response with the instruction "Say exactly the following, word for word, and nothing else: ...", which is best effort. Voice Live with an OpenAI voice raises `RealtimeUnsupportedException`. |
-| `interrupt(*, played_ms=None)` | Idempotent. Cancels the active response and ignores the provider's "no active response" error. With `played_ms`, also cuts the unheard audio ([barge-in](#barge-in)). |
+| `interrupt(*, played_ms=None)` | Idempotent. Cancels the active response, waits for its `response.done`, and treats the provider's "no active response" error as done. With no active response it returns at once. With `played_ms`, also cuts the unheard audio ([barge-in](#barge-in)). |
 | `handoff(agent, *, tools=None)` | See [Handoffs](#handoffs). |
 | `send(..., create_response=True)` | Text and message input requests a response unless `create_response=False`. Audio leaves responses to turn detection. App tool results and approvals go to their [batch](#tool-loop). |
 
-- **Ordering.** Control calls are serialized in call order, and each waits for its acknowledgement (`session.updated`,
-  its own `response.created`, or `conversation.item.truncated`) before the next starts. `send(...)` never waits behind
-  an acknowledgement, and writes never interleave. A response requested after `update_session(...)` returns uses the
-  new session, whatever requested it. A response in flight doesn't change, and a turn-detection response racing the
-  update has no guarantee.
+- **Ordering.** Control calls are serialized in call order, and each waits for its acknowledgement before the next
+  starts. The acknowledgements are `session.updated`, the call's own `response.created`, `conversation.item.truncated`
+  and a cancelled response's `response.done`. `send(...)` never waits behind an acknowledgement, and writes never
+  interleave. A response requested after `update_session(...)` returns uses the new session, whatever requested it. A
+  response in flight doesn't change, and a turn-detection response racing the update has no guarantee.
 - **Timeout.** One acknowledgement timeout per conversation, set at start, defaults to about 10 seconds. An update with
   nothing left to send after dropped keys returns at once.
 - **Active response.** `create_response(...)` and `say(...)` raise `RealtimeActiveResponseException` while a response
@@ -280,7 +280,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 - **Follow-ups.** Once every call in a batch has a result, the loop sends the results in model order and requests one
   follow-up response, after any active response finishes. Follow-ups due together merge. Batches from different
   responses run concurrently. `MiddlewareTermination` sends the results without a follow-up. `run(...)` ends at the
-  first response that finishes without tool calls, or when `MiddlewareTermination` stops the loop.
+  first response that finishes without tool calls, or when `MiddlewareTermination` stops the loop. Responses that tools
+  or middleware request through `say(...)` or `create_response(...)`, such as a filler line, don't end it.
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
   `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
@@ -479,8 +480,9 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   latest mode; under the v1.36 baseline it emits the same spans, with mode-dependent attributes following the mode. The
   [per-provider mapping table](https://github.com/adamdougal/agent-framework/blob/research/realtime-telemetry-mapping/docs/research/realtime-telemetry-mapping.md#mapping-table)
   is normative, with these corrections: reasoning tokens sit inside `text_tokens` (plus an undocumented
-  `reasoning_tokens`), `gpt-transcribe` reports `duration`, Voice Live reports no transcription usage, failed Voice
-  Live responses report `server_error`, and content-filter blocks never carry a category.
+  `reasoning_tokens`), `gpt-transcribe` reports `duration`, Voice Live reports no transcription usage, failed Voice Live
+  responses report `server_error`, and content-filter blocks never carry a category. Where the table and this section
+  differ, this section wins.
 - **Identity.** Provider names are `openai`, `azure.ai.openai` with Azure routing, and `azure.ai.foundry` for Voice
   Live and Foundry voice agents. `gen_ai.conversation.id` follows chat's rule (a host-supplied id, else a string
   `service_session_id`), captured at start. `gen_ai.realtime_session.id` comes from `session_created`. The event logger
