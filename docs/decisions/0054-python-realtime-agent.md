@@ -283,8 +283,7 @@ nobody has verified that the project-scoped route serves realtime.
 
 1. Review of this ADR and [spec 006](../specs/006-python-realtime-agents.md) validates the design before
    implementation.
-2. A
-   [prototype](https://github.com/adamdougal/agent-framework/tree/prototype/realtime-voice-loop/python/packages/realtime-prototype)
+2. A [prototype](https://github.com/adamdougal/agent-framework/tree/prototype/realtime-voice-loop/python/packages/realtime-prototype)
    ran the accelerator's voice loop on this design against managed and BYOM Voice Live, Azure OpenAI and a Foundry voice
    agent: 14 live scenarios, with 50 checks passed, 1 failed and 15 observations
    ([findings](https://github.com/adamdougal/agent-framework/blob/prototype/realtime-voice-loop/python/packages/realtime-prototype/FINDINGS.md)).
