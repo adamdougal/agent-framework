@@ -334,6 +334,18 @@ def test_realtime_event_content_from_dict_requires_a_kind(serialized_kind: dict[
         Content.from_dict({"type": "realtime_event", **serialized_kind})
 
 
+@pytest.mark.parametrize("malformed_kind", [None, "", 7])
+def test_realtime_event_content_unpickled_with_a_malformed_kind_raises(malformed_kind: Any) -> None:
+    from agent_framework import Content
+
+    state = Content.from_realtime_event("speech_started").__getstate__()
+    state["kind"] = malformed_kind
+    restored = Content.__new__(Content)
+
+    with pytest.raises(ValueError):
+        restored.__setstate__(state)
+
+
 def test_content_unpickled_from_older_state_has_no_realtime_fields() -> None:
     from agent_framework import Content
 

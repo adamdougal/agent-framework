@@ -978,6 +978,8 @@ class Content:
         for field_name in self._FIELDS_NEWER_THAN_OLD_PICKLES:
             if not hasattr(self, field_name):
                 setattr(self, field_name, None)
+        if self.type == "realtime_event":
+            require_realtime_kind(self.kind)
         if self.type != "function_call":
             if not hasattr(self, "hosted"):
                 self.hosted = None
