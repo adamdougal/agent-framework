@@ -20,6 +20,7 @@ agent_framework/
 ├── _skills.py           # Agent Skills system (models, executors, provider)
 ├── _mcp.py              # Model Context Protocol support
 ├── _telemetry.py        # User-Agent identity and internal feature-usage mask
+├── _realtime/           # Realtime agents (experimental), one module per concern
 ├── _workflows/          # Workflow orchestration (sequential, concurrent, handoff, etc.)
 ├── openai/              # Built-in OpenAI client
 ├── azure/               # Lazy-loading entry point for Azure integrations
@@ -88,11 +89,34 @@ agent_framework/
 - **Citation coordinates** - `Annotation.annotated_regions_coordinate_space` distinguishes spans in generated
   `Content.text` (`"content"`, also the default when omitted) from locations in cited source material (`"source"`).
   Protocol adapters must not interpret source-coordinate regions as generated-text offsets.
+- **Text status** - `Content.from_text(status=...)` marks a text's lifecycle, such as a final transcript's
+  `"completed"`. Text merges, through `+` and response aggregation, keep the latest status that isn't `None`.
 - **Computer use** - `ComputerSafetyCheck` and the `Content.from_computer_tool_call` / `from_computer_tool_result`
   constructors are experimental under `COMPUTER_USE`; the rest of `Content` retains its existing stage. Computer
   results can omit screenshots in core; OpenAI-based connectors require them when converting to Responses items.
   Completed call/result pairs remain in the transcript but are not user-input requests.
 - **`ChatOptions`** - TypedDict for chat request options
+
+### Realtime agents (`_realtime/`)
+
+Realtime agents hold live, two-way speech conversations with speech-to-speech models. Every public realtime API is
+experimental under `REALTIME`, and the contract is
+[spec 006](../../../docs/specs/006-python-realtime-agents.md). Each concern has its own module, exported lazily from
+the root package:
+
+- `_kinds.py` - `RealtimeKindLiteral`, the open `RealtimeKind`, and one `Realtime<Kind>Attributes` TypedDict per kind
+  with neutral attributes. The module omits `from __future__ import annotations` so `Required[...]` keys stay visible
+  at runtime.
+- `_events.py` - `RealtimeEvent`, which carries one provider event from a session to the conversation, or a raw
+  command whose `raw_representation` is the wire event.
+- `_options.py` - `RealtimeOptions` and its turn-detection, transcription and noise-reduction TypedDicts.
+- `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
+  `RealtimeEvent` or a `Message`, which it maps by content type.
+
+A kind's neutral attributes live under `additional_properties["core"]`, on both the `RealtimeEvent` and the
+`realtime_event` content built with `Content.from_realtime_event(...)`, whose `kind` and `service_event_type` are
+`Content` fields serialized only for that content type. The realtime exceptions live in `exceptions.py`, under
+`RealtimeException`.
 
 ### Tools (`_tools.py`)
 

@@ -43,6 +43,7 @@ from typing import (
 from typing_extensions import TypedDict
 
 from ._feature_stage import ExperimentalFeature, experimental
+from ._realtime._kinds import require_realtime_kind
 from ._serialization import SerializationMixin, get_pickle_state, restore_pickle_state
 from .exceptions import AdditionItemMismatch, ContentError
 
@@ -61,6 +62,7 @@ _EVALUATION_TOOLS_METADATA_KEY: Final[str] = "agent_framework.evaluation"
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from ._realtime._kinds import RealtimeKind, RealtimeKindLiteral
     from ._tools import ToolTypes
 
 
@@ -481,6 +483,7 @@ ContentType = Literal[
     "function_approval_request",
     "function_approval_response",
     "oauth_consent_request",
+    "realtime_event",
 ]
 _MERGEABLE_CONTENT_TYPES: Final[frozenset[str]] = frozenset({
     "text",
@@ -594,6 +597,18 @@ class UsageDetails(TypedDict, total=False, extra_items=int):
         cache_creation_input_token_count: The number of input tokens written to a provider-managed cache.
         cache_read_input_token_count: The number of input tokens served from a provider-managed cache.
         reasoning_output_token_count: The number of output tokens used for reasoning.
+        text_input_token_count: The input tokens that were text, a subset of ``input_token_count``.
+        audio_input_token_count: The input tokens that were audio, a subset of ``input_token_count``.
+        image_input_token_count: The input tokens that were images, a subset of ``input_token_count``.
+        text_output_token_count: The output tokens that were text, a subset of ``output_token_count``.
+        audio_output_token_count: The output tokens that were audio, a subset of ``output_token_count``.
+        image_output_token_count: The output tokens that were images, a subset of ``output_token_count``.
+        text_cache_read_input_token_count: The cached input tokens that were text, a subset of
+            ``cache_read_input_token_count``.
+        audio_cache_read_input_token_count: The cached input tokens that were audio, a subset of
+            ``cache_read_input_token_count``.
+        image_cache_read_input_token_count: The cached input tokens that were images, a subset of
+            ``cache_read_input_token_count``.
 
     """
 
@@ -603,6 +618,15 @@ class UsageDetails(TypedDict, total=False, extra_items=int):
     cache_creation_input_token_count: int | None
     cache_read_input_token_count: int | None
     reasoning_output_token_count: int | None
+    text_input_token_count: int | None
+    audio_input_token_count: int | None
+    image_input_token_count: int | None
+    text_output_token_count: int | None
+    audio_output_token_count: int | None
+    image_output_token_count: int | None
+    text_cache_read_input_token_count: int | None
+    audio_cache_read_input_token_count: int | None
+    image_cache_read_input_token_count: int | None
 
 
 def get_namespaced_value(
@@ -754,6 +778,7 @@ class Content:
 
     _SHALLOW_COPY_FIELDS: ClassVar[set[str]] = {"raw_representation"}
     _PICKLE_OMIT_FIELDS: ClassVar[set[str]] = {"raw_representation"}
+    _FIELDS_NEWER_THAN_OLD_PICKLES: ClassVar[tuple[str, ...]] = ("merge_mode", "kind", "service_event_type")
 
     def __init__(
         self,
@@ -814,6 +839,9 @@ class Content:
         approved: bool | None = None,
         # OAuth consent fields
         consent_link: str | None = None,
+        # Realtime event fields
+        kind: str | None = None,
+        service_event_type: str | None = None,
         # Common fields
         merge_mode: Literal["append", "replace"] | None = None,
         annotations: Sequence[Annotation] | None = None,
@@ -902,6 +930,8 @@ class Content:
         self.user_input_request = user_input_request
         self.approved = approved
         self.consent_link = consent_link
+        self.kind = kind
+        self.service_event_type = service_event_type
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Content:
         """Create a deep copy, discarding non-``None`` ``_SHALLOW_COPY_FIELDS``.
@@ -943,8 +973,9 @@ class Content:
     def __setstate__(self, state: dict[str, Any] | tuple[dict[str, Any], dict[str, Any]]) -> None:
         """Restore pickle state and reset runtime-only shallow-copy fields."""
         restore_pickle_state(self, state, self._PICKLE_OMIT_FIELDS)
-        if not hasattr(self, "merge_mode"):
-            self.merge_mode = None
+        for field_name in self._FIELDS_NEWER_THAN_OLD_PICKLES:
+            if not hasattr(self, field_name):
+                setattr(self, field_name, None)
         if self.type != "function_call":
             if not hasattr(self, "hosted"):
                 self.hosted = None
@@ -975,15 +1006,29 @@ class Content:
         cls: type[ContentT],
         text: str,
         *,
+        status: str | None = None,
         merge_mode: Literal["append", "replace"] | None = None,
         annotations: Sequence[Annotation] | None = None,
         additional_properties: MutableMapping[str, Any] | None = None,
         raw_representation: Any = None,
     ) -> ContentT:
-        """Create text content."""
+        """Create text content.
+
+        Args:
+            text: The text.
+
+        Keyword Args:
+            status: The text's lifecycle status, such as ``"completed"`` on a final transcript. Text merges keep the
+                latest status that isn't ``None``.
+            merge_mode: How this streaming update combines with an earlier update for the same occurrence.
+            annotations: Optional annotations, such as citations.
+            additional_properties: Optional additional properties.
+            raw_representation: The raw provider-specific representation.
+        """
         return cls(
             "text",
             text=text,
+            status=status,
             merge_mode=merge_mode,
             annotations=annotations,
             additional_properties=additional_properties,
@@ -1693,6 +1738,42 @@ class Content:
         )
 
     @classmethod
+    @experimental(feature_id=ExperimentalFeature.REALTIME)
+    def from_realtime_event(
+        cls: type[ContentT],
+        kind: RealtimeKindLiteral | RealtimeKind,
+        *,
+        service_event_type: str | None = None,
+        additional_properties: MutableMapping[str, Any] | None = None,
+        raw_representation: Any = None,
+    ) -> ContentT:
+        """Create realtime-event content: a realtime signal or passthrough event that has no other content type.
+
+        Payload kinds, such as transcripts and audio, use the existing content types instead. Pass the kind's neutral
+        attributes under ``additional_properties["core"]``, as its ``Realtime*Attributes`` TypedDict documents, and
+        documented provider extras under the provider package's namespace.
+
+        Args:
+            kind: The realtime event kind. Any non-empty string is accepted, so kinds a newer runtime adds still work.
+
+        Keyword Args:
+            service_event_type: The provider's event name, verbatim.
+            additional_properties: The neutral attributes and provider extras, copied one level deep.
+            raw_representation: The provider's own event object. It's never serialized.
+
+        Raises:
+            ValueError: If ``kind`` is empty.
+        """
+        require_realtime_kind(kind)
+        return cls(
+            "realtime_event",
+            kind=kind,
+            service_event_type=service_event_type,
+            additional_properties=additional_properties,
+            raw_representation=raw_representation,
+        )
+
+    @classmethod
     def from_mcp_server_tool_call(
         cls: type[ContentT],
         call_id: str,
@@ -1923,6 +2004,8 @@ class Content:
             "approved",
             "id",
             "consent_link",
+            "kind",
+            "service_event_type",
             "merge_mode",
             "additional_properties",
         )
@@ -1939,6 +2022,8 @@ class Content:
             if field == "informational_only" and (
                 self.type not in ("function_call", "computer_tool_call") or not value
             ):
+                continue
+            if field in ("kind", "service_event_type") and self.type != "realtime_event":
                 continue
             if exclude_none and value is None:
                 continue
@@ -2084,6 +2169,7 @@ class Content:
         return Content(
             "text",
             text=other.text if other.merge_mode == "replace" else self.text + other.text,  # type: ignore[attr-defined, operator]
+            status=other.status if other.status is not None else self.status,
             merge_mode=other.merge_mode,
             annotations=_combine_annotations(self.annotations, other.annotations),
             additional_properties=_combine_additional_props(self.additional_properties, other.additional_properties),
@@ -2842,6 +2928,7 @@ def _merge_content_run(run: list[Content], type_str: Literal["text", "text_reaso
         raw_representation = []
         for raw in non_null_raws:
             raw_representation.extend(raw if isinstance(raw, list) else [raw])
+    status = next((c.status for c in reversed(run) if c.status is not None), None)
     if type_str == "text":
         text = ""
         for content in run:
@@ -2849,6 +2936,7 @@ def _merge_content_run(run: list[Content], type_str: Literal["text", "text_reaso
         return Content(
             "text",
             text=text,
+            status=status,
             merge_mode=run[-1].merge_mode,
             annotations=annotations,
             additional_properties=merged_props,
@@ -2870,7 +2958,7 @@ def _merge_content_run(run: list[Content], type_str: Literal["text", "text_reaso
         id=next((c.id for c in run if c.id), run[-1].id),
         text=text,
         protected_data=protected_data,
-        status=next((c.status for c in reversed(run) if c.status is not None), None),
+        status=status,
         merge_mode=run[-1].merge_mode,
         annotations=annotations,
         additional_properties=merged_props,
