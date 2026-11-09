@@ -1,0 +1,169 @@
+name: Probe - realtime extras
+
+# Throwaway probe for https://github.com/adamdougal/agent-framework/issues/21. Never PR'd.
+on:
+  push:
+    branches: ["probe/realtime-extras"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: /tmp/.uv-cache
+  # The commit the realtime pieces build on; the probe branch adds the two extras on top of it.
+  BASE_SHA: 3d87ea1ef9a51f2e0b01a0bfbf4a4b09ce109a15
+
+jobs:
+  lock:
+    name: Workspace lock (${{ matrix.extras }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extras: [openai, foundry, both]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version-file: "python/pyproject.toml"
+      - name: Keep only the ${{ matrix.extras }} extra
+        run: |
+          git fetch --quiet --depth 1 origin "$BASE_SHA"
+          git show "$BASE_SHA:python/uv.lock" > "$RUNNER_TEMP/uv.lock.base"
+          if [[ "${{ matrix.extras }}" == "openai" ]]; then
+            git show "$BASE_SHA:python/packages/foundry/pyproject.toml" > python/packages/foundry/pyproject.toml
+          elif [[ "${{ matrix.extras }}" == "foundry" ]]; then
+            git show "$BASE_SHA:python/packages/openai/pyproject.toml" > python/packages/openai/pyproject.toml
+          fi
+          git --no-pager diff --stat "$BASE_SHA" -- python
+      - name: Re-lock the workspace
+        working-directory: python
+        run: |
+          set -o pipefail
+          uv lock 2>&1 | tee "$RUNNER_TEMP/lock.log"
+          uv lock --check
+          mkdir -p "$RUNNER_TEMP/out"
+          cp uv.lock "$RUNNER_TEMP/out/uv.lock"
+          cp "$RUNNER_TEMP/lock.log" "$RUNNER_TEMP/out/lock.log"
+          uv run --no-project --python 3.13 python ../.github/probe-realtime-extras/lock_diff.py \
+            "$RUNNER_TEMP/uv.lock.base" uv.lock "Lock changes with the ${{ matrix.extras }} extra" \
+            | tee "$RUNNER_TEMP/out/lock-diff.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Re-lock as CI does on Python 3.15, without Foundry Local
+        working-directory: python
+        run: |
+          set -o pipefail
+          cp uv.lock "$RUNNER_TEMP/uv.lock.extras"
+          sed -i 's|^exclude = \[ "packages/lab" \]|exclude = [ "packages/lab", "packages/foundry_local" ]|' pyproject.toml
+          sed -i '/agent-framework-foundry-local = { workspace = true }/d' pyproject.toml
+          sed -i '/"agent-framework-foundry-local\([<>=;]\|"\)/d' packages/core/pyproject.toml
+          uv lock 2>&1 | tee "$RUNNER_TEMP/out/lock-py315.log"
+          cp uv.lock "$RUNNER_TEMP/out/uv-py315.lock"
+          uv run --no-project --python 3.13 python ../.github/probe-realtime-extras/lock_diff.py \
+            "$RUNNER_TEMP/uv.lock.extras" uv.lock "Python 3.15 re-lock (Foundry Local excluded) vs the ${{ matrix.extras }} lock" \
+            | tee "$RUNNER_TEMP/out/lock-py315-diff.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the lock
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: uv-lock-${{ matrix.extras }}
+          path: ${{ runner.temp }}/out
+
+  workspace:
+    name: Workspace (${{ matrix.os }}, ${{ matrix.python-version }})
+    needs: lock
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Mirrors python-tests.yml, which skips the full workspace on Windows 3.15. The setup action's 3.15
+        # package exclusion uses GNU sed, so macOS 3.15 is covered by the standalone job only.
+        exclude:
+          - python-version: "3.15"
+            os: windows-latest
+          - python-version: "3.15"
+            os: macos-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Use the lock with both extras
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: uv-lock-both
+          path: ${{ runner.temp }}/lock
+      - name: Install the lock
+        working-directory: .
+        run: cp "${{ runner.temp }}/lock/uv.lock" python/uv.lock
+      - name: Set up python and install the project
+        uses: ./.github/actions/python-setup
+        with:
+          python-version: ${{ matrix.python-version }}
+          os: ${{ runner.os }}
+          exclude-packages: ${{ matrix.python-version == '3.15' && 'agent-framework-foundry-local' || '' }}
+      - name: Probe both extras in the workspace venv
+        run: |
+          uv run --no-sync python ../.github/probe-realtime-extras/probe.py \
+            --extra openai --extra foundry --label "workspace" \
+            --json "../probe-out/workspace-${{ matrix.os }}-${{ matrix.python-version }}.json"
+      - name: Run all tests
+        # macOS isn't in python-tests.yml's matrix yet, so it only gets the sync and the probe.
+        if: ${{ !cancelled() && matrix.os != 'macos-latest' }}
+        run: uv run poe test -A --junitxml=../probe-out/pytest-${{ matrix.os }}-${{ matrix.python-version }}.xml
+      - name: Surface failing tests
+        if: ${{ !cancelled() && matrix.os != 'macos-latest' }}
+        uses: pmeier/pytest-results-action@fdc7f18d9934e38aca411ca9557e6577bd25ca9c # v0.9.0
+        with:
+          path: ./probe-out/pytest-${{ matrix.os }}-${{ matrix.python-version }}.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: false
+          title: Test results (${{ matrix.os }}, ${{ matrix.python-version }})
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: workspace-${{ matrix.os }}-${{ matrix.python-version }}
+          path: probe-out
+
+  standalone:
+    name: Standalone (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version-file: "python/pyproject.toml"
+          enable-cache: true
+          cache-suffix: probe-${{ matrix.os }}-${{ matrix.python-version }}
+      - name: Install each extra on its own and probe it
+        run: uv run --no-project --python ${{ matrix.python-version }} python .github/probe-realtime-extras/standalone.py --output probe-out
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: standalone-${{ matrix.os }}-${{ matrix.python-version }}
+          path: |
+            probe-out/*.json
+            probe-out/*.log
