@@ -45,6 +45,13 @@ def installed_versions() -> dict[str, str | None]:
             versions[distribution] = metadata.version(distribution)
         except metadata.PackageNotFoundError:
             versions[distribution] = None
+    if versions["websockets"]:
+        try:
+            import websockets.speedups  # noqa: F401
+
+            versions["websockets.speedups"] = "compiled"
+        except ImportError:
+            versions["websockets.speedups"] = "pure Python"
     return versions
 
 

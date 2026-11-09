@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,24 +37,43 @@ class Scenario:
     name: str
     installer: str
     extras: list[str]
+    requirements: Callable[[Wheels], list[str]]
 
-    def requirements(self, wheels: Wheels) -> list[str]:
-        if self.name.startswith("openai-floor"):
-            return [wheels.core, f"{wheels.openai}[realtime]", "openai==2.25.0", "websockets==13.0"]
-        if self.name.startswith("openai"):
-            return [wheels.core, f"{wheels.openai}[realtime]"]
-        if self.name.startswith("foundry"):
-            return [wheels.core, wheels.openai, f"{wheels.foundry}[realtime]"]
-        return [wheels.core, f"{wheels.openai}[realtime]", f"{wheels.foundry}[realtime]"]
+
+def foundry_without_extra(projects_version: str) -> Callable[[Wheels], list[str]]:
+    """The extra's transports with an azure-ai-projects the extra's ``<2.8`` cap excludes."""
+    return lambda wheels: [
+        wheels.core,
+        wheels.openai,
+        wheels.foundry,
+        "azure-ai-voicelive[aiohttp]>=1.3.1,<2",
+        f"azure-ai-projects=={projects_version}",
+    ]
 
 
 SCENARIOS = [
-    Scenario("openai-pip", "pip", ["openai"]),
-    Scenario("openai-uv", "uv", ["openai"]),
-    Scenario("foundry-pip", "pip", ["foundry"]),
-    Scenario("foundry-uv", "uv", ["foundry"]),
-    Scenario("both-uv", "uv", ["openai", "foundry"]),
-    Scenario("openai-floor-uv", "uv", ["openai"]),
+    Scenario("openai-pip", "pip", ["openai"], lambda wheels: [wheels.core, f"{wheels.openai}[realtime]"]),
+    Scenario("openai-uv", "uv", ["openai"], lambda wheels: [wheels.core, f"{wheels.openai}[realtime]"]),
+    Scenario(
+        "foundry-pip", "pip", ["foundry"], lambda wheels: [wheels.core, wheels.openai, f"{wheels.foundry}[realtime]"]
+    ),
+    Scenario(
+        "foundry-uv", "uv", ["foundry"], lambda wheels: [wheels.core, wheels.openai, f"{wheels.foundry}[realtime]"]
+    ),
+    Scenario(
+        "both-uv",
+        "uv",
+        ["openai", "foundry"],
+        lambda wheels: [wheels.core, f"{wheels.openai}[realtime]", f"{wheels.foundry}[realtime]"],
+    ),
+    Scenario(
+        "openai-floor-uv",
+        "uv",
+        ["openai"],
+        lambda wheels: [wheels.core, f"{wheels.openai}[realtime]", "openai==2.25.0", "websockets==13.0"],
+    ),
+    Scenario("foundry-projects-2.8-uv", "uv", ["foundry"], foundry_without_extra("2.8.0")),
+    Scenario("foundry-projects-2.9-uv", "uv", ["foundry"], foundry_without_extra("2.9.0")),
 ]
 
 
@@ -166,7 +186,7 @@ def markdown(results: list[dict], python_version: str) -> str:
     lines = [
         f"### Standalone installs on Python {python_version} ({sys.platform})",
         "",
-        "| Scenario | Result | websockets | openai | azure-ai-voicelive | azure-ai-projects | aiohttp | Failures |",
+        "| Scenario | Result | websockets (speedups) | openai | azure-ai-voicelive | azure-ai-projects | aiohttp | Failures |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for result in results:
@@ -183,9 +203,10 @@ def markdown(results: list[dict], python_version: str) -> str:
         cells = [
             result["scenario"],
             "pass" if passed(result) else "FAIL",
+            f"{versions.get('websockets')} ({versions.get('websockets.speedups')})",
             *(
                 str(versions.get(name))
-                for name in ("websockets", "openai", "azure-ai-voicelive", "azure-ai-projects", "aiohttp")
+                for name in ("openai", "azure-ai-voicelive", "azure-ai-projects", "aiohttp")
             ),
             "<br>".join(failure.replace("|", "\\|")[:300] for failure in failures),
         ]
