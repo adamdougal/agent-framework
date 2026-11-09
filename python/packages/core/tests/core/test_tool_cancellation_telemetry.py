@@ -114,12 +114,24 @@ async def test_unknown_cancel_message_records_cancelled_on_span(span_exporter: I
     assert spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
 
 
-async def test_unhashable_cancel_message_records_cancelled_on_span(span_exporter: InMemorySpanExporter) -> None:
-    """A dict cancel message records 'cancelled' and still propagates CancelledError, not TypeError."""
+class _UnhashableReason(str):
+    def __hash__(self) -> int:
+        raise TypeError("unhashable reason")
+
+
+@pytest.mark.parametrize(
+    "cancel_message",
+    [{"reason": "conversation_closed"}, _UnhashableReason("conversation_closed")],
+    ids=["dict", "unhashable-str-subclass"],
+)
+async def test_unhashable_cancel_message_records_cancelled_on_span(
+    span_exporter: InMemorySpanExporter, cancel_message: object
+) -> None:
+    """An unhashable cancel message records 'cancelled' and still propagates CancelledError, not TypeError."""
     slow_tool, started = _slow_tool()
     span_exporter.clear()
 
-    call = await _cancel_while_running(slow_tool, started, {"reason": "conversation_closed"})
+    call = await _cancel_while_running(slow_tool, started, cancel_message)
 
     assert call.cancelled()
     spans = span_exporter.get_finished_spans()

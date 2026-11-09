@@ -625,7 +625,8 @@ _RECORDED_CANCELLATION_REASONS: Final[frozenset[str]] = frozenset({_CONVERSATION
 def _cancellation_error_type(cancellation: asyncio.CancelledError) -> str:
     """Return the ``error.type`` recorded for a tool call cancelled while running."""
     reason = cancellation.args[0] if cancellation.args else None
-    return reason if isinstance(reason, str) and reason in _RECORDED_CANCELLATION_REASONS else "cancelled"
+    # An exact str: a subclass's own __hash__ or __eq__ could raise here and replace the cancellation.
+    return reason if type(reason) is str and reason in _RECORDED_CANCELLATION_REASONS else "cancelled"
 
 
 ClassT = TypeVar("ClassT", bound="SerializationMixin")
