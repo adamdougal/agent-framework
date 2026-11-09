@@ -44,10 +44,10 @@ still deserializes. Compare kinds as strings, for example ``content.kind == "spe
 """
 
 
-def require_realtime_kind(kind: str) -> None:
-    """Raise ``ValueError`` unless ``kind`` names a realtime event kind, known or not."""
-    if not kind:
-        raise ValueError("A realtime event requires a kind.")
+def require_realtime_kind(kind: object) -> None:
+    """Raise ``ValueError`` unless ``kind`` is a non-empty string; kinds a newer runtime adds are accepted."""
+    if not isinstance(kind, str) or not kind:
+        raise ValueError(f"A realtime event requires a non-empty string kind, not {kind!r}.")
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)

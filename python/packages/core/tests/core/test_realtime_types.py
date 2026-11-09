@@ -214,6 +214,15 @@ def test_realtime_event_rejects_an_empty_kind() -> None:
         RealtimeEvent(RealtimeKind(""))
 
 
+def test_realtime_event_rejects_a_kind_that_is_not_a_string() -> None:
+    from typing import cast
+
+    from agent_framework import RealtimeEvent
+
+    with pytest.raises(ValueError):
+        RealtimeEvent(cast(Any, 7))
+
+
 def test_realtime_event_repr_omits_the_raw_representation() -> None:
     from agent_framework import RealtimeEvent
 
@@ -315,6 +324,14 @@ def test_other_content_does_not_serialize_realtime_fields() -> None:
 
     assert "kind" not in serialized
     assert "service_event_type" not in serialized
+
+
+@pytest.mark.parametrize("serialized_kind", [{}, {"kind": ""}, {"kind": 7}])
+def test_realtime_event_content_from_dict_requires_a_kind(serialized_kind: dict[str, Any]) -> None:
+    from agent_framework import Content
+
+    with pytest.raises(ValueError):
+        Content.from_dict({"type": "realtime_event", **serialized_kind})
 
 
 def test_content_unpickled_from_older_state_has_no_realtime_fields() -> None:

@@ -880,6 +880,8 @@ class Content:
                 raise ValueError("Function-call server_name conflicts with legacy server_label.")
         elif hosted is not None:
             raise ValueError("hosted is only valid for function_call content.")
+        if type == "realtime_event":
+            require_realtime_kind(kind)
 
         self.type = type
         self.annotations = annotations
@@ -1762,9 +1764,8 @@ class Content:
             raw_representation: The provider's own event object. It's never serialized.
 
         Raises:
-            ValueError: If ``kind`` is empty.
+            ValueError: If ``kind`` isn't a non-empty string.
         """
-        require_realtime_kind(kind)
         return cls(
             "realtime_event",
             kind=kind,

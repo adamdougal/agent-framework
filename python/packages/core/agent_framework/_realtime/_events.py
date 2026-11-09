@@ -56,7 +56,7 @@ class RealtimeEvent:
             raw_representation: The provider's own event object, or the wire event of a raw command.
 
         Raises:
-            ValueError: If ``kind`` is empty.
+            ValueError: If ``kind`` isn't a non-empty string.
         """
         require_realtime_kind(kind)
         self.kind = kind
