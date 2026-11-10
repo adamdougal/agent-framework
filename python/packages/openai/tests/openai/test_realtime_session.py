@@ -1099,8 +1099,8 @@ async def test_a_late_rejection_of_a_cancelled_truncate_clears_its_client_mark()
 
 
 async def test_a_rejected_truncate_leaves_a_later_truncation_to_the_provider() -> None:
-    """truncate("item_1", 0, 99999) fails on a claimed rejection; a later conversation.item.truncated for "item_1"
-    yields truncated_by "provider"."""
+    """truncate("item_1", 0, 99999) fails on a claimed rejection; a later conversation.item.truncated at that same
+    cut yields truncated_by "provider"."""
     session, connection = await started()
 
     async with reading(session) as reader:
@@ -1109,14 +1109,14 @@ async def test_a_rejected_truncate_leaves_a_later_truncation_to_the_provider() -
         connection.push(rejection("invalid_value", "audio_end_ms", event_id=None))
         with pytest.raises(RealtimeControlException):
             await asyncio.wait_for(truncating, 1)
-        await read_through(connection, reader, item_truncated("item_1", 0, 800))
+        await read_through(connection, reader, item_truncated("item_1", 0, 99999))
 
     assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
 
 
 async def test_a_truncate_cancelled_before_sending_leaves_a_later_truncation_to_the_provider() -> None:
     """While another write holds the connection, truncate("item_1", 0, 500) is cancelled before it's sent; a later
-    conversation.item.truncated for "item_1" yields truncated_by "provider"."""
+    conversation.item.truncated at that same cut yields truncated_by "provider"."""
     release = asyncio.Event()
 
     class BlockingConnection(FakeConnection):
@@ -1140,7 +1140,7 @@ async def test_a_truncate_cancelled_before_sending_leaves_a_later_truncation_to_
             await truncating
         release.set()
         await asyncio.wait_for(blocking, 1)
-        await read_through(connection, reader, item_truncated("item_1", 0, 800))
+        await read_through(connection, reader, item_truncated("item_1", 0, 500))
 
     assert "conversation.item.truncate" not in connection.sent_types()
     assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"

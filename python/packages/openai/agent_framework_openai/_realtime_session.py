@@ -129,8 +129,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._active_response_id: str | None = None
         self._session_state: dict[str, Any] = {}
         self._heard_output_audio = False
-        self._client_truncations: set[tuple[str, int, int]] = set()
         self._truncate_cuts: dict[str, tuple[str, int, int]] = {}
+        """The cut each sent truncate request asked for, by request event_id, until it's acknowledged or rejected."""
         self._sent_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
         self._abandoned_updates: list[_PendingControl] = []
@@ -284,9 +284,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             RealtimeControlException: If the provider rejects the truncation.
         """
         cut = (item_id, content_index, audio_end_ms)
+        sent_event_ids: list[str] = []
 
         def mark_sent(event_id: str) -> None:
-            self._client_truncations.add(cut)
+            sent_event_ids.append(event_id)
             self._truncate_cuts[event_id] = cut
 
         try:
@@ -302,7 +303,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 on_sent=mark_sent,
             )
         except RealtimeControlException:
-            self._client_truncations.discard(cut)
+            for event_id in sent_event_ids:
+                self._truncate_cuts.pop(event_id, None)
             raise
 
     async def close(self) -> None:
@@ -762,7 +764,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             self._heard_output_audio = True
         elif event_type == "error" and (echoed := _mapping(wire.get("error")).get("event_id")) in self._truncate_cuts:
             # A provider that echoes the request id rejected one of this session's cuts, even one whose caller left.
-            self._client_truncations.discard(self._truncate_cuts.pop(echoed))
+            del self._truncate_cuts[echoed]
 
     def _map_event(self, event_type: str, wire: dict[str, Any]) -> list[RealtimeEvent]:
         """Map one wire event to its realtime events, keyed by its GA event name."""
@@ -863,11 +865,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
     def _truncated_by(self, cut: tuple[Any, Any, Any]) -> str:
         """Who made a cut: this session's own truncate request, or the provider on its own."""
-        if cut in self._client_truncations:
-            self._client_truncations.discard(cut)
-            for event_id in [event_id for event_id, sent_cut in self._truncate_cuts.items() if sent_cut == cut]:
+        for event_id, sent_cut in self._truncate_cuts.items():
+            if sent_cut == cut:
                 del self._truncate_cuts[event_id]
-            return "client"
+                return "client"
         return "provider"
 
     def _error_event(self, wire: dict[str, Any]) -> RealtimeEvent:
@@ -971,6 +972,8 @@ def _voice_echoed(requested: Any, echoed: Any) -> bool:
     """
     if echoed is None:
         return True
+    # Compare what went on the wire: JSON turns a requested tuple, such as prefer_locales, into the echo's list.
+    requested = json.loads(json.dumps(requested))
     if isinstance(requested, Mapping) and isinstance(echoed, Mapping):
         echoed_fields = cast("Mapping[str, Any]", echoed)
         return all(echoed_fields.get(key) == value for key, value in cast("Mapping[str, Any]", requested).items())

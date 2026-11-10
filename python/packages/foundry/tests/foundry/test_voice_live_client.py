@@ -995,6 +995,23 @@ class TestVerification:
         assert session.options["voice"] == sonia
         assert "ignored the voice change" not in caplog.text
 
+    async def test_azure_voice_with_a_tuple_field_is_accepted(self, caplog: pytest.LogCaptureFixture) -> None:
+        """update_session({"voice": Sonia with prefer_locales ("en-GB", "es-ES")}) acknowledged with the voice echoed
+        from JSON, where the tuple is a list: session.options holds Sonia as requested, and nothing warns."""
+        ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
+        sonia: AzureVoice = {
+            "type": "azure-standard",
+            "name": "en-GB-SoniaNeural",
+            "prefer_locales": ("en-GB", "es-ES"),
+        }
+        session, _ = await voice_live_session({"voice": ava})
+
+        async with reading(session):
+            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+
+        assert session.options["voice"] == sonia
+        assert "ignored the voice change" not in caplog.text
+
     async def test_rejected_update_is_claimed_without_an_event_id(self) -> None:
         """An error {event_id: null} while update_session() waits fails it with RealtimeControlException."""
         session, connection = await voice_live_session()
