@@ -323,7 +323,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
   claimed-error rules, and the results and follow-up still go out.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
-  `None`. It isn't in the tools' runtime keyword arguments.
+  `None`. It isn't in the tools' runtime keyword arguments. As in chat, function middleware that keeps per-session
+  state gets a conversation-local session when the app passes none, and the context's
+  `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
   when the caller speaks or the app sends input. A batch counts toward the chain it started in, even if new input

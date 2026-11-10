@@ -199,6 +199,7 @@ class FakeRealtimeClient:
         self.start_session_error: BaseException | None = None
         self.start_session_release: asyncio.Event | None = None
         self.session_holds: dict[str, asyncio.Event] = {}
+        self.service_session_state_keys: tuple[str, ...] = ()
         self.send_error: BaseException | None = None
 
     @property

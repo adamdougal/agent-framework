@@ -7,10 +7,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic
 
-from .._agents import BaseAgent
+from .._agents import BaseAgent, _provider_service_session_state_keys  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
 from .._middleware import categorize_middleware
 from .._tools import (
+    _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
     _append_unique_tools,  # pyright: ignore[reportPrivateUsage]
     normalize_function_invocation_configuration,
     normalize_tools,
@@ -142,6 +143,10 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             "function"
         ]
         session_options = _merge_session_options(self.default_options, self.instructions, options or {})
+        invocation_kwargs = dict(function_invocation_kwargs or {})
+        # As in chat, the invoking agent's provider-owned session keys are recomputed here, so caller kwargs can't
+        # replace them, and an agent tool with propagate_session=True keeps them out of its child session.
+        invocation_kwargs[_PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY] = _provider_service_session_state_keys(self)
         session_tools = _append_unique_tools(
             [], [*self.tools, *normalize_tools(tools)], duplicate_error_message="Tool names must be unique."
         )
@@ -153,7 +158,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             tools=session_tools,
             invocation_configuration=invocation_configuration,
             function_middleware=function_middleware,
-            function_invocation_kwargs=dict(function_invocation_kwargs or {}),
+            function_invocation_kwargs=invocation_kwargs,
             control_timeout=control_timeout,
             max_queued_updates=max_queued_updates,
         )

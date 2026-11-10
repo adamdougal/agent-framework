@@ -18,6 +18,7 @@ from agent_framework import (
     ChatResponse,
     Content,
     FunctionInvocationContext,
+    FunctionMiddleware,
     FunctionTool,
     Message,
     MiddlewareFailure,
@@ -345,6 +346,52 @@ async def test_a_tools_context_carries_the_agent_session() -> None:
         await eventually(lambda: bool(_tool_messages(client.session)))
 
     assert _results(client.session) == [("call_1", "session_1")]
+
+
+async def test_a_tools_context_carries_the_provider_owned_session_keys_the_caller_cannot_replace() -> None:
+    client = FakeRealtimeClient()
+    client.service_session_state_keys = ("provider.thread",)
+    seen: list[frozenset[str] | None] = []
+
+    @tool
+    def check(ctx: FunctionInvocationContext) -> str:
+        """Check the parent's session keys."""
+        seen.append(ctx.parent_service_session_state_keys)
+        return "checked"
+
+    spoofed = {"_parent_service_session_state_keys": frozenset({"spoofed"})}
+    async with RealtimeAgent(client, tools=[check]).start_conversation(function_invocation_kwargs=spoofed):
+        client.session.emit(*_response("resp_1", _call("call_1", "check")))
+        await eventually(lambda: bool(_tool_messages(client.session)))
+
+    assert seen == [frozenset({"provider.thread"})]
+
+
+async def test_middleware_that_keeps_session_state_gets_a_session_per_conversation() -> None:
+    client = FakeRealtimeClient()
+    sessions: list[AgentSession | None] = []
+
+    class SessionStateMiddleware(FunctionMiddleware):
+        _requires_session_state = True
+
+        async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            sessions.append(context.session)
+            await call_next()
+
+    agent = RealtimeAgent(client, tools=[get_weather], middleware=[SessionStateMiddleware()])
+    for _ in range(2):
+        async with agent.start_conversation():
+            client.session.emit(
+                *_response("resp_1", _call("call_1", "get_weather", city="Paris")),
+                *_response("resp_2", _call("call_2", "get_weather", response_id="resp_2", city="Rome")),
+            )
+            await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+    first, second, third, fourth = sessions
+    assert isinstance(first, AgentSession)
+    assert first is second
+    assert third is fourth
+    assert third is not first
 
 
 async def test_a_tools_context_carries_the_conversation() -> None:
@@ -1074,6 +1121,49 @@ async def test_same_named_calls_bound_to_different_tools_each_run_their_own() ->
         ("call_2", "Sunny in Paris"),
         ("call_3", "Cloudy in Rome"),
     ]
+
+
+async def test_closing_while_calls_run_one_at_a_time_keeps_the_finished_results() -> None:
+    client = FakeRealtimeClient()
+    started = asyncio.Event()
+
+    @tool(name="get_weather")
+    async def slow_weather(city: str) -> str:
+        """Get the weather from a slow service."""
+        started.set()
+        await asyncio.Event().wait()
+        return f"Foggy in {city}"
+
+    @tool
+    def swap_weather(ctx: FunctionInvocationContext) -> str:
+        """Swap to the slow weather service."""
+        ctx.remove_tools("get_weather")
+        ctx.add_tools(slow_weather)
+        return "swapped"
+
+    async with RealtimeAgent(client, tools=[get_weather, swap_weather]).start_conversation() as conversation:
+        client.session.emit(
+            event("response_created", response_id="resp_2"),
+            _call("call_2", "get_weather", response_id="resp_2", city="Paris"),
+            *_response("resp_1", _call("call_1", "swap_weather")),
+        )
+        await eventually(lambda: bool(_tool_messages(client.session)))
+        client.session.emit(
+            _call("call_3", "get_weather", response_id="resp_2", city="Rome"),
+            event("response_done", response_id="resp_2", status="completed"),
+        )
+        await started.wait()
+        await conversation.close()
+        updates = await _read_all(conversation)
+
+    settled = {
+        content.call_id: (content.result, content.exception)
+        for update in updates
+        for content in update.contents
+        if content.type == "function_result"
+    }
+    assert settled["call_2"] == ("Sunny in Paris", None)
+    assert settled["call_3"][1] == "conversation_closed"
 
 
 async def test_barge_in_does_not_cancel_a_running_tool() -> None:

@@ -550,6 +550,22 @@ async def test_a_timed_out_control_call_finishes_cleaning_up_before_it_raises() 
         assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
 
 
+async def test_cancelling_a_timed_out_control_call_still_waits_for_its_cleanup() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation(control_timeout=0.02) as conversation:
+        client.session.hold("create_response")
+        client.session.cleanup_delays["create_response"] = 0.2
+        requesting = asyncio.create_task(conversation.create_response())
+        await asyncio.sleep(0.06)  # timed out, and now cleaning up
+
+        requesting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await requesting
+
+        assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
+
+
 async def test_a_control_call_after_close_raises_conversation_closed() -> None:
     async with RealtimeAgent(FakeRealtimeClient()).start_conversation() as conversation:
         await conversation.close()

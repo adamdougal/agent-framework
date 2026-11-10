@@ -128,7 +128,9 @@ class ToolLoop:
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
         self._middleware_pipeline = FunctionMiddlewarePipeline(*function_middleware)
-        self._agent_session = agent_session
+        self._agent_session = (
+            agent_session if agent_session is not None else _session_for_stateful_middleware(function_middleware)
+        )
         self._conversation = conversation
         self._responses = responses
         self._results_marker = 0
@@ -372,27 +374,27 @@ class ToolLoop:
         if not calls:
             return False, 0
         chain.batch_started()
-        requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
-        try:
-            if _bound_to_different_tools_of_one_name(calls):
-                # The executor maps tools by name, so these calls run one at a time, in model order, each with its
-                # own tool. Only a tool swapped mid-response causes this.
-                batches = [await self._run_executor([call]) for call in calls]
-            else:
-                batches = [await self._run_executor(calls)]
-        finally:
-            _CALLING_CONVERSATION.reset(requested_by_tools)
-        groups = [group for batch in batches for group in batch.result_groups]
-        for call, group in zip(calls, groups, strict=True):
-            call.result = next((content for content in group if content.type == "function_result"), None)
-            if call.result is None:
-                call.result = _settled_with_error(
-                    call.content, "the call paused for an answer it can't get", "unsupported"
-                )
-        return (
-            any(batch.should_terminate for batch in batches),
-            sum(batch.executed_call_count for batch in batches),
-        )
+        # The executor maps tools by name, so calls bound to different tools of one name run one at a time, in model
+        # order, each with its own tool. Only a tool swapped mid-response causes this.
+        runs = [[call] for call in calls] if _bound_to_different_tools_of_one_name(calls) else [list(calls)]
+        should_terminate = False
+        executed = 0
+        for run in runs:
+            requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
+            try:
+                batch = await self._run_executor(run)
+            finally:
+                _CALLING_CONVERSATION.reset(requested_by_tools)
+            # Results go on their calls as each run returns, so a close during a later run keeps them.
+            for call, group in zip(run, batch.result_groups, strict=True):
+                call.result = next((content for content in group if content.type == "function_result"), None)
+                if call.result is None:
+                    call.result = _settled_with_error(
+                        call.content, "the call paused for an answer it can't get", "unsupported"
+                    )
+            should_terminate = should_terminate or batch.should_terminate
+            executed += batch.executed_call_count
+        return should_terminate, executed
 
     async def _run_executor(self, calls: Sequence[_Call]) -> Any:
         return await _execute_function_calls(
@@ -406,6 +408,18 @@ class ToolLoop:
             middleware_pipeline=self._middleware_pipeline,
             realtime_conversation=self._conversation,
         )
+
+
+def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:
+    """A conversation-local session for function middleware that keeps per-session state, when the app passed none.
+
+    As in chat, so separate conversations on one agent never share that state.
+    """
+    if any(getattr(middleware, "_requires_session_state", False) is True for middleware in function_middleware):
+        from .._sessions import AgentSession
+
+        return AgentSession()
+    return None
 
 
 def _bound_to_different_tools_of_one_name(calls: Sequence[_Call]) -> bool:
