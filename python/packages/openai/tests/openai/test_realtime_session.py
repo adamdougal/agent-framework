@@ -764,6 +764,52 @@ async def test_a_caller_that_swallowed_an_earlier_cancellation_still_gets_its_re
             await asyncio.wait_for(updating, 1)
 
 
+RAW_UPDATE = {"type": "session.update", "session": {"type": "realtime", "metadata": {"k": "v"}}}
+
+
+async def test_a_raw_session_updates_acknowledgement_does_not_answer_a_later_update() -> None:
+    """A raw session.update is sent, then update_session({"instructions": "B."}). The raw update's session.updated
+    doesn't resolve the typed one, which resolves on the next session.updated; session.options holds only B."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_raw", "session": {}})
+        await asyncio.sleep(0.01)
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+    assert session.options == {"instructions": "B."}
+
+
+async def test_an_update_sent_before_a_raw_session_update_takes_the_first_acknowledgement() -> None:
+    """update_session B is sent, then a raw session.update while B waits. The first session.updated resolves B and
+    the second answers the raw update, so a later update_session C resolves only on its own."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+        later = asyncio.create_task(session.update_session({"instructions": "C."}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_raw", "session": {}})
+        await asyncio.sleep(0.01)
+        assert not later.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_c", "session": {}})
+        await asyncio.wait_for(later, 1)
+
+
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
     """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})

@@ -19,6 +19,7 @@ from collections.abc import AsyncGenerator, Mapping
 from types import TracebackType
 from typing import Any
 
+import aiohttp
 import pytest
 from agent_framework import Message, tool
 from agent_framework._telemetry import get_user_agent
@@ -591,6 +592,49 @@ async def test_failed_start_closes_the_socket() -> None:
             await asyncio.wait_for(client.start_session(), 5)
 
         await asyncio.wait_for(server.socket_closed.wait(), 2)
+
+
+class HandshakeWebSocket:
+    """The websocket a delayed handshake finally returns; it records being closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+        self.closed = True
+
+
+async def test_cancelling_during_the_handshake_closes_what_it_opened(monkeypatch: pytest.MonkeyPatch) -> None:
+    """start_session() cancelled while the websocket handshake is in flight raises CancelledError at once; when the
+    handshake later completes, the client closes the websocket and the SDK's HTTP session."""
+    handshake_started = asyncio.Event()
+    finish_handshake = asyncio.Event()
+    websocket = HandshakeWebSocket()
+    http_sessions: list[aiohttp.ClientSession] = []
+    real_init = aiohttp.ClientSession.__init__
+
+    def recording_init(self: aiohttp.ClientSession, *args: Any, **kwargs: Any) -> None:
+        real_init(self, *args, **kwargs)
+        http_sessions.append(self)
+
+    async def delayed_ws_connect(self: aiohttp.ClientSession, *args: Any, **kwargs: Any) -> HandshakeWebSocket:
+        handshake_started.set()
+        await finish_handshake.wait()
+        return websocket
+
+    monkeypatch.setattr(aiohttp.ClientSession, "__init__", recording_init)
+    monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", delayed_ws_connect)
+    client = VoiceLiveClient(endpoint=ENDPOINT, model=MODEL, api_key="k")
+
+    starting = asyncio.create_task(client.start_session())
+    await asyncio.wait_for(handshake_started.wait(), 5)
+    starting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+    finish_handshake.set()
+
+    await until(lambda: websocket.closed and all(http_session.closed for http_session in http_sessions), 2)
+    assert http_sessions
 
 
 async def test_unsupported_audio_format_raises_before_connecting() -> None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import itertools
 import json
 import logging
@@ -137,7 +138,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._event_ids = itertools.count(1)
         self._raw_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
-        self._abandoned_updates: list[_PendingControl] = []
+        # Nothing correlates session.updated with its request, so every session.update is numbered as it's written,
+        # and those no caller waits for are answered in that order.
+        self._update_writes = itertools.count()
+        self._unawaited_updates: list[_UnawaitedUpdate] = []
         self._write_lock = asyncio.Lock()
         self._reading = False
         self._closed = False
@@ -191,11 +195,19 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 raise TypeError(
                     "A raw realtime command needs its wire event as a JSON-serializable mapping in raw_representation."
                 )
+            command = cast("Mapping[str, Any]", raw_command)
             # An error echoing this command's id is its own, so no waiting control call may claim it.
-            raw_event_id = cast("Mapping[str, Any]", raw_command).get("event_id")
+            raw_event_id = command.get("event_id")
             if isinstance(raw_event_id, str):
                 self._raw_event_ids.add(raw_event_id)
-            await self._write(cast("Mapping[str, Any]", raw_command))
+
+            def number_a_raw_update() -> bool:
+                if command.get("type") == "session.update":
+                    owned_id = raw_event_id if isinstance(raw_event_id, str) else None
+                    self._unawaited_updates.append(_UnawaitedUpdate(next(self._update_writes), owned_id))
+                return True
+
+            await self._write(command, on_writing=number_a_raw_update)
             return
         for wire_event in self._message_events(value):
             # A client id lets a provider that echoes it tie its error to this event, never to a waiting control call.
@@ -547,6 +559,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             nonlocal sent
             if still_needed is not None and not still_needed():
                 return False
+            if request["type"] == "session.update":
+                pending.write_order = next(self._update_writes)
             self._pending = pending
             sent = True
             if on_sent is not None:
@@ -560,10 +574,13 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 await self._read_into_buffer()
             return await acknowledged
         finally:
-            if sent and not pending.answered and request["type"] == "session.update":
-                # Nothing correlates session.updated with its request, so a cancelled update's late answer must not
-                # be taken for a later update's.
-                self._abandoned_updates.append(pending)
+            if sent and not pending.answered and pending.write_order is not None:
+                # A cancelled update's late answer must not be taken for a later update's.
+                bisect.insort(
+                    self._unawaited_updates,
+                    _UnawaitedUpdate(pending.write_order, pending.event_id, pending.accepted_options),
+                    key=lambda unawaited: unawaited.write_order,
+                )
             if self._pending is pending:
                 self._pending = None
 
@@ -572,7 +589,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
         Returns whether ``wire`` is an error the waiting call claimed.
         """
-        if self._answers_abandoned_update(event_type, wire):
+        if self._answers_unawaited_update(event_type, wire):
             return False
         pending = self._pending
         if pending is None or pending.answered:
@@ -616,30 +633,39 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             )
         self.options = cast("RealtimeOptionsT", {**self.options, **accepted})
 
-    def _answers_abandoned_update(self, event_type: str, wire: dict[str, Any]) -> bool:
-        """Whether ``wire`` answers a session update whose caller stopped waiting, in the order they were sent.
+    def _answers_unawaited_update(self, event_type: str, wire: dict[str, Any]) -> bool:
+        """Whether ``wire`` answers a session update no caller waits for: a raw one, or one whose caller was cancelled.
 
-        A session.updated answers the oldest, and its accepted options merge into ``options``. An error answers the
-        update whose id it echoes, or the oldest when it echoes none or an id this session never sent, and streams as an
-        unclaimed error.
+        Updates are answered in the order they were written, so a session.updated, or an error echoing no id or one
+        this session never sent, answers the oldest outstanding update. That's the waiting update_session() call when it
+        was written first, and otherwise the oldest unawaited update, whose accepted options merge into ``options``. An
+        error echoing an unawaited update's own id answers that one. Errors answering an unawaited update stream
+        unclaimed.
         """
-        if not self._abandoned_updates:
+        if not self._unawaited_updates or event_type not in ("session.updated", "error"):
             return False
-        if event_type == "session.updated":
-            answered = self._abandoned_updates.pop(0)
-            self._merge_accepted(answered.accepted_options or {})
-            return True
-        if event_type != "error":
+        oldest = self._unawaited_updates[0]
+        pending = self._pending
+        waiting_update_is_older = (
+            pending is not None
+            and not pending.answered
+            and pending.write_order is not None
+            and pending.write_order < oldest.write_order
+        )
+        if event_type == "error":
+            echoed = _mapping(wire.get("error")).get("event_id")
+            if echoed is not None and self._sent_by_this_session(echoed):
+                for index, unawaited in enumerate(self._unawaited_updates):
+                    if echoed == unawaited.event_id:
+                        del self._unawaited_updates[index]
+                        return True
+                return False
+        if waiting_update_is_older:
             return False
-        echoed = _mapping(wire.get("error")).get("event_id")
-        if echoed is None or not self._sent_by_this_session(echoed):
-            self._abandoned_updates.pop(0)
-            return True
-        for index, abandoned in enumerate(self._abandoned_updates):
-            if echoed == abandoned.event_id:
-                del self._abandoned_updates[index]
-                return True
-        return False
+        self._unawaited_updates.pop(0)
+        if event_type == "session.updated" and oldest.accepted_options:
+            self._merge_accepted(oldest.accepted_options)
+        return True
 
     def _claims(self, pending: _PendingControl, error_event: dict[str, Any]) -> bool:
         """Whether the waiting call owns an error: its own id, no id, or an id this session never sent.
@@ -947,6 +973,15 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
 
 @dataclass
+class _UnawaitedUpdate:
+    """A session update no caller waits for: a raw command's, or one whose caller was cancelled after sending it."""
+
+    write_order: int
+    event_id: str | None
+    accepted_options: dict[str, Any] | None = None
+
+
+@dataclass
 class _PendingControl:
     """The one control call waiting for its acknowledgement."""
 
@@ -957,6 +992,8 @@ class _PendingControl:
     accepts_unechoed: bool = False
     concerns: Callable[[dict[str, Any]], bool] | None = None
     accepted_options: dict[str, Any] | None = None
+    write_order: int | None = None
+    """For a session update, its place among the session.update requests written, which providers answer in order."""
     answered: bool = False
     """Whether the provider answered, with an acknowledgement or a claimed error, even after the caller stopped
     waiting."""

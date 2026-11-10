@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import importlib.util
 import inspect
 import json
@@ -257,8 +258,14 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             query=self._handshake_query() or None,
             headers=prepend_agent_framework_to_user_agent(),
         )
+        handshake = asyncio.ensure_future(manager.__aenter__())
         try:
-            connection = await manager.__aenter__()
+            connection = await asyncio.shield(handshake)
+        except asyncio.CancelledError:
+            # The SDK leaks its HTTP session when its handshake is cancelled, so the handshake finishes on its own and
+            # whatever it opened is closed. The caller's cancellation still takes effect at once.
+            handshake.add_done_callback(functools.partial(_close_after_handshake, manager))
+            raise
         except AzureError as error:
             raise RealtimeConnectionException(f"Couldn't connect to Voice Live: {error}") from error
         session = _VoiceLiveSession(_VoiceLiveConnection(manager, connection))
@@ -491,6 +498,19 @@ class _VoiceLiveConnection:
     async def close(self) -> None:
         self._closing = True
         await self._manager.__aexit__(None, None, None)
+
+
+_CLOSINGS_AFTER_HANDSHAKE: set[asyncio.Task[None]] = set()
+"""Closes of connections whose start was cancelled during the handshake, kept until they finish."""
+
+
+def _close_after_handshake(manager: Any, handshake: asyncio.Future[Any]) -> None:
+    """Close the connection a handshake opened after its start was cancelled; a failed handshake opened nothing."""
+    if handshake.cancelled() or handshake.exception() is not None:
+        return
+    closing = asyncio.ensure_future(manager.__aexit__(None, None, None))
+    _CLOSINGS_AFTER_HANDSHAKE.add(closing)
+    closing.add_done_callback(_CLOSINGS_AFTER_HANDSHAKE.discard)
 
 
 def _require_voice_live_sdk() -> None:
