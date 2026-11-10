@@ -1346,6 +1346,7 @@ class FunctionTool(SerializationMixin):
                     result = await self._invoke_function(call_kwargs)
                 end_time_stamp = perf_counter()
             except asyncio.CancelledError as cancellation:
+                end_time_stamp = perf_counter()
                 error_type = _cancellation_error_type(cancellation)
                 metric_attributes[OtelAttr.ERROR_TYPE] = error_type
                 span.set_attribute(OtelAttr.ERROR_TYPE, error_type)
