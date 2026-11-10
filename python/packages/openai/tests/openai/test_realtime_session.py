@@ -826,6 +826,21 @@ async def test_a_rejection_of_a_control_call_sent_before_a_raw_update_fails_that
             await asyncio.wait_for(creating, 1)
 
 
+async def test_a_rejection_of_a_truncate_sent_before_a_raw_update_fails_that_truncate() -> None:
+    """truncate("item_1", 0, 500) is sent, then a raw session.update. A rejection echoing the server's own event_id
+    answers the request written first: truncate() raises RealtimeControlException."""
+    session, connection = await started()
+
+    async with reading(session):
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 500))
+        await connection.wait_sent("conversation.item.truncate")
+        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
+        connection.push(rejection("invalid_value", "audio_end_ms", event_id="evt_srv_7"))
+
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(truncating, 1)
+
+
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
     """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})
