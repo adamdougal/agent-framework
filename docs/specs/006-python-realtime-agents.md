@@ -189,8 +189,8 @@ outside the topology, and app input for a call id the conversation isn't trackin
   seconds. An update with nothing left to send after dropped keys returns at once. The conversation enforces it,
   wrapping each session control call and `start_session(...)` in `asyncio.timeout()`, and raises
   `RealtimeControlTimeoutException`. Session control methods have no timeout of their own and are cancellation-safe: a
-  cancelled call leaves nothing pending and stops claiming errors. A control call still waiting when close starts
-  raises `RealtimeConversationClosedException`.
+  cancelled call leaves nothing pending and stops claiming errors. A control call or `send(...)` still waiting when
+  close starts, for an acknowledgement or its turn, raises `RealtimeConversationClosedException`.
 - **Active response.** `create_response(...)` and `say(...)` raise `RealtimeActiveResponseException` while a response
   is active. Nothing is queued or cancelled implicitly.
 - **Error claiming.** Requests carry a client `event_id`, and responses an id in `response.metadata`. While a control

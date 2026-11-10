@@ -94,7 +94,8 @@ class AudioLedger:
         for position, item in enumerate(items):
             generated_ms = item.generated_ms or 0.0
             if remaining >= generated_ms - FULLY_HEARD_SLACK_MS:
-                remaining -= generated_ms
+                # A message heard within the slack counts as heard in full, and leaves no negative remainder.
+                remaining = max(0.0, remaining - generated_ms)
                 continue
             unheard = items[position + 1 :]
             for cut_item in (item, *unheard):

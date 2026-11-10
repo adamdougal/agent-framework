@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
@@ -25,7 +25,7 @@ from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._options import RealtimeOptionsT
 from ._responses import ResponseLedger
-from ._tool_loop import ToolLoop, requested_by_a_tool
+from ._tool_loop import FollowUp, ToolLoop, requested_by_a_tool
 from ._updates import core_attributes, tool_result_update, update_from_event
 
 logger = logging.getLogger("agent_framework")
@@ -257,14 +257,15 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the response request in time.
             RealtimeControlException: If the provider rejects the response request.
         """
-        session = self._require_open_session()
+        self._require_open_session()
         if isinstance(value, RealtimeEvent):
             async with self._write_lock:
-                await session.send(value)
+                await self._require_open_session().send(value)
             return
         messages = normalize_messages(value)
         _reject_app_input_for_calls(messages)
         async with self._write_lock:
+            session = self._require_open_session()  # close may have started while this send waited its turn
             for message in messages:
                 await session.send(message)
         if _is_audio_only(messages):
@@ -273,14 +274,30 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if create_response:
             await self.create_response()
 
+    def _ready_for_a_follow_up(self) -> bool:
+        """Whether no response is active and the caller isn't speaking, so a follow-up never talks over them."""
+        return self._caller_quiet.is_set() and not self._responses.any_active
+
     async def _wait_until_ready_for_a_follow_up(self) -> None:
-        """Wait until no response is active and the caller isn't speaking, so the agent never talks over them."""
-        while not (self._caller_quiet.is_set() and not self._responses.any_active):
+        while not self._ready_for_a_follow_up():
             await self._caller_quiet.wait()
             await self._responses.wait_until_idle()
 
-    async def _request_follow_up(self, options: Mapping[str, Any] | None) -> str:
-        return await self.create_response(options=options)  # type: ignore[arg-type]
+    async def _request_follow_up(self, claim: Callable[[], FollowUp | None]) -> str | None:
+        """Request the tool loop's follow-up, checking just before the request that it can still go out.
+
+        Returns ``None``, requesting nothing, if the caller started speaking, a response started, or the tool loop no
+        longer claims it, while the request waited its turn.
+        """
+        self._require_open_session()
+        async with self._control_lock:
+            session = self._require_open_session()
+            if not self._ready_for_a_follow_up():
+                return None
+            follow_up = claim()
+            if follow_up is None:
+                return None
+            return await self._create_response_locked(session, follow_up.options)
 
     def _session_options(self) -> Mapping[str, Any]:
         """The live session's current settings."""
@@ -320,17 +337,26 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 create the response.
             RealtimeControlException: If the provider rejects the request.
         """
-        session = self._require_open_session()
+        self._require_open_session()
         async with self._control_lock:
-            if self._responses.any_active:
-                raise RealtimeActiveResponseException(
-                    "A response is active. Call interrupt() first to talk over it; nothing is queued."
-                )
-            response_id = await self._acknowledged(session.create_response(options), "create a response")
-            self._responses.requested(response_id)
-            if requested_by_a_tool(self):
-                self._responses.not_answering(response_id)
-            return response_id
+            session = self._require_open_session()  # close may have started while this call waited its turn
+            return await self._create_response_locked(session, options)
+
+    async def _create_response_locked(
+        self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], options: Mapping[str, Any] | None
+    ) -> str:
+        if self._responses.any_active:
+            raise RealtimeActiveResponseException(
+                "A response is active. Call interrupt() first to talk over it; nothing is queued."
+            )
+        response_id = await self._acknowledged(
+            session.create_response(options),  # type: ignore[arg-type]
+            "create a response",
+        )
+        self._responses.requested(response_id)
+        if requested_by_a_tool(self):
+            self._responses.not_answering(response_id)
+        return response_id
 
     async def interrupt(self, *, played_ms: int | None = None) -> None:
         """Cancel the active response, and cut the audio the caller didn't hear.
@@ -355,8 +381,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """
         if played_ms is not None and played_ms < 0:
             raise ValueError(f"played_ms must be 0 or more, not {played_ms}.")
-        session = self._require_open_session()
+        self._require_open_session()
         async with self._control_lock:
+            session = self._require_open_session()  # close may have started while this call waited its turn
             if self._responses.any_active:
                 try:
                     await self._acknowledged(session.cancel_response(), "cancel the active response")
@@ -372,6 +399,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         session = self._require_session()
         try:
             async with self._control_lock:
+                if self._closing.is_set():
+                    return  # the conversation is closing, so the unheard audio no longer matters
                 await self._send_truncations(session, truncations)
         except RealtimeException as error:
             logger.warning("Couldn't cut the audio after a provider truncation: %s", error)
@@ -388,7 +417,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
         """Await a provider acknowledgement within the conversation's control timeout, or until close starts.
 
-        The session's call is cancelled if the wait ends without it; the protocol makes that safe.
+        The session's call is cancelled if the wait ends without it; the protocol makes that safe. The cancelled call
+        finishes unwinding before this returns, so it never overlaps the next control call.
         """
         call = asyncio.ensure_future(acknowledgement)
         closing = asyncio.ensure_future(self._closing.wait())
@@ -404,6 +434,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             closing.cancel()
             if not call.done():
                 call.cancel()
+                await asyncio.wait({call})
         if call.done() and not call.cancelled():
             return call.result()
         raise RealtimeConversationClosedException(f"The realtime conversation closed before it could {action}.")
@@ -433,6 +464,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """Stop accepting input now, and start the close sequence once; later calls return the same task."""
         if self._close_task is None:
             self._closing.set()
+            self._tool_loop.stop()
             self._close_task = asyncio.create_task(self._close_sequence())
         return self._close_task
 
@@ -444,8 +476,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                     await self._session.close()
                 except Exception as error:
                     logger.warning("Closing the realtime session failed: %s", error)
+                    # The session may not end its events, so stop reading them rather than wait.
+                    if self._receive_task is not None:
+                        self._receive_task.cancel()
             if self._receive_task is not None:
-                await self._receive_task
+                await asyncio.wait({self._receive_task})
             await self._tool_loop.close()
         finally:
             self._updates.finish(self._failure)

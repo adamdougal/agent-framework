@@ -8,7 +8,7 @@ import logging
 import pytest
 
 from agent_framework import Content, RealtimeAgent, RealtimeEvent
-from agent_framework.exceptions import RealtimeControlTimeoutException
+from agent_framework.exceptions import RealtimeControlTimeoutException, RealtimeConversationClosedException
 
 from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
 
@@ -106,6 +106,22 @@ async def test_messages_after_the_cut_are_truncated_at_0_ms() -> None:
         ("truncate", "item_b", 0, 0),
         ("truncate", "item_c", 0, 0),
     ]
+
+
+async def test_a_message_heard_within_its_slack_leaves_none_of_played_ms_for_the_next() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            _audio("resp_1", "item_b", 48 * 1000),
+        )
+        await conversation.interrupt(played_ms=980)
+
+    assert client.session.calls == [("cancel_response",), ("truncate", "item_b", 0, 0)]
 
 
 async def test_interrupt_cuts_the_latest_response_that_produced_audio() -> None:
@@ -221,6 +237,35 @@ async def test_a_provider_truncation_cuts_the_responses_later_messages_at_0_ms()
         await eventually(lambda: len(client.session.calls) == 2)
 
     assert client.session.calls == [("truncate", "item_b", 0, 0), ("truncate", "item_c", 0, 0)]
+
+
+async def test_a_provider_truncation_queued_when_close_starts_cuts_nothing() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation(control_timeout=10) as conversation:
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            _audio("resp_1", "item_b", 48 * 1000),
+            event("response_done", response_id="resp_1", status="cancelled"),
+        )
+        client.session.hold("create_response")
+        waiting = asyncio.create_task(conversation.create_response())
+        await eventually(lambda: bool(client.session.calls))
+        await _play(
+            conversation,
+            client.session,
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+        )
+
+        await conversation.close()
+        with pytest.raises(RealtimeConversationClosedException):
+            await asyncio.wait_for(waiting, 1)
+        await asyncio.sleep(0.01)
+
+    assert client.session.calls == [("create_response", None)]
 
 
 async def test_a_client_truncation_cuts_nothing_more() -> None:

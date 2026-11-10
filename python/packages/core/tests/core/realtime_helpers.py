@@ -70,10 +70,12 @@ class FakeRealtimeSession:
         self._response_count = 0
         self._holds: dict[str, asyncio.Event] = {}
         self.delays: dict[str, float] = {}
+        self.cleanup_delays: dict[str, float] = {}
         self.cancel_response_error: BaseException | None = None
         self.create_response_events: list[RealtimeEvent] = []
         self.create_response_error: BaseException | None = None
         self.close_raises_in_receive = False
+        self.close_error: BaseException | None = None
         self._events: asyncio.Queue[Any] = asyncio.Queue()
 
     def emit(self, *events: RealtimeEvent) -> None:
@@ -102,6 +104,7 @@ class FakeRealtimeSession:
 
     async def send(self, value: RealtimeEvent | Message) -> None:
         await asyncio.sleep(0)  # a wire write yields to the event loop
+        await self._acknowledge("send")
         if self.send_error is not None:
             raise self.send_error
         self.sent.append(value)
@@ -126,10 +129,17 @@ class FakeRealtimeSession:
         return release
 
     async def _acknowledge(self, method: str) -> None:
-        if (delay := self.delays.get(method)) is not None:
-            await asyncio.sleep(delay)
-        if (release := self._holds.get(method)) is not None:
-            await release.wait()
+        try:
+            if (delay := self.delays.get(method)) is not None:
+                await asyncio.sleep(delay)
+            if (release := self._holds.get(method)) is not None:
+                await release.wait()
+        except asyncio.CancelledError:
+            # A cancellation-safe session may need a moment to stop tracking the call.
+            if (cleanup := self.cleanup_delays.get(method)) is not None:
+                await asyncio.sleep(cleanup)
+                self.calls.append(("cleaned up", method))
+            raise
 
     async def update_session(self, options: RealtimeOptions, tools: Sequence[ToolTypes] | None) -> None:
         self.calls.append(("update_session", options, tools))
@@ -140,11 +150,12 @@ class FakeRealtimeSession:
 
     async def create_response(self, options: RealtimeOptions | None = None) -> str:
         self.calls.append(("create_response", options))
-        self.emit(*self.create_response_events)
+        events = list(self.create_response_events)  # the response this call creates, fixed when it's made
+        self.emit(*events)
         await self._acknowledge("create_response")
         if self.create_response_error is not None:
             raise self.create_response_error
-        for created in self.create_response_events:
+        for created in events:
             if created.kind == "response_created":
                 return str(created.additional_properties["core"]["response_id"])
         self._response_count += 1
@@ -163,6 +174,8 @@ class FakeRealtimeSession:
     async def close(self) -> None:
         self.close_count += 1
         await self._acknowledge("close")
+        if self.close_error is not None:
+            raise self.close_error  # without ending the events, as a stuck socket does
         if self.close_raises_in_receive:
             self.fail(RealtimeConnectionException("The connection was closed."))
         else:

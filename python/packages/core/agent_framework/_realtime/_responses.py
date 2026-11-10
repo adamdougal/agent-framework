@@ -62,7 +62,10 @@ class ResponseLedger:
         return any(response_id not in self._not_answering for response_id in self._creation_order[marker:])
 
     def not_answering(self, response_id: str) -> None:
-        """Record that a response is filler, which doesn't act on tool results (spec 006, Tool loop)."""
+        """Record that a response doesn't act on tool results sent after it was requested (spec 006, Tool loop).
+
+        Filler that tools or middleware request acts on none, and a follow-up only on the results sent before it.
+        """
         self._not_answering.add(response_id)
 
     def _activate(self, response_id: str) -> None:

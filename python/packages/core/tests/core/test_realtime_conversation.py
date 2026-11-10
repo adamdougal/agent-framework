@@ -497,6 +497,40 @@ async def test_the_timeout_covers_only_the_acknowledgement_not_the_wait_for_the_
     assert client.session.calls == [("create_response", None), ("cancel_response",)]
 
 
+@pytest.mark.parametrize("raw", [False, True], ids=["message", "raw command"])
+async def test_a_send_queued_when_close_starts_never_reaches_the_session(raw: bool) -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        release = client.session.hold("send")
+        sending = asyncio.create_task(conversation.send("Hi", create_response=False))
+        await asyncio.sleep(0.01)
+        queued = asyncio.create_task(conversation.send(event("passthrough") if raw else "Bye", create_response=False))
+        await asyncio.sleep(0.01)
+
+        await conversation.close()
+        release.set()
+        await asyncio.wait_for(sending, 1)
+        with pytest.raises(RealtimeConversationClosedException):
+            await asyncio.wait_for(queued, 1)
+
+    [sent] = client.session.sent
+    assert isinstance(sent, Message)
+    assert sent.text == "Hi"
+
+
+async def test_a_timed_out_control_call_finishes_cleaning_up_before_it_raises() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+        client.session.hold("create_response")
+        client.session.cleanup_delays["create_response"] = 0.05
+        with pytest.raises(RealtimeControlTimeoutException):
+            await conversation.create_response()
+
+        assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
+
+
 async def test_a_control_call_after_close_raises_conversation_closed() -> None:
     async with RealtimeAgent(FakeRealtimeClient()).start_conversation() as conversation:
         await conversation.close()
@@ -517,6 +551,27 @@ async def test_close_releases_a_waiting_control_call() -> None:
 
         with pytest.raises(RealtimeConversationClosedException):
             await asyncio.wait_for(waiting, 1)
+
+
+@pytest.mark.parametrize("control", ["create_response", "interrupt"])
+async def test_a_control_call_queued_when_close_starts_never_reaches_the_session(control: str) -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation(control_timeout=10) as conversation:
+        client.session.hold("create_response")
+        waiting = asyncio.create_task(conversation.create_response())
+        await eventually(lambda: bool(client.session.calls))
+        queued = asyncio.create_task(
+            conversation.create_response() if control == "create_response" else conversation.interrupt(played_ms=0)
+        )
+        await asyncio.sleep(0.01)
+
+        await conversation.close()
+
+        for call in (waiting, queued):
+            with pytest.raises(RealtimeConversationClosedException):
+                await asyncio.wait_for(call, 1)
+    assert client.session.calls == [("create_response", None)]
 
 
 async def test_a_created_response_counts_as_active_before_its_event_arrives() -> None:
@@ -631,6 +686,20 @@ async def test_a_receive_error_after_the_app_closed_does_not_fail_the_conversati
         await conversation.close()
 
         assert await _collect(conversation) == []
+
+
+async def test_close_finishes_when_closing_the_session_fails(caplog: pytest.LogCaptureFixture) -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.close_error = RealtimeConnectionException("The socket is stuck.")
+        try:
+            await asyncio.wait_for(conversation.close(), 1)
+        finally:
+            client.session.end()  # lets a hung close finish, so a failing run ends
+
+        assert await _collect(conversation) == []
+    assert "The socket is stuck." in caplog.text
 
 
 async def test_cancelling_a_close_call_leaves_the_close_running() -> None:

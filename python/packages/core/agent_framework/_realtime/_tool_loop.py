@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from .._middleware import FunctionMiddlewarePipeline
 from .._tools import (
@@ -99,6 +99,12 @@ class _ToolChain:
         return self.tripped or self.follow_ups + 1 >= max_iterations
 
 
+class FollowUp(NamedTuple):
+    """A follow-up the tool loop claimed, with its per-response options."""
+
+    options: Mapping[str, Any] | None
+
+
 class ToolLoop:
     """Runs the function calls of each finished response, and sends their results to the provider."""
 
@@ -116,7 +122,7 @@ class ToolLoop:
         report_result: Callable[[Content, str], None],
         report_error: Callable[[RealtimeException], None],
         wait_until_ready: Callable[[], Awaitable[None]],
-        request_follow_up: Callable[[Mapping[str, Any] | None], Awaitable[Any]],
+        request_follow_up: Callable[[Callable[[], FollowUp | None]], Awaitable[str | None]],
         session_options: Callable[[], Mapping[str, Any]],
         fail: Callable[[Exception], None],
         spawn: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]],
@@ -134,9 +140,12 @@ class ToolLoop:
         self._wait_until_ready = wait_until_ready
         self._session_options = session_options
         self._follow_up_task: asyncio.Task[Any] | None = None
+        self._follow_ups_due = 0
+        self._follow_ups_due_when_requested = 0
         self._chain = _ToolChain(configuration)
         self._warned_about_pausing_tools = False
         self._running_batches: dict[asyncio.Task[Any], list[_Call]] = {}
+        self._failed_batch_calls: list[_Call] = []
         self._closing = False
         self._report_result = report_result
         self._report_error = report_error
@@ -170,10 +179,10 @@ class ToolLoop:
         self._chain.restart()
 
     def on_response_done(self, response_id: str, status: str) -> None:
+        if self._closing:
+            return  # close() settles these calls
         calls = self._calls_by_response.pop(response_id, [])
         if not calls:
-            return
-        if self._closing:
             return
         if status == "completed":
             batch = self._spawn(self._run_batch(response_id, calls))
@@ -187,20 +196,25 @@ class ToolLoop:
     def _forget_batch(self, batch: asyncio.Task[Any]) -> None:
         self._running_batches.pop(batch, None)
 
+    def stop(self) -> None:
+        """Start no more batches or follow-ups, from the moment close starts; ``close()`` settles the calls left."""
+        self._closing = True
+        if self._follow_up_task is not None:
+            self._follow_up_task.cancel()
+
     async def close(self) -> None:
         """Stop new batches, cancel running tools, and settle every unfinished call (spec 006, Tool loop, Settlement).
 
         Each running batch is cancelled once with the ``conversation_closed`` reason, which the executor forwards to
         its calls, so their ``execute_tool`` spans record it. Settled results stream but aren't sent.
         """
-        self._closing = True
-        if self._follow_up_task is not None:
-            self._follow_up_task.cancel()
+        self.stop()
         running = dict(self._running_batches)
         for batch in running:
             batch.cancel(_CONVERSATION_CLOSED_REASON)
         await asyncio.gather(*running, return_exceptions=True)
-        unfinished = [call for calls in running.values() for call in calls]
+        unfinished = [*self._failed_batch_calls, *(call for calls in running.values() for call in calls)]
+        self._failed_batch_calls.clear()
         unfinished += [call for calls in self._calls_by_response.values() for call in calls]
         self._calls_by_response.clear()
         for call in unfinished:
@@ -229,7 +243,9 @@ class ToolLoop:
         try:
             await self._run_batch_steps(response_id, calls)
         except Exception as error:
-            # MiddlewareFailure is the executor's fail-closed signal; anything else is a broken batch.
+            # MiddlewareFailure is the executor's fail-closed signal; anything else is a broken batch. Either way the
+            # conversation closes, and close settles this batch's calls.
+            self._failed_batch_calls.extend(calls)
             self._fail(error)
 
     async def _run_batch_steps(self, response_id: str, calls: list[_Call]) -> None:
@@ -252,7 +268,13 @@ class ToolLoop:
                 call.result = _settled_with_error(
                     call.content, "this tool chain reached its limit, so the tool didn't run", "limit_reached"
                 )
-        terminated = await self._execute([call for call in calls if call.result is None]) or chain_ends
+        terminated, executed = await self._execute([call for call in calls if call.result is None])
+        # Errors count across the whole batch, as in chat, where unknown calls get their error result in the executor.
+        self._chain.count(
+            executed,
+            had_errors=any(call.result is not None and call.result.exception is not None for call in calls),
+        )
+        terminated = terminated or chain_ends
         results = [call.result for call in calls if call.result is not None]
         await self._send_results(Message("tool", results))
         self._results_marker = self._responses.created_count
@@ -263,6 +285,7 @@ class ToolLoop:
 
     def _follow_up_due(self) -> None:
         """Request one follow-up once the provider can take it; follow-ups due together merge."""
+        self._follow_ups_due += 1
         if self._follow_up_task is None or self._follow_up_task.done():
             self._follow_up_task = self._spawn(self._follow_up())
 
@@ -278,28 +301,45 @@ class ToolLoop:
             return {"tool_choice": "auto"}
         return None
 
+    def _claim_follow_up(self) -> FollowUp | None:
+        """Claim the follow-up as it's requested, under the control lock, or return ``None`` once it isn't due."""
+        if self._responses.answered_since(self._results_marker):
+            return None
+        options = self._follow_up_options()
+        # Count it when it's requested: new input during the request starts a new chain, which it isn't part of.
+        self._chain.follow_ups += 1
+        self._follow_ups_due_when_requested = self._follow_ups_due
+        return FollowUp(options)
+
     async def _follow_up(self) -> None:
         while True:
             await self._wait_until_ready()
             if self._responses.answered_since(self._results_marker):
                 return  # a response created after the results already saw them, so it is the follow-up
-            options = self._follow_up_options()
-            # Count it when it's requested: new input during the request starts a new chain, which it isn't part of.
-            self._chain.follow_ups += 1
             try:
-                await self._request_follow_up(options)
+                response_id = await self._request_follow_up(self._claim_follow_up)
             except RealtimeActiveResponseException:
                 continue  # another response won the race; it counts if it can act on the results
             except RealtimeConversationClosedException:
                 return
             except RealtimeException as error:
                 self._report_error(error)
-            return
+                return
+            if response_id is None:
+                continue  # the caller spoke, a response started, or one answered, while it waited its turn
+            if self._follow_ups_due == self._follow_ups_due_when_requested:
+                return
+            # Results went out while it was being requested, which its response can't act on, so request another.
+            self._responses.not_answering(response_id)
 
-    async def _execute(self, calls: Sequence[_Call]) -> bool:
-        """Run ``calls`` through the shared executor, and return whether function middleware ended the loop."""
+    async def _execute(self, calls: Sequence[_Call]) -> tuple[bool, int]:
+        """Run ``calls`` through the shared executor.
+
+        Returns:
+            Whether function middleware ended the loop, and how many calls ran.
+        """
         if not calls:
-            return False
+            return False, 0
         self._chain.batch_started()
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
@@ -312,8 +352,7 @@ class ToolLoop:
                 call.result = _settled_with_error(
                     call.content, "the call paused for an answer it can't get", "unsupported"
                 )
-        self._chain.count(batch.executed_call_count, had_errors=batch.had_errors)
-        return batch.should_terminate
+        return batch.should_terminate, batch.executed_call_count
 
     async def _run_executor(self, calls: Sequence[_Call]) -> Any:
         return await _execute_function_calls(
