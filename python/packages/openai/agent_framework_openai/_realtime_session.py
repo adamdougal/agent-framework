@@ -772,7 +772,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                     _item_create({
                         "type": "function_call_output",
                         "call_id": content.call_id,
-                        "output": content.result or "",
+                        "output": _function_output(content.result),
                     })
                 )
             elif content.type in ("data", "uri") and content.has_top_level_media_type("audio"):
@@ -1037,6 +1037,21 @@ def _control_exception(wire: dict[str, Any]) -> RealtimeControlException:
         else RealtimeControlException
     )
     return exception_type(error.get("message", ""), code=error.get("code"), param=error.get("param"))
+
+
+def _function_output(result: Any) -> str:
+    """A function result as the protocol's string output.
+
+    Text goes as it is and anything else as JSON, as the chat clients send it.
+    """
+    if isinstance(result, str):
+        return result
+    if result is None:
+        return ""
+    try:
+        return json.dumps(result, default=str)
+    except (TypeError, ValueError):
+        return str(result)
 
 
 def _voice_label(voice: Any) -> str:

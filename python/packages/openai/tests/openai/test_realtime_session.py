@@ -2047,6 +2047,24 @@ async def test_send_function_result_creates_an_output_item(caplog: pytest.LogCap
     assert caplog.text.count("call_2") == 1
 
 
+async def test_send_a_non_text_function_result_sends_it_as_json() -> None:
+    """Function results built directly with result {"temperature": 21} and 0 send outputs '{"temperature": 21}' and
+    "0", as the chat clients serialize them, never a non-string output."""
+    session, connection = await started()
+
+    await session.send(
+        Message(
+            "tool",
+            [
+                Content("function_result", call_id="call_1", result={"temperature": 21}),
+                Content("function_result", call_id="call_2", result=0),
+            ],
+        )
+    )
+
+    assert [event["item"]["output"] for event in connection.sent] == ['{"temperature": 21}', "0"]
+
+
 async def test_send_other_content_is_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     """A function_approval_response content sends nothing and warns; contents around it are still sent in order."""
     session, connection = await started()
