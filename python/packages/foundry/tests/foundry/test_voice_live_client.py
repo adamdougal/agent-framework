@@ -29,6 +29,7 @@ from agent_framework.exceptions import (
 )
 from aiohttp import WSMsgType, web
 from azure.core.credentials import AccessToken, AzureKeyCredential
+from azure.core.exceptions import AzureError
 
 from agent_framework_foundry import (
     AzureAnimation,
@@ -40,7 +41,7 @@ from agent_framework_foundry import (
     AzureVoice,
     VoiceLiveOptions,
 )
-from agent_framework_foundry._voice_live import VoiceLiveClient, _VoiceLiveSession
+from agent_framework_foundry._voice_live import VoiceLiveClient, _VoiceLiveConnection, _VoiceLiveSession
 
 ENDPOINT = "https://vl.services.ai.azure.com/"
 MODEL = "gpt-realtime"
@@ -319,6 +320,14 @@ def test_api_key_and_credential_together_raise() -> None:
         VoiceLiveClient(endpoint=ENDPOINT, model=MODEL, api_key="key", credential=StaticTokenCredential("tok"))
 
 
+def test_missing_authentication_raises() -> None:
+    """With no api_key, credential or AZURE_VOICELIVE_API_KEY, or an empty api_key, VoiceLiveClient(...) raises
+    ValueError naming api_key, credential and AZURE_VOICELIVE_API_KEY."""
+    for api_key in (None, ""):
+        with pytest.raises(ValueError, match="api_key.*credential.*AZURE_VOICELIVE_API_KEY"):
+            VoiceLiveClient(endpoint=ENDPOINT, model=MODEL, api_key=api_key)
+
+
 def test_missing_sdk_raises_the_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
     """When azure.ai.voicelive can't be found, VoiceLiveClient(...) raises ModuleNotFoundError whose message names
     pip install 'agent-framework-foundry[realtime]'."""
@@ -424,6 +433,25 @@ async def test_sync_credential_is_called_off_the_event_loop() -> None:
     assert all(thread != loop_thread for thread in credential.threads)
 
 
+async def test_sync_token_provider_is_called_off_the_event_loop() -> None:
+    """A sync token-provider callable, which may fetch its token with blocking I/O, runs on a thread other than the
+    event loop's."""
+    threads: list[int] = []
+    loop_thread = threading.get_ident()
+
+    def provider() -> str:
+        threads.append(threading.get_ident())
+        return "tok"
+
+    async with VoiceLiveServer() as server:
+        client = VoiceLiveClient(endpoint=server.endpoint, model=MODEL, credential=provider)
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert threads
+    assert all(thread != loop_thread for thread in threads)
+
+
 async def test_token_provider_callable_sends_a_bearer_token() -> None:
     """A sync callable returning "tok1" and an async callable returning "tok2" each send their token as a bearer
     token."""
@@ -518,6 +546,39 @@ async def test_closing_the_session_ends_a_blocked_receive() -> None:
         events = await asyncio.wait_for(reading_everything, 5)
 
     assert [event.kind for event in events] == ["session_created", "session_updated"]
+
+
+class FailingSdkConnection:
+    """An SDK connection whose reads fail with an AzureError that isn't ConnectionClosed."""
+
+    async def recv_bytes(self) -> bytes:
+        raise AzureError("Bad frame.")
+
+
+class ClosingManager:
+    """An SDK connection manager whose exit does nothing."""
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
+
+async def test_an_sdk_read_error_raises_a_realtime_connection_exception() -> None:
+    """An SDK read failing with AzureError("Bad frame.") makes receive() raise RealtimeConnectionException caused
+    by it."""
+    connection = _VoiceLiveConnection(ClosingManager(), FailingSdkConnection())
+
+    with pytest.raises(RealtimeConnectionException) as caught:
+        await connection.receive()
+
+    assert isinstance(caught.value.__cause__, AzureError)
+
+
+async def test_an_sdk_read_error_after_closing_ends_receive() -> None:
+    """Once close() has started, an SDK read failing with AzureError ends receive() normally."""
+    connection = _VoiceLiveConnection(ClosingManager(), FailingSdkConnection())
+    await connection.close()
+
+    assert await connection.receive() is None
 
 
 async def test_failed_start_closes_the_socket() -> None:
@@ -906,17 +967,33 @@ class TestVerification:
         assert caught.value.code == "response_cancel_not_active"
         assert len(connection.sent) == sent_before
 
-    async def test_ignored_voice_change_warns(self, caplog: pytest.LogCaptureFixture) -> None:
-        """update_session({"voice": "alloy"}) acknowledged with the old Azure voice echoed logs the ignored-voice
-        warning."""
-        ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
-        session, connection = await voice_live_session({"voice": ava})
-        connection.echo_overrides = {"voice": ava}
+    async def test_ignored_voice_change_warns_and_keeps_the_old_voice(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Voice Live ignores a change between OpenAI voices: update_session({"voice": "echo"}) acknowledged with
+        "alloy" still echoed logs the ignored-voice warning, and session.options keeps "alloy"."""
+        session, connection = await voice_live_session({"voice": "alloy"})
+        connection.echo_overrides = {"voice": "alloy"}
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": "alloy"}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": "echo"}, None), 1)
 
-        assert "ignored the voice change to 'alloy'" in caplog.text
+        assert "ignored the voice change to 'echo'" in caplog.text
+        assert session.options["voice"] == "alloy"
+
+    async def test_azure_voice_change_echoed_with_defaults_is_accepted(self, caplog: pytest.LogCaptureFixture) -> None:
+        """update_session({"voice": Sonia}) acknowledged with Sonia plus Voice Live's default fields is accepted:
+        session.options holds Sonia as requested, and nothing warns."""
+        ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
+        sonia: AzureVoice = {"type": "azure-standard", "name": "en-GB-SoniaNeural"}
+        session, connection = await voice_live_session({"voice": ava})
+        connection.echo_overrides = {
+            "voice": {**sonia, "temperature": None, "rate": None, "expressive": {"tags": None}}
+        }
+
+        async with reading(session):
+            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+
+        assert session.options["voice"] == sonia
+        assert "ignored the voice change" not in caplog.text
 
     async def test_rejected_update_is_claimed_without_an_event_id(self) -> None:
         """An error {event_id: null} while update_session() waits fails it with RealtimeControlException."""

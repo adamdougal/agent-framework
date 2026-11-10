@@ -595,7 +595,7 @@ speaks the same GA protocol, until live tests verify it.
 
 | Capability | OpenAI (inferred) | Azure OpenAI | Voice Live `2026-07-15` | Foundry voice agent (preview) |
 | --- | --- | --- | --- | --- |
-| Voice change after the first audio | No | No (`cannot_update_voice`); dropped with a warning | Azure voices: yes. From an OpenAI voice: ignored silently; the client warns | Azure to Azure: yes. Azure to OpenAI: rejected; dropped before sending |
+| Voice change after the first audio | No | No (`cannot_update_voice`); dropped with a warning | Azure to Azure: yes. OpenAI to OpenAI: ignored silently; the client warns and keeps the old voice. Between Azure and OpenAI voices: rejected | Azure to Azure: yes. Azure to OpenAI: rejected; dropped before sending |
 | Verbatim speech (`say(...)`) | Best-effort prompt | Best-effort prompt | Azure voice: `pre_generated_assistant_message`. OpenAI voice: raises | Azure voice: `pre_generated_assistant_message`. OpenAI voice: best-effort prompt (not probed) |
 | Per-response overrides | Yes | Yes | `instructions` ignored; dropped with a warning | Yes |
 | `metadata` echo on `response.created` | Yes | Yes | Yes, except `null` for pre-generated responses | Yes (pre-generated not probed) |

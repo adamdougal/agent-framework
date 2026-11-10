@@ -173,8 +173,8 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             env_file_encoding: The ``.env`` file's encoding.
 
         Raises:
-            ValueError: If the endpoint or model is missing, the API version isn't supported, or both ``api_key`` and
-                ``credential`` are passed.
+            ValueError: If the endpoint, model or authentication is missing, the API version isn't supported, or both
+                ``api_key`` and ``credential`` are passed.
             ModuleNotFoundError: If the realtime extra isn't installed.
         """
         if api_key is not None and credential is not None:
@@ -202,12 +202,18 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
                 "Voice Live needs a model: pass 'model' or set the AZURE_VOICELIVE_MODEL environment variable. For "
                 "BYOM, it's your deployment's name."
             )
+        resolved_api_key = settings.get("api_key")
+        if credential is None and (resolved_api_key is None or not resolved_api_key.get_secret_value()):
+            raise ValueError(
+                "Voice Live needs authentication: pass 'api_key' or 'credential', or set the AZURE_VOICELIVE_API_KEY "
+                "environment variable."
+            )
         self.endpoint: str = resolved_endpoint
         self.model: str = resolved_model
         self.api_version = _supported_api_version(settings.get("api_version") or DEFAULT_API_VERSION)
         self.profile = profile
         self.foundry_resource_override = foundry_resource_override
-        self._api_key = settings.get("api_key")
+        self._api_key = resolved_api_key
         self._credential = credential
 
     async def start_session(
@@ -309,14 +315,22 @@ class _ThreadedTokenCredential(_CredentialAdapter):
 
 
 class _TokenProviderCredential(_CredentialAdapter):
-    """An async token credential over a token-provider callable, sync or async, which already knows its scope."""
+    """An async token credential over a token-provider callable, sync or async, which already knows its scope.
+
+    A sync provider, such as one from ``azure.identity.get_bearer_token_provider()``, can fetch its token with
+    blocking I/O, so it runs in a worker thread.
+    """
 
     async def get_token(self, *scopes: str, **kwargs: Any) -> Any:
         from azure.core.credentials import AccessToken
 
-        token = self._credential()
-        if inspect.isawaitable(token):
-            token = await token
+        provider = self._credential
+        if inspect.iscoroutinefunction(provider) or inspect.iscoroutinefunction(type(provider).__call__):
+            token = await provider()
+        else:
+            token = await asyncio.to_thread(provider)
+            if inspect.isawaitable(token):
+                token = await token
         return AccessToken(token, int(time.time()) + _PROVIDED_TOKEN_LIFETIME_SECONDS)
 
 
@@ -395,9 +409,10 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
         return self._session_state.get("voice")
 
     def _voice_change_allowed(self, voice: Any) -> bool:
-        """Voice Live takes a new voice at any time.
+        """Voice Live decides for itself, at any time.
 
-        A change from an OpenAI voice is ignored, which ``update_session`` reports when the echo keeps the old voice.
+        It changes between Azure voices, ignores a change between OpenAI voices, which the session reports when the
+        echo keeps the old voice, and rejects a change between Azure and OpenAI voices.
         """
         return True
 
@@ -448,6 +463,10 @@ class _VoiceLiveConnection:
                 raise RealtimeConnectionException(
                     f"Voice Live closed the connection with code {closed.code}.", close_code=closed.code
                 ) from closed
+            except AzureError as error:
+                if self._closing:
+                    return None
+                raise RealtimeConnectionException(f"Couldn't read from Voice Live: {error}") from error
             if frame:
                 return json.loads(frame)
             # The SDK returns an empty frame for websocket control messages, such as the one a local close wakes a

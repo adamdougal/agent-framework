@@ -129,7 +129,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._active_response_id: str | None = None
         self._session_state: dict[str, Any] = {}
         self._heard_output_audio = False
-        self._client_truncations: set[str] = set()
+        self._client_truncations: set[tuple[str, int, int]] = set()
+        self._truncate_cuts: dict[str, tuple[str, int, int]] = {}
         self._sent_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
         self._abandoned_updates: list[_PendingControl] = []
@@ -186,6 +187,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 raise TypeError(
                     "A raw realtime command needs its wire event as a JSON-serializable mapping in raw_representation."
                 )
+            # An error echoing this command's id is its own, so no waiting control call may claim it.
+            raw_event_id = cast("Mapping[str, Any]", raw_command).get("event_id")
+            if isinstance(raw_event_id, str):
+                self._sent_event_ids.add(raw_event_id)
             await self._write(cast("Mapping[str, Any]", raw_command))
             return
         for wire_event in self._message_events(value):
@@ -216,8 +221,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
         Keys the provider can't take now are dropped with a warning, and when nothing is left the call returns at
         once. Otherwise it returns when the provider acknowledges the update, and the accepted keys merge into
-        ``options``. If the acknowledgement echoes a different voice than the one sent, it warns that the provider
-        ignored the change.
+        ``options``. If the acknowledgement echoes a different voice than the one sent, the provider ignored the
+        change: the session warns and ``options`` keeps the voice the provider kept.
 
         Raises:
             RealtimeControlException: If the provider rejects the update.
@@ -227,10 +232,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if not session:
             return
         await self._control({"type": "session.update", "session": session}, "session.updated", accepted_options=honored)
-        if "voice" in honored and self._current_voice() != honored["voice"]:
-            logger.warning(
-                "The provider ignored the voice change to %r and kept %r.", honored["voice"], self._current_voice()
-            )
 
     async def create_response(self, options: RealtimeOptionsT | None = None) -> str:
         """Request a response, and return its id once the provider reports that response created.
@@ -269,6 +270,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             {"type": "response.cancel"},
             "response.done",
             concerns=lambda wire: _mapping(wire.get("response")).get("id") == cancelled_id,
+            # A response that finished while the cancel waited to send needs no cancel, and the provider would apply
+            # this untargeted one to whichever response is active by then.
+            still_needed=lambda: self._active_response_id == cancelled_id,
         )
 
     async def truncate(self, item_id: str, content_index: int, audio_end_ms: int) -> None:
@@ -279,6 +283,12 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         Raises:
             RealtimeControlException: If the provider rejects the truncation.
         """
+        cut = (item_id, content_index, audio_end_ms)
+
+        def mark_sent(event_id: str) -> None:
+            self._client_truncations.add(cut)
+            self._truncate_cuts[event_id] = cut
+
         try:
             await self._control(
                 {
@@ -288,11 +298,11 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                     "audio_end_ms": audio_end_ms,
                 },
                 "conversation.item.truncated",
-                concerns=lambda wire: wire.get("item_id") == item_id and wire.get("content_index") == content_index,
-                on_sent=lambda: self._client_truncations.add(item_id),
+                concerns=lambda wire: _truncation_cut(wire) == cut,
+                on_sent=mark_sent,
             )
         except RealtimeControlException:
-            self._client_truncations.discard(item_id)
+            self._client_truncations.discard(cut)
             raise
 
     async def close(self) -> None:
@@ -479,7 +489,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         accepts_unechoed: bool = False,
         concerns: Callable[[dict[str, Any]], bool] | None = None,
         accepted_options: dict[str, Any] | None = None,
-        on_sent: Callable[[], None] | None = None,
+        on_sent: Callable[[str], None] | None = None,
+        still_needed: Callable[[], bool] | None = None,
         read_until_acknowledged: bool = False,
     ) -> Any:
         """Send a control request and wait for its acknowledgement, leaving nothing pending however it ends.
@@ -488,9 +499,11 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         session reads the connection itself. A response request's acknowledgement must echo its ``request_id``, or,
         when ``accepts_unechoed``, carry no metadata at all. ``concerns`` tells whether an acknowledgement is about this
         request's target, such as the item it truncates; one that isn't is left alone. ``accepted_options`` merge into
-        ``options`` as the acknowledgement is read, so events right behind it already see them. ``on_sent`` runs as the
-        request starts going out, before its acknowledgement can be read; a request counts as sent from then on, since a
-        transport can put the frame on the wire before its send returns.
+        ``options`` as the acknowledgement is read, so events right behind it already see them. ``on_sent``, given the
+        request's event_id, runs as the request starts going out, before its acknowledgement can be read; a request
+        counts as sent from then on, since a transport can put the frame on the wire before its send returns. When
+        ``still_needed`` says otherwise once the request holds the connection, nothing is sent and the call returns
+        None.
         """
         self._ensure_open()
         request = {**request, "event_id": f"af_{uuid.uuid4().hex}"}
@@ -510,17 +523,22 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             owner=owner,
             owner_cancellations=owner.cancelling() if owner is not None else 0,
         )
-        self._pending = pending
         sent = False
 
-        def start_sending() -> None:
+        def start_sending() -> bool:
+            # Published only now, so nothing read while the request waits for the connection can answer it.
             nonlocal sent
+            if still_needed is not None and not still_needed():
+                return False
+            self._pending = pending
             sent = True
             if on_sent is not None:
-                on_sent()
+                on_sent(request["event_id"])
+            return True
 
         try:
-            await self._write(request, on_writing=start_sending)
+            if not await self._write(request, on_writing=start_sending):
+                return None
             while read_until_acknowledged and not acknowledged.done():
                 await self._read_into_buffer()
             return await acknowledged
@@ -529,7 +547,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 # Nothing correlates session.updated with its request, so a cancelled update's late answer must not
                 # be taken for a later update's.
                 self._abandoned_updates.append(pending)
-            self._pending = None
+            if self._pending is pending:
+                self._pending = None
 
     def _settle_pending(self, event_type: str, wire: dict[str, Any]) -> bool:
         """Resolve or fail the waiting control call when ``wire`` acknowledges it, rejects it, or beats it.
@@ -554,7 +573,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             pending.answered = True
             if pending.answered_by(wire):
                 if pending.accepted_options is not None:
-                    self.options = cast("RealtimeOptionsT", {**self.options, **pending.accepted_options})
+                    self._merge_accepted(pending.accepted_options)
                 if waiting:
                     pending.acknowledged.set_result(wire)
             elif waiting:
@@ -563,23 +582,40 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 )
         return False
 
+    def _merge_accepted(self, accepted: dict[str, Any]) -> None:
+        """Merge an acknowledged update's options into ``options``, keeping the voice the provider reports it kept.
+
+        A provider can acknowledge an update yet keep the old voice, as Voice Live does between OpenAI voices. The
+        voice counts as kept when the acknowledgement echoes every field sent, since a provider fills in defaults.
+        """
+        accepted = dict(accepted)
+        if "voice" in accepted and not _voice_echoed(accepted["voice"], self._current_voice()):
+            logger.warning(
+                "The provider ignored the voice change to %r and kept %r.", accepted.pop("voice"), self._current_voice()
+            )
+        self.options = cast("RealtimeOptionsT", {**self.options, **accepted})
+
     def _answers_abandoned_update(self, event_type: str, wire: dict[str, Any]) -> bool:
         """Whether ``wire`` answers a session update whose caller stopped waiting, in the order they were sent.
 
         A session.updated answers the oldest, and its accepted options merge into ``options``. An error answers the
-        update whose id it echoes, or the oldest when it echoes none, and streams as an unclaimed error.
+        update whose id it echoes, or the oldest when it echoes none or an id this session never sent, and streams as an
+        unclaimed error.
         """
         if not self._abandoned_updates:
             return False
         if event_type == "session.updated":
             answered = self._abandoned_updates.pop(0)
-            self.options = cast("RealtimeOptionsT", {**self.options, **(answered.accepted_options or {})})
+            self._merge_accepted(answered.accepted_options or {})
             return True
         if event_type != "error":
             return False
         echoed = _mapping(wire.get("error")).get("event_id")
+        if echoed is None or echoed not in self._sent_event_ids:
+            self._abandoned_updates.pop(0)
+            return True
         for index, abandoned in enumerate(self._abandoned_updates):
-            if echoed is None or echoed == abandoned.event_id:
+            if echoed == abandoned.event_id:
                 del self._abandoned_updates[index]
                 return True
         return False
@@ -617,6 +653,11 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         except RealtimeConnectionException as error:
             self._fail_pending(error)
             raise
+        except Exception as error:
+            failure = RealtimeConnectionException(f"The realtime connection failed: {error}")
+            failure.__cause__ = error
+            self._fail_pending(failure)
+            raise
         self._fail_pending(RealtimeConnectionException("The realtime connection closed."))
 
     async def _read_into_buffer(self) -> dict[str, Any]:
@@ -628,15 +669,17 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._buffered.extend(self._handle(wire))
         return wire
 
-    async def _write(self, wire_event: Mapping[str, Any], *, on_writing: Callable[[], None] | None = None) -> None:
-        """Send one wire event, never interleaved with another write.
+    async def _write(self, wire_event: Mapping[str, Any], *, on_writing: Callable[[], bool] | None = None) -> bool:
+        """Send one wire event, never interleaved with another write, and return whether it was sent.
 
-        ``on_writing`` runs once this write holds the connection, just before the transport sends.
+        ``on_writing`` runs once this write holds the connection, just before the transport sends; when it returns
+        False, nothing is sent.
         """
         async with self._write_lock:
-            if on_writing is not None:
-                on_writing()
+            if on_writing is not None and not on_writing():
+                return False
             await self._connection.send(wire_event)
+            return True
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -677,8 +720,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 if (audio := _get_data_bytes_as_str(content)) is not None:
                     wire_events.append({"type": "input_audio_buffer.append", "audio": audio})
                 else:
+                    # The URI isn't logged: it can carry credentials, such as a SAS signature.
                     logger.warning(
-                        "Dropping audio %s: a realtime session can only send audio it holds as data.", content.uri
+                        "Dropping %s audio from a URI: a realtime session can only send audio it holds as data.",
+                        content.media_type,
                     )
             else:
                 logger.warning("Dropping %s content: a realtime session can't send it.", content.type)
@@ -715,6 +760,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             self._session_state = dict(_mapping(wire.get("session")))
         elif event_type == "response.output_audio.delta":
             self._heard_output_audio = True
+        elif event_type == "error" and (echoed := _mapping(wire.get("error")).get("event_id")) in self._truncate_cuts:
+            # A provider that echoes the request id rejected one of this session's cuts, even one whose caller left.
+            self._client_truncations.discard(self._truncate_cuts.pop(echoed))
 
     def _map_event(self, event_type: str, wire: dict[str, Any]) -> list[RealtimeEvent]:
         """Map one wire event to its realtime events, keyed by its GA event name."""
@@ -744,14 +792,20 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             case "conversation.item.truncated":
                 core = {
                     **_present(wire, "item_id", "content_index", "audio_end_ms"),
-                    "truncated_by": self._truncated_by(wire["item_id"]),
+                    "truncated_by": self._truncated_by(_truncation_cut(wire)),
                 }
                 return [self._event("item_truncated", wire, core=core)]
             case "conversation.item.input_audio_transcription.delta":
                 text = Content.from_text(wire.get("delta") or "", merge_mode="append")
                 return [self._payload("input_transcription", wire, text, _present(wire, "item_id", "content_index"))]
             case "conversation.item.input_audio_transcription.completed":
-                text = Content.from_text(wire.get("transcript") or "", merge_mode="replace", status="completed")
+                # Transcription usage stays on the caller transcript, not in a response's usage.
+                text = Content.from_text(
+                    wire.get("transcript") or "",
+                    merge_mode="replace",
+                    status="completed",
+                    additional_properties={"openai": {"usage": wire["usage"]}} if wire.get("usage") else None,
+                )
                 return [self._payload("input_transcription", wire, text, _present(wire, "item_id", "content_index"))]
             case "conversation.item.input_audio_transcription.failed":
                 failure = _mapping(wire.get("error"))
@@ -807,10 +861,12 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         """The media type of the agent's audio: the session's output format, 24 kHz PCM by default."""
         return cast("dict[str, Any]", self.options).get("output_audio_format") or DEFAULT_AUDIO_FORMAT
 
-    def _truncated_by(self, item_id: str) -> str:
-        """Who cut ``item_id``: this session's own truncate request, or the provider on its own."""
-        if item_id in self._client_truncations:
-            self._client_truncations.discard(item_id)
+    def _truncated_by(self, cut: tuple[Any, Any, Any]) -> str:
+        """Who made a cut: this session's own truncate request, or the provider on its own."""
+        if cut in self._client_truncations:
+            self._client_truncations.discard(cut)
+            for event_id in [event_id for event_id, sent_cut in self._truncate_cuts.items() if sent_cut == cut]:
+                del self._truncate_cuts[event_id]
             return "client"
         return "provider"
 
@@ -906,6 +962,24 @@ def _control_exception(wire: dict[str, Any]) -> RealtimeControlException:
         else RealtimeControlException
     )
     return exception_type(error.get("message", ""), code=error.get("code"), param=error.get("param"))
+
+
+def _voice_echoed(requested: Any, echoed: Any) -> bool:
+    """Whether a provider's echoed voice is the one requested: equal, or a voice object with every requested field.
+
+    An acknowledgement that reports no voice can't say the change was ignored.
+    """
+    if echoed is None:
+        return True
+    if isinstance(requested, Mapping) and isinstance(echoed, Mapping):
+        echoed_fields = cast("Mapping[str, Any]", echoed)
+        return all(echoed_fields.get(key) == value for key, value in cast("Mapping[str, Any]", requested).items())
+    return bool(requested == echoed)
+
+
+def _truncation_cut(wire: dict[str, Any]) -> tuple[Any, Any, Any]:
+    """A truncation's whole cut: its item, content part and the audio it keeps."""
+    return (wire.get("item_id"), wire.get("content_index"), wire.get("audio_end_ms"))
 
 
 def _is_out_of_band(wire: dict[str, Any]) -> bool:

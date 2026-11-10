@@ -575,6 +575,62 @@ async def test_a_cancelled_updates_late_rejection_does_not_fail_the_next_update(
     assert session.options == {"instructions": "B."}
 
 
+async def test_a_cancelled_updates_echoed_rejection_retires_it_whatever_arrives_first() -> None:
+    """update_session A is cancelled after it's sent, then update B is sent. A speech_started, then A's rejection
+    echoing A's event_id as GA providers do: the rejection streams as an error, B isn't failed, and B resolves on the
+    next session.updated."""
+    session, connection = await started()
+    connection.responder = None
+    speech_started = {
+        "type": "input_audio_buffer.speech_started",
+        "event_id": "e1",
+        "item_id": "i",
+        "audio_start_ms": 0,
+    }
+
+    async with reading(session) as reader:
+        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        abandoned_request = await connection.wait_sent("session.update")
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push(speech_started, rejection("invalid_value", event_id=abandoned_request["event_id"]))
+        await reader.until(lambda: "error" in reader.kinds())
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+    assert session.options == {"instructions": "B."}
+
+
+async def test_a_cancelled_updates_late_rejection_with_a_server_id_does_not_fail_the_next_update() -> None:
+    """update_session A is cancelled after it's sent, then update B is sent. A's rejection, carrying the server's own
+    event_id "evt_srv_9", streams as an error and retires A; B resolves on the next session.updated without A's
+    settings."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session) as reader:
+        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        await connection.wait_sent("session.update")
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", event_id="evt_srv_9"))
+        await reader.until(lambda: "error" in reader.kinds())
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+    assert session.options == {"instructions": "B."}
+
+
 async def test_an_acknowledgement_read_as_its_update_is_cancelled_is_not_expected_again() -> None:
     """Update A's session.updated is queued and A is cancelled before A's task runs again; the reader still reads it
     as A's, so update B resolves on its own session.updated and session.options holds both."""
@@ -838,6 +894,37 @@ async def test_cancel_response_ignores_another_responses_done() -> None:
         await asyncio.wait_for(cancelling, 1)
 
 
+async def test_a_cancel_whose_response_finishes_before_it_is_sent_sends_nothing() -> None:
+    """With "resp_1" active, cancel_response() waits behind another write while "resp_1" finishes and "resp_2"
+    starts. The cancel isn't sent, so it can't cancel "resp_2", and cancel_response() returns."""
+    release = asyncio.Event()
+
+    class BlockingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            if event.get("type") == "blocker":
+                await release.wait()
+            await super().send(event)
+
+    connection = BlockingConnection()
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session) as reader:
+        await activate_response(connection, reader, "resp_1")
+        blocking = asyncio.create_task(
+            session.send(RealtimeEvent("passthrough", raw_representation={"type": "blocker"}))
+        )
+        await asyncio.sleep(0.01)
+        cancelling = asyncio.create_task(session.cancel_response())
+        await asyncio.sleep(0.01)
+        await read_through(connection, reader, response_done("resp_1"), response_created("resp_2"))
+        release.set()
+        await asyncio.wait_for(cancelling, 1)
+        await asyncio.wait_for(blocking, 1)
+
+    assert "response.cancel" not in connection.sent_types()
+
+
 async def test_cancel_response_without_an_active_response_raises_locally() -> None:
     """With no active response, cancel_response() raises RealtimeControlException with code
     "response_cancel_not_active" and sends nothing."""
@@ -930,6 +1017,87 @@ async def test_a_truncation_read_while_its_truncate_drains_is_marked_client() ->
     ]
 
 
+async def test_a_truncation_read_before_the_truncate_is_sent_does_not_answer_it() -> None:
+    """While another write holds the connection, truncate("item_1", 0, 500) waits to send. A provider truncation of
+    the same cut read meanwhile doesn't answer it: once sent, truncate() waits for its own acknowledgement."""
+    release = asyncio.Event()
+
+    class BlockingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            if event.get("type") == "blocker":
+                await release.wait()
+            await super().send(event)
+
+    connection = BlockingConnection()
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session) as reader:
+        blocking = asyncio.create_task(
+            session.send(RealtimeEvent("passthrough", raw_representation={"type": "blocker"}))
+        )
+        await asyncio.sleep(0.01)
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 500))
+        await asyncio.sleep(0.01)
+        await read_through(connection, reader, item_truncated("item_1", 0, 500))
+        release.set()
+        await connection.wait_sent("conversation.item.truncate")
+        await asyncio.sleep(0.01)
+        assert not truncating.done()
+
+        connection.push(item_truncated("item_1", 0, 500))
+        await asyncio.wait_for(truncating, 1)
+        await asyncio.wait_for(blocking, 1)
+
+
+async def test_a_second_cut_of_an_item_waits_for_its_own_acknowledgement() -> None:
+    """truncate("item_1", 0, 500) is cancelled after it's sent; truncate("item_1", 0, 300) then ignores the 500 ms
+    acknowledgement and resolves on the 300 ms one. Both truncations are marked client."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        first = asyncio.create_task(session.truncate("item_1", 0, 500))
+        await connection.wait_sent("conversation.item.truncate")
+        first.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(session.truncate("item_1", 0, 300))
+        await connection.wait_sent("conversation.item.truncate")
+        connection.push(item_truncated("item_1", 0, 500))
+        await reader.until(lambda: len(reader.of_kind("item_truncated")) == 1)
+        assert not second.done()
+
+        connection.push(item_truncated("item_1", 0, 300))
+        await asyncio.wait_for(second, 1)
+        await reader.until(lambda: len(reader.of_kind("item_truncated")) == 2)
+
+    assert [event.additional_properties["core"]["truncated_by"] for event in reader.of_kind("item_truncated")] == [
+        "client",
+        "client",
+    ]
+
+
+async def test_a_late_rejection_of_a_cancelled_truncate_clears_its_client_mark() -> None:
+    """truncate("item_1", 0, 500) is cancelled after it's sent, then rejected by an error echoing its event_id, as GA
+    providers do; a later truncation at that cut is marked provider."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 500))
+        request = await connection.wait_sent("conversation.item.truncate")
+        truncating.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await truncating
+        await read_through(
+            connection,
+            reader,
+            rejection("invalid_value", "audio_end_ms", event_id=request["event_id"]),
+            item_truncated("item_1", 0, 500),
+        )
+
+    assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
+
+
 async def test_a_rejected_truncate_leaves_a_later_truncation_to_the_provider() -> None:
     """truncate("item_1", 0, 99999) fails on a claimed rejection; a later conversation.item.truncated for "item_1"
     yields truncated_by "provider"."""
@@ -997,6 +1165,25 @@ async def test_error_echoing_another_requests_id_does_not_claim() -> None:
         await asyncio.sleep(0.01)
         connection.push(rejection("invalid_value", event_id=earlier_event_id))
         await asyncio.sleep(0.01)
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_srv", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+
+async def test_an_error_echoing_a_raw_commands_event_id_is_not_claimed() -> None:
+    """While update_session() waits, a raw command with event_id "raw_1" is rejected by an error echoing "raw_1": the
+    update isn't failed, the error streams as error, and the update resolves on its session.updated."""
+    session, connection = await started()
+    connection.responder = None
+    commit = {"type": "input_audio_buffer.commit", "event_id": "raw_1"}
+
+    async with reading(session) as reader:
+        updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
+        await connection.wait_sent("session.update")
+        await session.send(RealtimeEvent("passthrough", raw_representation=commit))
+        connection.push(rejection("input_audio_buffer_commit_empty", event_id="raw_1"))
+        await reader.until(lambda: "error" in reader.kinds())
         assert not updating.done()
 
         connection.push({"type": "session.updated", "event_id": "evt_srv", "session": {}})
@@ -1143,6 +1330,25 @@ async def test_abnormal_close_raises_from_receive() -> None:
     assert caught.value.close_code == 1011
     assert isinstance(reader.error, RealtimeConnectionException)
     assert reader.error.close_code == 1011
+
+
+async def test_an_unexpected_receive_failure_fails_a_waiting_call() -> None:
+    """When the connection's receive() raises RuntimeError("Broken."), receive() raises it, and a waiting
+    update_session() fails with RealtimeConnectionException caused by it."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session) as reader:
+        updating = asyncio.create_task(session.update_session({"instructions": "Hi"}, None))
+        await connection.wait_sent("session.update")
+        connection.fail(RuntimeError("Broken."))
+
+        with pytest.raises(RealtimeConnectionException) as caught:
+            await asyncio.wait_for(updating, 1)
+        await reader.until(lambda: reader.done)
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert isinstance(reader.error, RuntimeError)
 
 
 async def test_second_concurrent_reader_raises() -> None:
@@ -1383,6 +1589,24 @@ async def test_input_transcription_maps_to_text() -> None:
     assert completed.additional_properties["core"] == {"item_id": "item_1", "content_index": 0}
 
 
+async def test_input_transcription_usage_stays_on_the_transcript() -> None:
+    """input_audio_transcription.completed with usage {type: "tokens", input_tokens: 12, output_tokens: 3,
+    total_tokens: 15} yields only input_transcription, whose text content holds that usage under openai."""
+    usage = {"type": "tokens", "input_tokens": 12, "output_tokens": 3, "total_tokens": 15}
+
+    events = await mapped({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "event_id": "e1",
+        "item_id": "item_1",
+        "content_index": 0,
+        "transcript": "Hello",
+        "usage": usage,
+    })
+
+    assert [event.kind for event in events] == ["input_transcription"]
+    assert events[0].content.additional_properties == {"openai": {"usage": usage}}
+
+
 async def test_input_transcription_failed_maps_error_fields() -> None:
     """input_audio_transcription.failed {item_id, content_index: 0, error: {code: "x", message: "Y"}} yields
     input_transcription_failed with core {item_id, content_index: 0, error_code: "x", error_message: "Y"}."""
@@ -1534,14 +1758,17 @@ async def test_send_audio_data_appends_to_the_input_buffer() -> None:
     assert connection.sent == [{"type": "input_audio_buffer.append", "audio": "AAE="}]
 
 
-async def test_send_external_audio_uri_is_dropped(caplog: pytest.LogCaptureFixture) -> None:
-    """Audio uri content pointing at https://example.com/a.wav sends nothing and warns."""
+async def test_send_external_audio_uri_is_dropped_without_logging_the_uri(caplog: pytest.LogCaptureFixture) -> None:
+    """Audio uri content pointing at a SAS URL sends nothing and warns, without the URL or its signature in the log."""
     session, connection = await started()
+    sas_url = "https://store.blob.core.windows.net/calls/a.wav?sv=2024-01-01&sig=secret-signature"
 
-    await session.send(Message("user", [Content.from_uri("https://example.com/a.wav", media_type="audio/wav")]))
+    await session.send(Message("user", [Content.from_uri(sas_url, media_type="audio/wav")]))
 
     assert connection.sent == []
-    assert "https://example.com/a.wav" in caplog.text
+    assert "audio" in caplog.text
+    assert "store.blob.core.windows.net" not in caplog.text
+    assert "secret-signature" not in caplog.text
 
 
 async def test_send_user_and_system_text_create_input_text_items() -> None:
