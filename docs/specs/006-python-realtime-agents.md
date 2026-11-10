@@ -568,9 +568,8 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   `foundry_resource_override`, sent through the SDK's `query`. It authenticates with `api_key` or `credential`, adapting
   token-provider callables and sync credentials, with `https://ai.azure.com/.default` as the default scope. It sends its
   first `session.update` before any other event, drops per-response `instructions` with a warning, and offers
-  `get_mcp_tool()` and `get_foundry_agent_tool()`. Caller audio may also be 16 kHz PCM, and the agent's audio 8 or
-  16 kHz PCM. It reads `AZURE_VOICELIVE_ENDPOINT`,
-  `AZURE_VOICELIVE_API_KEY`, `AZURE_VOICELIVE_MODEL` and `AZURE_VOICELIVE_API_VERSION`.
+  `get_mcp_tool()` and `get_foundry_agent_tool()`. Its audio, both ways, may also be 8 or 16 kHz PCM. It reads
+  `AZURE_VOICELIVE_ENDPOINT`, `AZURE_VOICELIVE_API_KEY`, `AZURE_VOICELIVE_MODEL` and `AZURE_VOICELIVE_API_VERSION`.
 - **Foundry voice agents.** `FoundryVoiceAgent` takes `project_client`, or `project_endpoint`, `agent_name`,
   `agent_version` and a `credential` for the `https://ai.azure.com/.default` scope. It reads the same `FOUNDRY_*`
   variables as `FoundryAgent`, and other participants use `foundry_agent.client`. The client sends `agent_version` only

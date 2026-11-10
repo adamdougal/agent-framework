@@ -174,8 +174,8 @@ class AzureInterimResponse(TypedDict, total=False):
 class VoiceLiveOptions(RealtimeOptions, total=False):
     """Voice Live session settings: the neutral realtime options, widened for Azure, and Voice Live's own.
 
-    ``input_audio_format`` also takes ``"audio/pcm;rate=16000"``, and ``output_audio_format`` also takes
-    ``"audio/pcm;rate=16000"`` and ``"audio/pcm;rate=8000"``. Per-response ``instructions`` are dropped with a warning,
+    ``input_audio_format`` and ``output_audio_format`` also take ``"audio/pcm;rate=16000"`` and
+    ``"audio/pcm;rate=8000"``. Per-response ``instructions`` are dropped with a warning,
     because Voice Live ignores them.
 
     Keys:

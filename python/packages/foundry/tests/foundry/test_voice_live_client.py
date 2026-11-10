@@ -578,14 +578,18 @@ async def test_audio_only_modality_becomes_text_and_audio() -> None:
 
 
 async def test_audio_formats_and_sampling_rates_translate() -> None:
-    """Input "audio/pcm;rate=24000" → input_audio_format "pcm16"; "audio/pcm;rate=16000" → "pcm16" with
-    input_audio_sampling_rate 16000; "audio/pcmu" → "g711_ulaw"; "audio/pcma" → "g711_alaw". Output
+    """Input "audio/pcm;rate=24000" → input_audio_format "pcm16"; "audio/pcm;rate=16000" and 8000 → "pcm16" with
+    input_audio_sampling_rate 16000 or 8000; "audio/pcmu" → "g711_ulaw"; "audio/pcma" → "g711_alaw". Output
     "audio/pcm;rate=16000" → output_audio_format "pcm16_16000hz" and rate 8000 → "pcm16_8000hz".
     "audio/pcm;rate=44100" raises ValueError."""
     assert await flat_session({"input_audio_format": "audio/pcm;rate=24000"}) == {"input_audio_format": "pcm16"}
     assert await flat_session({"input_audio_format": "audio/pcm;rate=16000"}) == {
         "input_audio_format": "pcm16",
         "input_audio_sampling_rate": 16000,
+    }
+    assert await flat_session({"input_audio_format": "audio/pcm;rate=8000"}) == {
+        "input_audio_format": "pcm16",
+        "input_audio_sampling_rate": 8000,
     }
     assert await flat_session({"input_audio_format": "audio/pcmu"}) == {"input_audio_format": "g711_ulaw"}
     assert await flat_session({"input_audio_format": "audio/pcma"}) == {"input_audio_format": "g711_alaw"}

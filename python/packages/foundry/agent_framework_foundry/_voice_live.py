@@ -44,6 +44,7 @@ logger = logging.getLogger("agent_framework.foundry")
 _INPUT_AUDIO_FORMATS: dict[str, dict[str, Any]] = {
     "audio/pcm;rate=24000": {"input_audio_format": "pcm16"},
     "audio/pcm;rate=16000": {"input_audio_format": "pcm16", "input_audio_sampling_rate": 16000},
+    "audio/pcm;rate=8000": {"input_audio_format": "pcm16", "input_audio_sampling_rate": 8000},
     "audio/pcmu": {"input_audio_format": "g711_ulaw"},
     "audio/pcma": {"input_audio_format": "g711_alaw"},
 }

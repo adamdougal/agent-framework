@@ -78,7 +78,7 @@ calls and word timestamps. For your own deployment, pass `profile="byom-azure-op
 
 - `say(text)` speaks the text verbatim only with an Azure text-to-speech voice, and raises with an OpenAI voice.
 - Per-response `instructions` are dropped with a warning, because Voice Live ignores them.
-- Caller audio may be 16 or 24 kHz PCM, or G.711. The agent's audio may also be 8 kHz PCM.
+- Audio, both ways, may be 8, 16 or 24 kHz PCM, or G.711.
 
 See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py).
 
