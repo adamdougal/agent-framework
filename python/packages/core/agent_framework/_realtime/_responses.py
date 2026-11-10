@@ -20,7 +20,8 @@ class ResponseLedger:
         self._active: set[str] = set()
         self._finished: set[str] = set()
         self._creation_order: list[str] = []
-        self._not_answering: set[str] = set()
+        self._filler: set[str] = set()
+        self._answers_only_earlier: set[str] = set()
         self._idle = asyncio.Event()
         self._idle.set()
 
@@ -57,16 +58,24 @@ class ResponseLedger:
     def answered_since(self, marker: int) -> bool:
         """Whether a response created after ``marker`` can act on what the conversation sent before it.
 
-        Responses requested as filler, by tools or their middleware, don't count.
+        Filler doesn't count, nor does a follow-up requested before results it can't see.
         """
-        return any(response_id not in self._not_answering for response_id in self._creation_order[marker:])
+        return any(
+            response_id not in self._filler and response_id not in self._answers_only_earlier
+            for response_id in self._creation_order[marker:]
+        )
 
-    def not_answering(self, response_id: str) -> None:
-        """Record that a response doesn't act on tool results sent after it was requested (spec 006, Tool loop).
+    def responses_since(self, marker: int) -> int:
+        """How many responses, apart from filler, the provider created after ``marker``."""
+        return sum(1 for response_id in self._creation_order[marker:] if response_id not in self._filler)
 
-        Filler that tools or middleware request acts on none, and a follow-up only on the results sent before it.
-        """
-        self._not_answering.add(response_id)
+    def filler(self, response_id: str) -> None:
+        """Record a response that tools or middleware requested, which acts on no tool results (spec 006, Tool loop)."""
+        self._filler.add(response_id)
+
+    def answers_only_earlier_results(self, response_id: str) -> None:
+        """Record a follow-up requested before results it therefore can't act on, though it answers earlier ones."""
+        self._answers_only_earlier.add(response_id)
 
     def _activate(self, response_id: str) -> None:
         self._active.add(response_id)

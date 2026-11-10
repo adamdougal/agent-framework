@@ -73,6 +73,7 @@ class FakeRealtimeSession:
         self.delays: dict[str, float] = {}
         self.cleanup_delays: dict[str, float] = {}
         self.cancel_response_error: BaseException | None = None
+        self.truncate_error: BaseException | None = None
         self.create_response_events: list[RealtimeEvent] = []
         self.create_response_error: BaseException | None = None
         self.close_raises_in_receive = False
@@ -152,11 +153,13 @@ class FakeRealtimeSession:
 
     async def create_response(self, options: RealtimeOptions | None = None) -> str:
         self.calls.append(("create_response", options))
-        events = list(self.create_response_events)  # the response this call creates, fixed when it's made
+        # The response this call creates, or the error it ends with, fixed when the call is made.
+        events = list(self.create_response_events)
+        error = self.create_response_error
         self.emit(*events)
         await self._acknowledge("create_response")
-        if self.create_response_error is not None:
-            raise self.create_response_error
+        if error is not None:
+            raise error
         for created in events:
             if created.kind == "response_created":
                 return str(created.additional_properties["core"]["response_id"])
@@ -172,6 +175,8 @@ class FakeRealtimeSession:
     async def truncate(self, item_id: str, content_index: int, audio_end_ms: int) -> None:
         self.calls.append(("truncate", item_id, content_index, audio_end_ms))
         await self._acknowledge("truncate")
+        if self.truncate_error is not None:
+            raise self.truncate_error
 
     async def close(self) -> None:
         self.close_count += 1
@@ -192,6 +197,7 @@ class FakeRealtimeClient:
         self.sessions: list[FakeRealtimeSession] = []
         self.start_session_delay = 0.0
         self.start_session_error: BaseException | None = None
+        self.start_session_release: asyncio.Event | None = None
         self.send_error: BaseException | None = None
 
     @property
@@ -205,6 +211,8 @@ class FakeRealtimeClient:
         self.start_session_calls.append({"options": options, "tools": tools})
         if self.start_session_delay:
             await asyncio.sleep(self.start_session_delay)
+        if self.start_session_release is not None:
+            await self.start_session_release.wait()
         if self.start_session_error is not None:
             raise self.start_session_error
         session = FakeRealtimeSession(options, tools)

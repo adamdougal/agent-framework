@@ -28,7 +28,11 @@ from agent_framework import (
     function_middleware,
     tool,
 )
-from agent_framework.exceptions import RealtimeActiveResponseException, RealtimeControlException
+from agent_framework.exceptions import (
+    RealtimeActiveResponseException,
+    RealtimeConnectionException,
+    RealtimeControlException,
+)
 from agent_framework.observability import OtelAttr
 
 from .conftest import MockBaseChatClient
@@ -265,6 +269,23 @@ async def test_a_call_for_an_unknown_tool_gets_the_not_found_result() -> None:
 
     assert _results(client.session) == [("call_1", 'Error: Requested function "missing" not found.')]
     assert client.session.calls == [("create_response", None)]
+
+
+async def test_each_call_and_its_result_share_one_occurrence_id() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "get_weather", city="Paris"), _call("call_2", "book_flight"))
+        )
+        updates = [await next_update(conversation) for _ in range(6)]
+
+    contents = [content for update in updates for content in update.contents]
+    calls = {content.call_id: content.id for content in contents if content.type == "function_call"}
+    results = {content.call_id: content.id for content in contents if content.type == "function_result"}
+    assert all(occurrence_id and occurrence_id.startswith("af-call-") for occurrence_id in calls.values())
+    assert len(set(calls.values())) == 2
+    assert results == calls
 
 
 async def test_calls_from_a_cancelled_response_do_not_run() -> None:
@@ -642,6 +663,28 @@ async def test_results_sent_after_an_in_flight_follow_ups_response_started_get_a
     assert client.session.calls == [("create_response", None), ("create_response", None)]
 
 
+async def test_results_sent_while_a_follow_up_is_rejected_still_get_a_follow_up() -> None:
+    client = FakeRealtimeClient()
+    look_up, started, release = _blocking_tool()
+
+    async with RealtimeAgent(client, tools=[get_weather, look_up]).start_conversation():
+        acknowledge = client.session.hold("create_response")
+        client.session.create_response_error = RealtimeControlException("The server is busy.")
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "look_up")),
+            *_response("resp_2", _call("call_2", "get_weather", response_id="resp_2", city="Paris")),
+        )
+        await eventually(lambda: bool(client.session.calls))  # the follow-up for call_2's results is in flight
+        client.session.create_response_error = None
+        release.set()
+        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+        acknowledge.set()
+        await eventually(lambda: len(client.session.calls) == 2)
+
+    assert client.session.calls == [("create_response", None), ("create_response", None)]
+
+
 async def test_a_failed_follow_up_streams_an_error_and_is_dropped() -> None:
     client = FakeRealtimeClient()
 
@@ -689,6 +732,56 @@ async def test_follow_ups_reaching_max_iterations_turn_tools_off() -> None:
     assert client.session.calls == [("create_response", None), ("create_response", {"tool_choice": "none"})]
 
 
+async def test_a_response_the_provider_creates_after_the_results_counts_as_a_follow_up() -> None:
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_iterations": 2})
+
+    async with agent.start_conversation():
+        release_send = client.session.hold("send")
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: client.session.send_attempts == 1)
+        release_send.set()
+        client.session.emit(event("response_created", response_id="resp_2"))  # the provider answers the results
+        await asyncio.sleep(0.01)
+        client.session.emit(
+            _call("call_2", "get_weather", response_id="resp_2", city="Rome"),
+            event("response_done", response_id="resp_2", status="completed"),
+        )
+        await eventually(lambda: bool(client.session.calls))
+
+    assert client.session.calls == [("create_response", {"tool_choice": "none"})]
+
+
+async def test_calls_after_the_chain_used_its_max_iterations_do_not_run() -> None:
+    client = FakeRealtimeClient()
+    runs: list[str] = []
+
+    @tool
+    def record(city: str) -> str:
+        """Record a city."""
+        runs.append(city)
+        return city
+
+    agent = RealtimeAgent(client, tools=[record], function_invocation_configuration={"max_iterations": 1})
+    async with agent.start_conversation() as conversation:
+        client.session.create_response_events = [event("response_created", response_id="resp_2")]
+        client.session.emit(*_response("resp_1", _call("call_1", "record", city="Paris")))
+        await eventually(lambda: bool(client.session.calls))
+        client.session.emit(event("response_done", response_id="resp_2", status="completed"))
+        await asyncio.sleep(0.01)
+
+        client.session.create_response_events = [event("response_created", response_id="resp_3")]
+        await conversation.create_response()
+        client.session.emit(
+            _call("call_3", "record", response_id="resp_3", city="Rome"),
+            event("response_done", response_id="resp_3", status="completed"),
+        )
+        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+    assert runs == ["Paris"]
+    assert client.session.calls == [("create_response", {"tool_choice": "none"}), ("create_response", None)]
+
+
 async def test_the_tool_chain_restarts_when_the_caller_speaks() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_iterations": 2})
@@ -732,6 +825,26 @@ async def test_sending_audio_does_not_restart_the_tool_chain() -> None:
         await eventually(lambda: len(client.session.calls) == 2)
 
     assert client.session.calls == [("create_response", None), ("create_response", {"tool_choice": "none"})]
+
+
+async def test_a_batch_from_an_earlier_tool_chain_does_not_count_toward_the_new_one() -> None:
+    client = FakeRealtimeClient()
+    look_up, started, release = _blocking_tool()
+    agent = RealtimeAgent(
+        client, tools=[look_up, get_weather], function_invocation_configuration={"max_function_calls": 1}
+    )
+
+    async with agent.start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "look_up")))
+        await started.wait()
+        client.session.emit(event("speech_started", item_id="item_9", audio_start_ms=100))
+        await asyncio.sleep(0.01)  # the caller's turn starts a new tool chain
+        release.set()
+        await eventually(lambda: len(_tool_messages(client.session)) == 1)
+        client.session.emit(*_response("resp_2", _call("call_2", "get_weather", response_id="resp_2", city="Paris")))
+        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+    assert _results(client.session)[1] == ("call_2", "Sunny in Paris")
 
 
 async def test_reaching_max_function_calls_turns_tools_off() -> None:
@@ -893,6 +1006,41 @@ async def test_a_call_runs_the_tool_it_resolved_to_on_arrival() -> None:
     assert _results(client.session) == [("call_1", "retired"), ("call_2", "Sunny in Paris")]
 
 
+async def test_same_named_calls_bound_to_different_tools_each_run_their_own() -> None:
+    client = FakeRealtimeClient()
+
+    @tool(name="get_weather")
+    def new_weather(city: str) -> str:
+        """Get the weather from the new service."""
+        return f"Cloudy in {city}"
+
+    @tool
+    def swap_weather(ctx: FunctionInvocationContext) -> str:
+        """Swap to the new weather service."""
+        ctx.remove_tools("get_weather")
+        ctx.add_tools(new_weather)
+        return "swapped"
+
+    async with RealtimeAgent(client, tools=[get_weather, swap_weather]).start_conversation():
+        client.session.emit(
+            event("response_created", response_id="resp_2"),
+            _call("call_2", "get_weather", response_id="resp_2", city="Paris"),
+            *_response("resp_1", _call("call_1", "swap_weather")),
+        )
+        await eventually(lambda: bool(_tool_messages(client.session)))
+        client.session.emit(
+            _call("call_3", "get_weather", response_id="resp_2", city="Rome"),
+            event("response_done", response_id="resp_2", status="completed"),
+        )
+        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+    assert _results(client.session) == [
+        ("call_1", "swapped"),
+        ("call_2", "Sunny in Paris"),
+        ("call_3", "Cloudy in Rome"),
+    ]
+
+
 async def test_barge_in_does_not_cancel_a_running_tool() -> None:
     client = FakeRealtimeClient()
     look_up, started, release = _blocking_tool()
@@ -972,6 +1120,42 @@ async def test_closing_during_a_concurrent_batch_records_conversation_closed_on_
     assert _tool_span_outcomes(span_exporter) == {
         "execute_tool look_up_a": (trace.StatusCode.ERROR, "conversation_closed"),
         "execute_tool look_up_b": (trace.StatusCode.ERROR, "conversation_closed"),
+    }
+
+
+async def test_closing_lets_each_running_tool_finish_its_cleanup_as_conversation_closed(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    client = FakeRealtimeClient()
+    cleaned_up: list[str] = []
+    started: list[str] = []
+
+    def tool_with_cleanup(name: str, cleanup_seconds: float) -> Any:
+        @tool(name=name)
+        async def look_up() -> str:
+            """Look something up, tidying up when cancelled."""
+            started.append(name)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(cleanup_seconds)
+                cleaned_up.append(name)
+                raise
+            return "done"
+
+        return look_up
+
+    tools = [tool_with_cleanup("quick_tidy", 0), tool_with_cleanup("slow_tidy", 0.05)]
+    async with RealtimeAgent(client, tools=tools).start_conversation() as conversation:
+        client.session.emit(*_response("resp_1", _call("call_1", "quick_tidy"), _call("call_2", "slow_tidy")))
+        await eventually(lambda: len(started) == 2)
+        span_exporter.clear()
+        await conversation.close()
+
+    assert sorted(cleaned_up) == ["quick_tidy", "slow_tidy"]
+    assert _tool_span_outcomes(span_exporter) == {
+        "execute_tool quick_tidy": (trace.StatusCode.ERROR, "conversation_closed"),
+        "execute_tool slow_tidy": (trace.StatusCode.ERROR, "conversation_closed"),
     }
 
 
@@ -1066,12 +1250,63 @@ async def test_a_batch_that_finishes_while_closing_requests_no_follow_up() -> No
     closing = asyncio.create_task(conversation.close())
     await eventually(lambda: client.session.close_count == 1)
     release.set()
-    await eventually(lambda: bool(_tool_messages(client.session)))
+    await asyncio.sleep(0.01)  # the batch finishes while the session is still closing
     session_closed.set()
 
     await asyncio.wait_for(closing, 1)
 
     assert client.session.calls == []
+    settled = [
+        content
+        for update in await _read_all(conversation)
+        for content in update.contents
+        if content.type == "function_result"
+    ]
+    assert [(content.call_id, content.result) for content in settled] == [("call_1", "look_up done")]
+    assert _tool_messages(client.session) == []
+
+
+async def test_a_result_send_that_fails_as_the_conversation_closes_does_not_fail_it() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
+        release_send = client.session.hold("send")
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: client.session.send_attempts == 1)
+        session_closed = client.session.hold("close")
+        closing = asyncio.create_task(conversation.close())
+        await eventually(lambda: client.session.close_count == 1)
+        client.session.send_error = RealtimeConnectionException("The socket is closing.")
+        release_send.set()
+        await asyncio.sleep(0.01)
+        session_closed.set()
+        await asyncio.wait_for(closing, 1)
+
+        updates = await _read_all(conversation)
+
+    settled = [content for update in updates for content in update.contents if content.type == "function_result"]
+    assert [(content.call_id, content.result) for content in settled] == [("call_1", "Sunny in Paris")]
+    assert _tool_messages(client.session) == []
+
+
+async def test_results_of_calls_that_never_ran_are_not_sent_once_closed(caplog: pytest.LogCaptureFixture) -> None:
+    client = FakeRealtimeClient()
+    caplog.set_level(logging.DEBUG, logger="agent_framework")
+
+    async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
+        release_send = client.session.hold("send")
+        app_send = asyncio.create_task(conversation.send("Hi", create_response=False))
+        await eventually(lambda: client.session.send_attempts == 1)
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris"), status="cancelled"))
+        await _next_function_result(conversation)
+
+        await conversation.close()
+        release_send.set()
+        await asyncio.wait_for(app_send, 1)
+        await asyncio.sleep(0.01)
+
+    assert _tool_messages(client.session) == []
+    assert "never ran" not in caplog.text  # close ended the task sending them, rather than leaving it to fail later
 
 
 async def test_a_chat_runs_tool_context_has_no_realtime_conversation(chat_client_base: MockBaseChatClient) -> None:

@@ -2794,9 +2794,12 @@ async def _try_execute_function_call_groups(
                 # is cooperative — a synchronous tool body already running in a worker thread
                 # (asyncio.to_thread) cannot be interrupted and may complete its side effects,
                 # but its result is discarded with the batch and never reaches the transcript,
-                # the model, or history.
+                # the model, or history. A sibling already being cancelled, as when the batch
+                # itself is cancelled and gather forwards that cancellation with its reason, is
+                # left to finish: cancelling it again would cut short its cleanup and drop the reason.
                 for task in execution_tasks:
-                    task.cancel()
+                    if not task.done() and task.cancelling() == 0:
+                        task.cancel()
                 await asyncio.gather(*execution_tasks, return_exceptions=True)
                 raise
         for function_call in function_calls_to_execute:

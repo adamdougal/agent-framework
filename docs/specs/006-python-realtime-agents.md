@@ -216,11 +216,14 @@ outside the topology, and app input for a call id the conversation isn't trackin
 
 - The app stops its playback on `speech_started` and calls `interrupt(played_ms=...)`. Turn detection has already
   cancelled the response, through `interrupt_response`.
-- `played_ms` counts the audio of the latest response that produced audio, across its assistant messages in order. The
-  conversation truncates the message where playback stopped, clamped below its generated length, and doesn't cut a
-  message heard to within 40 ms of its end. The generated length comes from the audio bytes and the output format, and a
-  response is cut only once. If the app is still playing an earlier response's tail when a later response produces
-  audio, that tail isn't cut.
+- `played_ms` counts the audio of the latest response that produced audio, across its assistant messages' audio content
+  parts in order. The conversation truncates the part where playback stopped, clamped below its generated length, and
+  doesn't cut a part heard to within 40 ms of its end. Each part is measured and cut on its own, by item id and content
+  index, and its generated length comes from the audio bytes and the output format. If the app is still playing an
+  earlier response's tail when a later response produces audio, that tail isn't cut.
+- The first `interrupt(played_ms=...)` or provider truncation fixes a response's cuts. Each stays owed until the
+  provider acknowledges it, so a later `interrupt(...)` retries the cuts that failed or weren't sent, and never repeats
+  an acknowledged one.
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.
@@ -303,11 +306,14 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   concurrently, or in model order with `allow_concurrent_invocation=False`, and function middleware and error shaping
   apply.
 - **Results.** Clients send `function_result.result` as the `function_call_output` item's `output` string, never as
-  `items` or a raw value. They drop images, audio and files with a warning.
+  `items` or a raw value. They drop images, audio and files with a warning. As in chat, each call gets an occurrence
+  `id` before it streams, unless it has one, and its result carries the same `id`.
 - **Follow-ups.** Once every call in a batch has a result, the loop sends the results in model order and requests one
   follow-up response, after any active response finishes and while the caller isn't speaking. Any response created
   after the results counts as the follow-up, except responses that tools or middleware request through `say(...)` or
-  `create_response(...)`. A follow-up relaxes a required `tool_choice` to `"auto"`. Follow-ups due together merge.
+  `create_response(...)`. A follow-up relaxes a required `tool_choice` to `"auto"`. Follow-ups due together merge. A
+  follow-up the provider rejects or doesn't acknowledge streams as `error` content and is dropped, unless results went
+  out after it was requested.
   Batches from different responses run concurrently. `MiddlewareTermination` sends the results without a follow-up.
   `run(...)` ends at the first response that finishes without tool calls, or when `MiddlewareTermination` stops the
   loop. Responses that tools or middleware request through `say(...)` or `create_response(...)`, such as a filler line,
@@ -320,11 +326,14 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `None`. It isn't in the tools' runtime keyword arguments.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
-  when the caller speaks or the app sends input. `max_iterations` counts follow-ups; the other limits count across the
-  chain. When a limit trips, the loop still sends the results and requests the follow-up with `tool_choice: "none"`,
-  as do the chain's follow-ups from the `max_iterations`-th on. Calls that arrive later in a tripped chain don't run:
-  each gets an error result, sent without a follow-up. With `enabled=False`, no call runs. Unknown calls always get an
-  error result, so `terminate_on_unknown_calls` doesn't apply. `run(...)` keeps chat's per-run limits.
+  when the caller speaks or the app sends input. A batch counts toward the chain it started in, even if new input
+  starts another while it runs. `max_iterations` counts follow-ups: the responses created after the chain's first
+  results, whoever requested them, apart from filler. The other limits count across the chain's batches. When a limit
+  trips, the loop still sends the results and requests the follow-up with `tool_choice: "none"`, as do the chain's
+  follow-ups from the `max_iterations`-th on. Calls that arrive later in a tripped chain, or in a response once the
+  chain's follow-ups reach `max_iterations`, don't run: each gets an error result, sent without a follow-up. With
+  `enabled=False`, no call runs. Unknown calls always get an error result, so `terminate_on_unknown_calls` doesn't
+  apply. `run(...)` keeps chat's per-run limits.
 - **Slow tools.** There are no timeout or filler settings. Function middleware covers both, by wrapping `call_next()` in
   `asyncio.timeout()` or by saying a filler line and catching `RealtimeActiveResponseException`.
 - **Settlement.** Calls from a response that ended `cancelled`, `incomplete` or `failed` don't run; each gets an error
@@ -395,7 +404,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 ### Close
 
 These close paths all run the sequence below: `close()`, context exit, hang-up, a provider or receive-loop failure,
-`MiddlewareFailure` and task cancellation. A receive-loop error after close starts doesn't fail the conversation.
+`MiddlewareFailure` and task cancellation. A receive-loop or provider error after close starts doesn't fail the
+conversation. Entering a conversation after close starts raises `RealtimeConversationClosedException`, and a session
+that starts as close begins is closed rather than adopted. Close also ends any results still waiting to be sent.
 
 1. Stop accepting input.
 2. If the socket is open, wait for pending caller transcripts, up to about 3 seconds. Skip caller turns whose response

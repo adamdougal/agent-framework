@@ -2,6 +2,7 @@
 
 """Realtime agents starting live conversations (spec 006, API shapes)."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -17,9 +18,13 @@ from agent_framework import (
     RealtimeOptions,
     tool,
 )
-from agent_framework.exceptions import RealtimeConnectionException, RealtimeControlTimeoutException
+from agent_framework.exceptions import (
+    RealtimeConnectionException,
+    RealtimeControlTimeoutException,
+    RealtimeConversationClosedException,
+)
 
-from .realtime_helpers import FakeRealtimeClient
+from .realtime_helpers import FakeRealtimeClient, eventually
 
 
 @tool
@@ -124,6 +129,17 @@ async def test_start_metadata_merges_with_default_metadata() -> None:
     assert client.start_session_calls[0]["options"]["metadata"] == {"a": "1", "b": "2"}
 
 
+async def test_empty_start_metadata_keeps_the_default_metadata() -> None:
+    client = FakeRealtimeClient()
+    default_options: RealtimeOptions = {"metadata": {"a": "1"}}
+    agent = RealtimeAgent(client, default_options=default_options)
+
+    async with agent.start_conversation(options={"metadata": {}}):
+        pass
+
+    assert client.start_session_calls[0]["options"]["metadata"] == {"a": "1"}
+
+
 async def test_start_tools_follow_the_agents_tools() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, tools=[get_weather])
@@ -145,6 +161,22 @@ def test_duplicate_tool_names_raise_value_error_before_connecting() -> None:
 
     with pytest.raises(ValueError, match="unique"):
         agent.start_conversation(tools=[other_weather])
+
+    assert client.start_session_calls == []
+
+
+def test_distinct_agent_tools_sharing_a_name_raise_value_error_before_connecting() -> None:
+    client = FakeRealtimeClient()
+
+    @tool(name="get_weather")
+    def other_weather(city: str) -> str:
+        """Get the weather another way."""
+        return f"Rainy in {city}"
+
+    agent = RealtimeAgent(client, tools=[get_weather, other_weather])
+
+    with pytest.raises(ValueError, match="unique"):
+        agent.start_conversation()
 
     assert client.start_session_calls == []
 
@@ -205,6 +237,47 @@ async def test_a_failure_after_the_session_starts_closes_it_before_propagating()
         async with RealtimeAgent(client).start_conversation(["Hi"]):
             pass
 
+    assert client.session.close_count == 1
+
+
+async def test_entering_after_close_raises_conversation_closed_without_connecting() -> None:
+    client = FakeRealtimeClient()
+    conversation = RealtimeAgent(client).start_conversation()
+    await conversation.close()
+
+    with pytest.raises(RealtimeConversationClosedException):
+        await conversation.__aenter__()
+
+    assert client.start_session_calls == []
+
+
+async def test_a_session_that_starts_as_the_conversation_closes_is_closed() -> None:
+    client = FakeRealtimeClient()
+    client.start_session_release = asyncio.Event()
+    conversation = RealtimeAgent(client).start_conversation()
+    entering = asyncio.create_task(conversation.__aenter__())
+    await eventually(lambda: bool(client.start_session_calls))
+
+    client.start_session_release.set()
+    await asyncio.wait_for(conversation.close(), 1)
+
+    with pytest.raises(RealtimeConversationClosedException):
+        await asyncio.wait_for(entering, 1)
+    assert client.session.close_count == 1
+
+
+async def test_cancelling_entry_closes_a_session_that_had_already_started() -> None:
+    client = FakeRealtimeClient()
+    client.start_session_release = asyncio.Event()
+    conversation = RealtimeAgent(client).start_conversation()
+    entering = asyncio.create_task(conversation.__aenter__())
+    await eventually(lambda: bool(client.start_session_calls))
+
+    client.start_session_release.set()
+    entering.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await entering
     assert client.session.close_count == 1
 
 

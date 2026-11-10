@@ -48,8 +48,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     """A live, full-duplex conversation with a realtime agent.
 
     Create one with ``RealtimeAgent.start_conversation(...)`` and open it with ``async with``; it can be entered only
-    once. While it's open, the provider's events stream as ``AgentResponseUpdate`` objects, the agent's tools run when
-    a response that called them finishes, and their results are sent back with one follow-up response per batch.
+    once, and not after close starts. While it's open, the provider's events stream as ``AgentResponseUpdate``
+    objects, the agent's tools run when a response that called them finishes, and their results are sent back with one
+    follow-up response per batch.
 
     Read the updates from a single task, and start control calls such as ``interrupt(...)`` as separate tasks so the
     loop keeps reading. Iteration ends when the conversation closes, and raises the error that ended it, such as
@@ -128,18 +129,34 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if self._entered:
             raise RuntimeError("A realtime conversation can be entered only once; start a new one instead.")
         self._entered = True
-        self._session = await self._acknowledged(
-            self._agent.client.start_session(options=self._options, tools=self._tools),  # type: ignore[arg-type]
-            "start the realtime session",
+        if self._closing.is_set():
+            raise RealtimeConversationClosedException("The realtime conversation is closed.")
+        starting = asyncio.ensure_future(
+            self._agent.client.start_session(options=self._options, tools=self._tools)  # type: ignore[arg-type]
         )
         try:
-            for message in self._initial_messages:
-                await self._session.send(message)
+            session = await self._acknowledged(starting, "start the realtime session")
         except BaseException:
-            await self._session.close()
+            # The session may have started as entry failed; the client closes only what it hasn't returned.
+            if starting.done() and not starting.cancelled() and starting.exception() is None:
+                await _close_after_failed_entry(starting.result())
             raise
-        self._receive_task = asyncio.create_task(self._receive_loop(self._session))
+        try:
+            for message in self._initial_messages:
+                self._raise_if_closed_while_starting()
+                await session.send(message)
+            self._raise_if_closed_while_starting()
+        except BaseException:
+            await _close_after_failed_entry(session)
+            raise
+        # The conversation owns the session from here, with no await before the receive loop starts.
+        self._session = session
+        self._receive_task = asyncio.create_task(self._receive_loop(session))
         return self
+
+    def _raise_if_closed_while_starting(self) -> None:
+        if self._closing.is_set():
+            raise RealtimeConversationClosedException("The realtime conversation closed while it was starting.")
 
     async def __aexit__(
         self,
@@ -264,9 +281,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         messages = normalize_messages(value)
         _reject_app_input_for_calls(messages)
         async with self._write_lock:
-            session = self._require_open_session()  # close may have started while this send waited its turn
             for message in messages:
-                await session.send(message)
+                # Close may have started while this send waited its turn, or while an earlier message went out.
+                await self._require_open_session().send(message)
         if _is_audio_only(messages):
             return  # the caller's audio: turn detection starts the chain and requests the response
         self._tool_loop.on_new_input()
@@ -317,9 +334,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._emit(tool_result_update(result, response_id=response_id, author=author))
 
     async def _send_tool_results(self, results: Message) -> None:
-        session = self._require_session()
         async with self._write_lock:
-            await session.send(results)
+            await self._require_open_session().send(results)
 
     async def create_response(self, *, options: RealtimeOptionsT | None = None) -> str:
         """Request a response, and return its id once the provider reports it created.
@@ -359,7 +375,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         )
         self._responses.requested(response_id)
         if requested_by_a_tool(self):
-            self._responses.not_answering(response_id)
+            self._responses.filler(response_id)
         return response_id
 
     async def interrupt(self, *, played_ms: int | None = None) -> None:
@@ -369,10 +385,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         as done, since the response finished first. With no active response, there is nothing to cancel.
 
         With ``played_ms``, the conversation cuts the latest response that produced audio where playback stopped, and
-        cuts its later assistant messages at 0 ms. ``played_ms`` counts that response's audio across its assistant
-        messages in order. A message heard to within 40 ms of its end isn't cut, and a response is cut only once. If
-        the app is still playing an earlier response while a later one produces audio, ``played_ms`` is measured
-        against the later one.
+        cuts its later audio at 0 ms. ``played_ms`` counts that response's audio across its assistant messages' audio
+        parts in order, and each part is cut on its own. A part heard to within 40 ms of its end isn't cut. The first
+        interrupt with ``played_ms`` fixes a response's cuts; a later one retries any the provider didn't acknowledge,
+        and never repeats one it did. If the app is still playing an earlier response while a later one produces
+        audio, ``played_ms`` is measured against the later one.
 
         Keyword Args:
             played_ms: How many milliseconds of the response's audio the caller heard, or ``None`` to cut nothing.
@@ -413,10 +430,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], truncations: Sequence[Truncation]
     ) -> None:
         for truncation in truncations:
+            if not self._audio.is_owed(truncation):
+                continue  # another control call made this cut while this one waited its turn
             await self._acknowledged(
                 session.truncate(truncation.item_id, truncation.content_index, truncation.audio_end_ms),
                 "cut the audio the caller didn't hear",
             )
+            self._audio.acknowledged(truncation)
 
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
         """Await a provider acknowledgement within the conversation's control timeout, or until close starts.
@@ -486,8 +506,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             if self._receive_task is not None:
                 await asyncio.wait({self._receive_task})
             await self._tool_loop.close()
+            await self._end_background_tasks()
         finally:
             self._updates.finish(self._failure)
+
+    async def _end_background_tasks(self) -> None:
+        """End what the conversation spawned that's still running, such as unsent results, so none outlives it."""
+        remaining = list(self._background_tasks)
+        for task in remaining:
+            task.cancel()
+        if remaining:
+            await asyncio.wait(remaining)
 
 
 class _UpdateStream:
@@ -529,6 +558,14 @@ class _UpdateStream:
                 return
             self._changed.clear()
             await self._changed.wait()
+
+
+async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
+    """Close a session the conversation won't adopt, keeping the failure that stopped entry."""
+    try:
+        await session.close()
+    except Exception as error:
+        logger.warning("Closing the realtime session after entry failed also failed: %s", error)
 
 
 def _reject_app_input_for_calls(messages: Sequence[Message]) -> None:

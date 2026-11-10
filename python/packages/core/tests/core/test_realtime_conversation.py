@@ -519,6 +519,25 @@ async def test_a_send_queued_when_close_starts_never_reaches_the_session(raw: bo
     assert sent.text == "Hi"
 
 
+async def test_a_send_of_several_messages_stops_when_close_starts_between_them() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        release = client.session.hold("send")
+        messages = [Message("user", [Content.from_text("Hi")]), Message("user", [Content.from_text("Bye")])]
+        sending = asyncio.create_task(conversation.send(messages, create_response=False))
+        await eventually(lambda: client.session.send_attempts == 1)
+
+        await conversation.close()
+        release.set()
+        with pytest.raises(RealtimeConversationClosedException):
+            await asyncio.wait_for(sending, 1)
+
+    [sent] = client.session.sent
+    assert isinstance(sent, Message)
+    assert sent.text == "Hi"
+
+
 async def test_a_timed_out_control_call_finishes_cleaning_up_before_it_raises() -> None:
     client = FakeRealtimeClient()
 

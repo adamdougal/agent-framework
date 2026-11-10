@@ -143,7 +143,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         ]
         session_options = _merge_session_options(self.default_options, self.instructions, options or {})
         session_tools = _append_unique_tools(
-            list(self.tools), normalize_tools(tools), duplicate_error_message="Tool names must be unique."
+            [], [*self.tools, *normalize_tools(tools)], duplicate_error_message="Tool names must be unique."
         )
         return RealtimeConversation(
             self,
@@ -164,7 +164,7 @@ def _merge_session_options(
 ) -> dict[str, Any]:
     """Merge the start options over the agent's defaults, as spec 006's API shapes describe."""
     merged: dict[str, Any] = {**default_options, **start_options}
-    if default_options.get("metadata") and start_options.get("metadata"):
+    if default_options.get("metadata") is not None and start_options.get("metadata") is not None:
         merged["metadata"] = {**default_options["metadata"], **start_options["metadata"]}
     merged_instructions = _append_instructions(instructions, start_options.get("instructions"))
     if merged_instructions is not None:
