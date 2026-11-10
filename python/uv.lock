@@ -3,16 +3,16 @@ revision = 5
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
-    "python_full_version < '3.12' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and sys_platform == 'linux'",
-    "python_full_version == '3.13.*' and sys_platform == 'linux'",
-    "python_full_version == '3.12.*' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and sys_platform == 'linux'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 supported-markers = [
@@ -687,6 +687,12 @@ dependencies = [
     { name = "httpx" },
 ]
 
+[package.optional-dependencies]
+realtime = [
+    { name = "azure-ai-projects" },
+    { name = "azure-ai-voicelive", extra = ["aiohttp"] },
+]
+
 [package.dev-dependencies]
 test = [
     { name = "agent-framework-ag-ui" },
@@ -699,8 +705,11 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
     { name = "azure-ai-inference", specifier = ">=1.0.0b9,<1.0.0b10" },
     { name = "azure-ai-projects", specifier = ">=2.2.0,<2.10.0" },
+    { name = "azure-ai-projects", marker = "extra == 'realtime'", specifier = ">=2.7,<2.10" },
+    { name = "azure-ai-voicelive", extras = ["aiohttp"], marker = "extra == 'realtime'", specifier = ">=1.3.1,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
 ]
+provides-extras = ["realtime"]
 
 [package.metadata.requires-dev]
 test = [{ name = "agent-framework-ag-ui", editable = "packages/ag-ui" }]
@@ -1531,6 +1540,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/63/c4/2d12f3ba1bc1cc3f844e9d34e602f825dea8d5cae069a203f80591e63091/azure_ai_projects-2.9.0.tar.gz", hash = "sha256:f85902b1c220f5ef999f7892d5fa8b6f1efecf867c73b107df7de614f5821fd3", size = 40061819, upload-time = "2026-10-17T03:57:23.38Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/25/cda9f33df69ba45378b7dcbb591b15ca0df0ddf633cbf2359d2f8030f06b/azure_ai_projects-2.9.0-py3-none-any.whl", hash = "sha256:e0e0ea059dee51ea92b65f1e40fa6b50f62636485f8228325f1918f9fb5d7d92", size = 552868, upload-time = "2026-10-17T03:57:26.606Z" },
+]
+
+[[package]]
+name = "azure-ai-voicelive"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/8a/94f18826b2e6f46883750124a803258bcb421cabb6824bb8d76bcc4c22ad/azure_ai_voicelive-1.3.1.tar.gz", hash = "sha256:4aa957efa4d00115381e5d17c361825e2f15fcfa7715f1e06b115b733f16d5d4", size = 267993, upload-time = "2026-10-23T17:59:14.896Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/47/00b3ab865302a390a8c45c8faa35294984aef8adabaa6c7032fa44df3d62/azure_ai_voicelive-1.3.1-py3-none-any.whl", hash = "sha256:d4a6c6d7899973f6bd86f6f3afcf3b79d4345ceb5e83e00e0a86351495200f09", size = 160772, upload-time = "2026-10-23T17:59:16.834Z" },
+]
+
+[package.optional-dependencies]
+aiohttp = [
+    { name = "aiohttp" },
 ]
 
 [[package]]
@@ -3675,13 +3703,13 @@ version = "2.5.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and sys_platform == 'linux'",
-    "python_full_version == '3.13.*' and sys_platform == 'linux'",
-    "python_full_version == '3.12.*' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/95/b0/c7453d0b6e2073c3264468b106ee1563750cecc910965e67357e3698c83e/numpy-2.5.4.tar.gz", hash = "sha256:9a94cf751c9ad8ebaa835bcd3d40dacf8534ad086b88c38029b65123c7999d2a", size = 20866315, upload-time = "2026-10-10T20:05:31.422Z" }
