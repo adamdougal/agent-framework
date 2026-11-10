@@ -509,6 +509,72 @@ async def test_update_session_returns_on_session_updated_and_merges_options() ->
     assert session.options == {"instructions": "A", "max_tokens": 100}
 
 
+async def test_audio_right_after_an_acknowledged_format_change_uses_the_new_format() -> None:
+    """update_session({"output_audio_format": "audio/pcmu"}) acknowledged with an audio delta right behind the
+    session.updated: that output_audio's media_type is "audio/pcmu"."""
+    session, connection = await started()
+    connection.responder = None
+    audio = {**AGENT_PART, "type": "response.output_audio.delta", "event_id": "e1", "delta": "AQI="}
+
+    async with reading(session) as reader:
+        updating = asyncio.create_task(session.update_session({"output_audio_format": "audio/pcmu"}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_srv", "session": {}}, audio)
+        await reader.until(lambda: "output_audio" in reader.kinds())
+        await asyncio.wait_for(updating, 1)
+
+    assert reader.of_kind("output_audio")[0].content.media_type == "audio/pcmu"
+
+
+async def test_a_cancelled_updates_late_acknowledgement_does_not_answer_the_next_update() -> None:
+    """update_session A ({"max_tokens": 100}) is cancelled after it's sent, then update B ({"instructions": "B."})
+    is sent. A's session.updated doesn't resolve B; B resolves on the next one, and session.options holds both."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        await connection.wait_sent("session.update")
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_a", "session": {}})
+        await asyncio.sleep(0.01)
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+    assert session.options == {"max_tokens": 100, "instructions": "B."}
+
+
+async def test_a_cancelled_updates_late_rejection_does_not_fail_the_next_update() -> None:
+    """update_session A is cancelled after it's sent, then update B is sent. A's rejection, echoing no event_id as on
+    Voice Live, streams as an error and doesn't fail B, which resolves on the session.updated that follows."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session) as reader:
+        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        await connection.wait_sent("session.update")
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", event_id=None))
+        await reader.until(lambda: "error" in reader.kinds())
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+    assert [event.content.error_code for event in reader.of_kind("error")] == ["invalid_value"]
+    assert session.options == {"instructions": "B."}
+
+
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
     """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})
@@ -652,6 +718,23 @@ async def test_cancel_response_resolves_on_that_responses_done() -> None:
         await asyncio.wait_for(cancelling, 1)
 
 
+async def test_cancel_response_ignores_another_responses_done() -> None:
+    """While cancel_response() waits on active "resp_2", a response.done for an earlier "resp_1" doesn't resolve it;
+    the one for "resp_2" does."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        await activate_response(connection, reader, "resp_2")
+        cancelling = asyncio.create_task(session.cancel_response())
+        await connection.wait_sent("response.cancel")
+        connection.push(response_done("resp_1"))
+        await asyncio.sleep(0.01)
+        assert not cancelling.done()
+
+        connection.push(response_done("resp_2", "cancelled"))
+        await asyncio.wait_for(cancelling, 1)
+
+
 async def test_cancel_response_without_an_active_response_raises_locally() -> None:
     """With no active response, cancel_response() raises RealtimeControlException with code
     "response_cancel_not_active" and sends nothing."""
@@ -700,6 +783,70 @@ async def test_unrequested_truncation_is_marked_provider() -> None:
     async with reading(session) as reader:
         await read_through(connection, reader, item_truncated("item_9", 0, 800))
 
+    assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
+
+
+async def test_truncate_ignores_another_items_truncation() -> None:
+    """While truncate("item_1", 0, 1500) waits, a conversation.item.truncated for "item_2" doesn't resolve it; the one
+    for "item_1" does."""
+    session, connection = await started()
+
+    async with reading(session):
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 1500))
+        await connection.wait_sent("conversation.item.truncate")
+        connection.push(item_truncated("item_2", 0, 800))
+        await asyncio.sleep(0.01)
+        assert not truncating.done()
+
+        connection.push(item_truncated("item_1", 0, 1500))
+        await asyncio.wait_for(truncating, 1)
+
+
+async def test_a_rejected_truncate_leaves_a_later_truncation_to_the_provider() -> None:
+    """truncate("item_1", 0, 99999) fails on a claimed rejection; a later conversation.item.truncated for "item_1"
+    yields truncated_by "provider"."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 99999))
+        await connection.wait_sent("conversation.item.truncate")
+        connection.push(rejection("invalid_value", "audio_end_ms", event_id=None))
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(truncating, 1)
+        await read_through(connection, reader, item_truncated("item_1", 0, 800))
+
+    assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
+
+
+async def test_a_truncate_cancelled_before_sending_leaves_a_later_truncation_to_the_provider() -> None:
+    """While another write holds the connection, truncate("item_1", 0, 500) is cancelled before it's sent; a later
+    conversation.item.truncated for "item_1" yields truncated_by "provider"."""
+    release = asyncio.Event()
+
+    class BlockingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            if event.get("type") == "blocker":
+                await release.wait()
+            await super().send(event)
+
+    connection = BlockingConnection()
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session) as reader:
+        blocker = RealtimeEvent("passthrough", raw_representation={"type": "blocker"})
+        blocking = asyncio.create_task(session.send(blocker))
+        await asyncio.sleep(0.01)
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 500))
+        await asyncio.sleep(0.01)
+        truncating.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await truncating
+        release.set()
+        await asyncio.wait_for(blocking, 1)
+        await read_through(connection, reader, item_truncated("item_1", 0, 800))
+
+    assert "conversation.item.truncate" not in connection.sent_types()
     assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
 
 

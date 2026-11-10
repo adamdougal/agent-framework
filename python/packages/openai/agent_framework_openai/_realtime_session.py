@@ -17,7 +17,7 @@ import base64
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, Self, cast, runtime_checkable
@@ -132,6 +132,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._client_truncations: set[str] = set()
         self._sent_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
+        self._abandoned_updates: list[_PendingControl] = []
         self._write_lock = asyncio.Lock()
         self._reading = False
         self._closed = False
@@ -155,11 +156,15 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         await self._before_initial_update()
         honored = self._honored(dict(options or {}))
         session = self._session_payload(honored, tools)
-        if session or self._INITIAL_UPDATE_REQUIRED:
-            await self._control(
-                {"type": "session.update", "session": session}, "session.updated", read_until_acknowledged=True
-            )
-        self.options = cast("RealtimeOptionsT", honored)
+        if not session and not self._INITIAL_UPDATE_REQUIRED:
+            self.options = cast("RealtimeOptionsT", honored)
+            return
+        await self._control(
+            {"type": "session.update", "session": session},
+            "session.updated",
+            accepted_options=honored,
+            read_until_acknowledged=True,
+        )
 
     async def send(self, value: RealtimeEvent | Message) -> None:
         """Send input or a raw command to the provider, without waiting for an acknowledgement.
@@ -221,8 +226,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         session = self._session_payload(honored, tools)
         if not session:
             return
-        await self._control({"type": "session.update", "session": session}, "session.updated")
-        self.options = cast("RealtimeOptionsT", {**self.options, **honored})
+        await self._control({"type": "session.update", "session": session}, "session.updated", accepted_options=honored)
         if "voice" in honored and self._current_voice() != honored["voice"]:
             logger.warning(
                 "The provider ignored the voice change to %r and kept %r.", honored["voice"], self._current_voice()
@@ -260,7 +264,12 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         """
         if self._active_response_id is None:
             raise RealtimeControlException("No response is active.", code="response_cancel_not_active")
-        await self._control({"type": "response.cancel"}, "response.done")
+        cancelled_id = self._active_response_id
+        await self._control(
+            {"type": "response.cancel"},
+            "response.done",
+            concerns=lambda wire: _mapping(wire.get("response")).get("id") == cancelled_id,
+        )
 
     async def truncate(self, item_id: str, content_index: int, audio_end_ms: int) -> None:
         """Cut an assistant item's audio after ``audio_end_ms``, and return once the provider confirms it.
@@ -270,16 +279,21 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         Raises:
             RealtimeControlException: If the provider rejects the truncation.
         """
-        self._client_truncations.add(item_id)
-        await self._control(
-            {
-                "type": "conversation.item.truncate",
-                "item_id": item_id,
-                "content_index": content_index,
-                "audio_end_ms": audio_end_ms,
-            },
-            "conversation.item.truncated",
-        )
+        try:
+            await self._control(
+                {
+                    "type": "conversation.item.truncate",
+                    "item_id": item_id,
+                    "content_index": content_index,
+                    "audio_end_ms": audio_end_ms,
+                },
+                "conversation.item.truncated",
+                concerns=lambda wire: wire.get("item_id") == item_id and wire.get("content_index") == content_index,
+                on_sent=lambda: self._client_truncations.add(item_id),
+            )
+        except RealtimeControlException:
+            self._client_truncations.discard(item_id)
+            raise
 
     async def close(self) -> None:
         """Close the connection. Closing again does nothing."""
@@ -463,13 +477,19 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         *,
         request_id: str | None = None,
         accepts_unechoed: bool = False,
+        concerns: Callable[[dict[str, Any]], bool] | None = None,
+        accepted_options: dict[str, Any] | None = None,
+        on_sent: Callable[[], None] | None = None,
         read_until_acknowledged: bool = False,
     ) -> Any:
         """Send a control request and wait for its acknowledgement, leaving nothing pending however it ends.
 
         A reader of receive() settles the acknowledgement, except while opening, when no reader exists yet and the
         session reads the connection itself. A response request's acknowledgement must echo its ``request_id``, or,
-        when ``accepts_unechoed``, carry no metadata at all.
+        when ``accepts_unechoed``, carry no metadata at all. ``concerns`` tells whether an acknowledgement is about this
+        request's target, such as the item it truncates; one that isn't is left alone. ``accepted_options`` merge into
+        ``options`` as the acknowledgement is read, so events right behind it already see them. ``on_sent`` runs once
+        the request is written, before its acknowledgement can be read.
         """
         self._ensure_open()
         request = {**request, "event_id": f"af_{uuid.uuid4().hex}"}
@@ -477,15 +497,24 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if request["type"] == "response.cancel":
             self._cancel_event_ids.add(request["event_id"])
         acknowledged: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        self._pending = _PendingControl(
-            acknowledgement, request["event_id"], acknowledged, request_id, accepts_unechoed
+        pending = _PendingControl(
+            acknowledgement, request["event_id"], acknowledged, request_id, accepts_unechoed, concerns, accepted_options
         )
+        self._pending = pending
+        sent = False
         try:
             await self._write(request)
+            sent = True
+            if on_sent is not None:
+                on_sent()
             while read_until_acknowledged and not acknowledged.done():
                 await self._read_into_buffer()
             return await acknowledged
         finally:
+            if sent and request["type"] == "session.update" and (acknowledged.cancelled() or not acknowledged.done()):
+                # Nothing correlates session.updated with its request, so a cancelled update's late answer must not
+                # be taken for a later update's.
+                self._abandoned_updates.append(pending)
             self._pending = None
 
     def _settle_pending(self, event_type: str, wire: dict[str, Any]) -> bool:
@@ -493,6 +522,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
         Returns whether ``wire`` is an error the waiting call claimed.
         """
+        if self._answers_abandoned_update(event_type, wire):
+            return False
         pending = self._pending
         if pending is None or pending.acknowledged.done():
             return False
@@ -500,13 +531,36 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             if self._claims(pending, wire):
                 pending.acknowledged.set_exception(_control_exception(wire))
                 return True
-        elif event_type == pending.acknowledgement and not _is_out_of_band(wire):
+        elif event_type == pending.acknowledgement and not _is_out_of_band(wire) and pending.concerned_by(wire):
             if pending.answered_by(wire):
+                if pending.accepted_options is not None:
+                    self.options = cast("RealtimeOptionsT", {**self.options, **pending.accepted_options})
                 pending.acknowledged.set_result(wire)
             else:
                 pending.acknowledged.set_exception(
                     RealtimeActiveResponseException("The provider started another response instead.")
                 )
+        return False
+
+    def _answers_abandoned_update(self, event_type: str, wire: dict[str, Any]) -> bool:
+        """Whether ``wire`` answers a session update whose caller stopped waiting, in the order they were sent.
+
+        A session.updated answers the oldest, and its accepted options merge into ``options``. An error answers the
+        update whose id it echoes, or the oldest when it echoes none, and streams as an unclaimed error.
+        """
+        if not self._abandoned_updates:
+            return False
+        if event_type == "session.updated":
+            answered = self._abandoned_updates.pop(0)
+            self.options = cast("RealtimeOptionsT", {**self.options, **(answered.accepted_options or {})})
+            return True
+        if event_type != "error":
+            return False
+        echoed = _mapping(wire.get("error")).get("event_id")
+        for index, abandoned in enumerate(self._abandoned_updates):
+            if echoed is None or echoed == abandoned.event_id:
+                del self._abandoned_updates[index]
+                return True
         return False
 
     def _claims(self, pending: _PendingControl, error_event: dict[str, Any]) -> bool:
@@ -789,6 +843,12 @@ class _PendingControl:
     acknowledged: asyncio.Future[Any]
     request_id: str | None = None
     accepts_unechoed: bool = False
+    concerns: Callable[[dict[str, Any]], bool] | None = None
+    accepted_options: dict[str, Any] | None = None
+
+    def concerned_by(self, acknowledgement: dict[str, Any]) -> bool:
+        """Whether an acknowledgement event is about this call's target, rather than another item or response."""
+        return self.concerns is None or self.concerns(acknowledgement)
 
     def answered_by(self, acknowledgement: dict[str, Any]) -> bool:
         """Whether an acknowledgement event belongs to this call rather than to a request it raced."""

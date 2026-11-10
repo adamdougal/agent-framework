@@ -507,6 +507,19 @@ async def test_normal_server_close_ends_receive() -> None:
     assert [event.kind for event in events] == ["session_created", "session_updated"]
 
 
+async def test_closing_the_session_ends_a_blocked_receive() -> None:
+    """While receive() waits for the next event, session.close() ends iteration without an exception."""
+    async with VoiceLiveServer() as server:
+        client = VoiceLiveClient(endpoint=server.endpoint, model=MODEL, api_key="k")
+        session = await asyncio.wait_for(client.start_session(), 5)
+        reading_everything = asyncio.create_task(read_all(session))
+        await asyncio.sleep(0.05)
+        await session.close()
+        events = await asyncio.wait_for(reading_everything, 5)
+
+    assert [event.kind for event in events] == ["session_created", "session_updated"]
+
+
 async def test_failed_start_closes_the_socket() -> None:
     """When the server rejects the first session.update with an error {event_id: null}, start_session() raises
     RealtimeControlException and the server sees the socket close."""
@@ -578,11 +591,15 @@ async def test_audio_only_modality_becomes_text_and_audio() -> None:
 
 
 async def test_audio_formats_and_sampling_rates_translate() -> None:
-    """Input "audio/pcm;rate=24000" → input_audio_format "pcm16"; "audio/pcm;rate=16000" and 8000 → "pcm16" with
-    input_audio_sampling_rate 16000 or 8000; "audio/pcmu" → "g711_ulaw"; "audio/pcma" → "g711_alaw". Output
+    """Input "audio/pcm;rate=24000", 16000 and 8000 → input_audio_format "pcm16" with input_audio_sampling_rate
+    24000, 16000 or 8000; "audio/pcmu" → "g711_ulaw" and "audio/pcma" → "g711_alaw", each at 8000. Every input format
+    sends its rate, because updates are partial and an earlier rate would otherwise stay. Output
     "audio/pcm;rate=16000" → output_audio_format "pcm16_16000hz" and rate 8000 → "pcm16_8000hz".
     "audio/pcm;rate=44100" raises ValueError."""
-    assert await flat_session({"input_audio_format": "audio/pcm;rate=24000"}) == {"input_audio_format": "pcm16"}
+    assert await flat_session({"input_audio_format": "audio/pcm;rate=24000"}) == {
+        "input_audio_format": "pcm16",
+        "input_audio_sampling_rate": 24000,
+    }
     assert await flat_session({"input_audio_format": "audio/pcm;rate=16000"}) == {
         "input_audio_format": "pcm16",
         "input_audio_sampling_rate": 16000,
@@ -591,8 +608,14 @@ async def test_audio_formats_and_sampling_rates_translate() -> None:
         "input_audio_format": "pcm16",
         "input_audio_sampling_rate": 8000,
     }
-    assert await flat_session({"input_audio_format": "audio/pcmu"}) == {"input_audio_format": "g711_ulaw"}
-    assert await flat_session({"input_audio_format": "audio/pcma"}) == {"input_audio_format": "g711_alaw"}
+    assert await flat_session({"input_audio_format": "audio/pcmu"}) == {
+        "input_audio_format": "g711_ulaw",
+        "input_audio_sampling_rate": 8000,
+    }
+    assert await flat_session({"input_audio_format": "audio/pcma"}) == {
+        "input_audio_format": "g711_alaw",
+        "input_audio_sampling_rate": 8000,
+    }
     assert await flat_session({"output_audio_format": "audio/pcm;rate=24000"}) == {"output_audio_format": "pcm16"}
     assert await flat_session({"output_audio_format": "audio/pcm;rate=16000"}) == {
         "output_audio_format": "pcm16_16000hz"
@@ -680,6 +703,23 @@ async def test_per_response_instructions_are_dropped(caplog: pytest.LogCaptureFi
         "metadata": {"af_request_id": request["response"]["metadata"]["af_request_id"]},
     }
     assert "instructions" in caplog.text
+
+
+async def test_per_response_output_modalities_are_sent_as_modalities() -> None:
+    """create_response({"output_modalities": ["audio"]}) sends response {modalities: ["text", "audio"], metadata:
+    {af_request_id: ...}}, as the session object does."""
+    session, connection = await voice_live_session()
+
+    async with reading(session):
+        creating = asyncio.create_task(session.create_response({"output_modalities": ["audio"]}))
+        request = await connection.wait_sent("response.create")
+        connection.push(response_created("resp_1", request["response"]["metadata"]["af_request_id"]))
+        await asyncio.wait_for(creating, 1)
+
+    assert request["response"] == {
+        "modalities": ["text", "audio"],
+        "metadata": {"af_request_id": request["response"]["metadata"]["af_request_id"]},
+    }
 
 
 # endregion

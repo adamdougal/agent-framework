@@ -42,13 +42,14 @@ _NORMAL_CLOSURE = 1000
 logger = logging.getLogger("agent_framework.foundry")
 
 _INPUT_AUDIO_FORMATS: dict[str, dict[str, Any]] = {
-    "audio/pcm;rate=24000": {"input_audio_format": "pcm16"},
+    "audio/pcm;rate=24000": {"input_audio_format": "pcm16", "input_audio_sampling_rate": 24000},
     "audio/pcm;rate=16000": {"input_audio_format": "pcm16", "input_audio_sampling_rate": 16000},
     "audio/pcm;rate=8000": {"input_audio_format": "pcm16", "input_audio_sampling_rate": 8000},
-    "audio/pcmu": {"input_audio_format": "g711_ulaw"},
-    "audio/pcma": {"input_audio_format": "g711_alaw"},
+    "audio/pcmu": {"input_audio_format": "g711_ulaw", "input_audio_sampling_rate": 8000},
+    "audio/pcma": {"input_audio_format": "g711_alaw", "input_audio_sampling_rate": 8000},
 }
-"""The caller audio formats Voice Live takes, as its session fields."""
+"""The caller audio formats Voice Live takes, as its session fields. Each sends its rate, because updates are partial
+and would otherwise keep an earlier one."""
 
 _OUTPUT_AUDIO_FORMATS: dict[str, dict[str, Any]] = {
     "audio/pcm;rate=24000": {"output_audio_format": "pcm16"},
@@ -80,6 +81,14 @@ def _check_audio_formats(options: Mapping[str, Any]) -> None:
         _voice_live_format(options["input_audio_format"], _INPUT_AUDIO_FORMATS, "input")
     if "output_audio_format" in options:
         _voice_live_format(options["output_audio_format"], _OUTPUT_AUDIO_FORMATS, "output")
+
+
+def _voice_live_modalities(output_modalities: Sequence[str]) -> list[str]:
+    """Voice Live's modalities: it can't produce audio alone, so the agent transcript always comes with it."""
+    modalities = list(output_modalities)
+    if "audio" in modalities and "text" not in modalities:
+        modalities.insert(0, "text")
+    return modalities
 
 
 def _voice_live_format(media_type: str, formats: dict[str, dict[str, Any]], direction: str) -> dict[str, Any]:
@@ -358,11 +367,7 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
                 case "tool_choice":
                     session["tool_choice"] = self._translate_tool_choice(value)
                 case "output_modalities":
-                    # Voice Live can't produce audio alone; the agent transcript always comes with it.
-                    modalities = list(value)
-                    if "audio" in modalities and "text" not in modalities:
-                        modalities.insert(0, "text")
-                    session["modalities"] = modalities
+                    session["modalities"] = _voice_live_modalities(value)
                 case "input_audio_format":
                     session.update(_voice_live_format(value, _INPUT_AUDIO_FORMATS, "input"))
                 case "output_audio_format":
@@ -403,8 +408,8 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
     def _response_payload(self, options: dict[str, Any]) -> dict[str, Any]:
         """The GA response object, adapted to Voice Live.
 
-        Per-response instructions are dropped, because Voice Live ignores them, and the output token cap takes its
-        preview name.
+        Per-response instructions are dropped, because Voice Live ignores them, and the output token cap and modalities
+        take their preview names.
         """
         if "instructions" in options:
             logger.warning("Dropping per-response instructions: Voice Live ignores them.")
@@ -412,6 +417,8 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
         response = super()._response_payload(options)
         if "max_output_tokens" in response:
             response["max_response_output_tokens"] = response.pop("max_output_tokens")
+        if "output_modalities" in response:
+            response["modalities"] = _voice_live_modalities(response.pop("output_modalities"))
         return response
 
 
@@ -421,6 +428,7 @@ class _VoiceLiveConnection:
     def __init__(self, manager: Any, connection: Any) -> None:
         self._manager = manager
         self._connection = connection
+        self._closing = False
 
     async def send(self, event: Mapping[str, Any]) -> None:
         try:
@@ -431,17 +439,24 @@ class _VoiceLiveConnection:
     async def receive(self) -> Mapping[str, Any] | None:
         from azure.ai.voicelive.aio import ConnectionClosed
 
-        try:
-            frame = await self._connection.recv_bytes()
-        except ConnectionClosed as closed:
-            if closed.code == _NORMAL_CLOSURE:
+        while True:
+            try:
+                frame = await self._connection.recv_bytes()
+            except ConnectionClosed as closed:
+                if closed.code == _NORMAL_CLOSURE:
+                    return None
+                raise RealtimeConnectionException(
+                    f"Voice Live closed the connection with code {closed.code}.", close_code=closed.code
+                ) from closed
+            if frame:
+                return json.loads(frame)
+            # The SDK returns an empty frame for websocket control messages, such as the one a local close wakes a
+            # blocked read with.
+            if self._closing:
                 return None
-            raise RealtimeConnectionException(
-                f"Voice Live closed the connection with code {closed.code}.", close_code=closed.code
-            ) from closed
-        return json.loads(frame)
 
     async def close(self) -> None:
+        self._closing = True
         await self._manager.__aexit__(None, None, None)
 
 

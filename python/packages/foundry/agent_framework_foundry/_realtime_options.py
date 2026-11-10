@@ -175,8 +175,8 @@ class VoiceLiveOptions(RealtimeOptions, total=False):
     """Voice Live session settings: the neutral realtime options, widened for Azure, and Voice Live's own.
 
     ``input_audio_format`` and ``output_audio_format`` also take ``"audio/pcm;rate=16000"`` and
-    ``"audio/pcm;rate=8000"``. Per-response ``instructions`` are dropped with a warning,
-    because Voice Live ignores them.
+    ``"audio/pcm;rate=8000"``. Voice Live rejects an update that changes the caller audio's sampling rate.
+    Per-response ``instructions`` are dropped with a warning, because Voice Live ignores them.
 
     Keys:
         voice: An OpenAI voice name, or an ``AzureVoice``.
