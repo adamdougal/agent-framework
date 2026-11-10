@@ -20,6 +20,7 @@ agent_framework/
 ├── _skills.py           # Agent Skills system (models, executors, provider)
 ├── _mcp.py              # Model Context Protocol support
 ├── _telemetry.py        # User-Agent identity and internal feature-usage mask
+├── _realtime/           # Realtime agents (experimental), one module per concern
 ├── _workflows/          # Workflow orchestration (sequential, concurrent, handoff, etc.)
 ├── openai/              # Built-in OpenAI client
 ├── azure/               # Lazy-loading entry point for Azure integrations
@@ -88,11 +89,34 @@ agent_framework/
 - **Citation coordinates** - `Annotation.annotated_regions_coordinate_space` distinguishes spans in generated
   `Content.text` (`"content"`, also the default when omitted) from locations in cited source material (`"source"`).
   Protocol adapters must not interpret source-coordinate regions as generated-text offsets.
+- **Text status** - `Content.from_text(status=...)` marks a text's lifecycle, such as a final transcript's
+  `"completed"`. Text merges, through `+` and response aggregation, keep the latest status that isn't `None`.
 - **Computer use** - `ComputerSafetyCheck` and the `Content.from_computer_tool_call` / `from_computer_tool_result`
   constructors are experimental under `COMPUTER_USE`; the rest of `Content` retains its existing stage. Computer
   results can omit screenshots in core; OpenAI-based connectors require them when converting to Responses items.
   Completed call/result pairs remain in the transcript but are not user-input requests.
 - **`ChatOptions`** - TypedDict for chat request options
+
+### Realtime agents (`_realtime/`)
+
+Realtime agents hold live, two-way speech conversations with speech-to-speech models. Every public realtime API is
+experimental under `REALTIME`, and the contract is
+[spec 006](../../../docs/specs/006-python-realtime-agents.md). Each concern has its own module, exported lazily from
+the root package:
+
+- `_kinds.py` - `RealtimeKindLiteral`, the open `RealtimeKind`, and one `Realtime<Kind>Attributes` TypedDict per kind
+  with neutral attributes. The module omits `from __future__ import annotations` so `Required[...]` keys stay visible
+  at runtime.
+- `_events.py` - `RealtimeEvent`, which carries one provider event from a session to the conversation, or a raw
+  command whose `raw_representation` is the wire event.
+- `_options.py` - `RealtimeOptions` and its turn-detection, transcription and noise-reduction TypedDicts.
+- `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
+  `RealtimeEvent` or a `Message`, which it maps by content type.
+
+A kind's neutral attributes live under `additional_properties["core"]`, on both the `RealtimeEvent` and the
+`realtime_event` content built with `Content.from_realtime_event(...)`, whose `kind` and `service_event_type` are
+`Content` fields serialized only for that content type. The realtime exceptions live in `exceptions.py`, under
+`RealtimeException`.
 
 ### Tools (`_tools.py`)
 
@@ -410,6 +434,10 @@ The vector store API is experimental under the shared `VECTOR_STORES` feature ID
 - **`background_tasks_running()`** / **`background_tasks_running_message`** - Helper factories for background-agent-driven loops, mirroring the `todos_remaining` pair. They resolve the `BackgroundAgentsProvider` from the *running agent* (`agent.context_providers`, via `_resolve_context_provider`) rather than taking the provider as an argument, so they can be wired directly into `create_harness_agent`'s `loop_should_continue`/`loop_next_message`. `background_tasks_running` returns a `should_continue` predicate that loops while the provider's persisted state shows any task with `status == RUNNING` (pair it with `max_iterations` so the loop is bounded even if a task's persisted status is never refreshed). `background_tasks_running_message` is a `next_message` callable that lists the still-running tasks (`#<id> (<agent_name>): <description>`) and tells the agent to wait for them to finish and retrieve their results, returning `None` when the session/agent/provider is unavailable or no task is running.
   - **Approval escape hatch** - `_has_pending_approval_request(result)` checks whether an iteration's response carries a pending tool-approval request (any content with `type == "function_approval_request"`). Both the streaming and non-streaming loops stop and return that response to the caller *before* evaluating `should_continue`/`max_iterations` or injecting `next_message`, so the loop is HITL-safe even when wrapped outermost around a `ToolApprovalMiddleware` (mirrors the C# `LoopAgent`'s `HasPendingApprovalRequests`).
   - **Harness integration** - `create_harness_agent` enables the loop when a `loop_should_continue` callable is passed; it prepends `AgentLoopMiddleware(loop_should_continue, max_iterations=loop_max_iterations, next_message=loop_next_message)` ahead of `ToolApprovalMiddleware` so the loop is the outermost middleware (each iteration is a full agent run including tool approval, and the escape hatch hands pending approvals back to the caller). `loop_next_message` and `loop_max_iterations` only take effect together with `loop_should_continue` (with no `loop_should_continue` there is no loop, so they are ignored); `loop_max_iterations` defaults to the loop's default cap (`None` → unbounded).
+
+  `loop_return_final_only=True` forwards to the loop's `return_final_only` setting so non-streaming callers receive
+  only the last iteration's response. It defaults to `False`, is ignored without `loop_should_continue`, and does
+  not change streamed updates or streaming finalization.
 
 ### Workflows (`_workflows/`)
 

@@ -9,6 +9,8 @@ and guidance on choosing the correct exception class.
 import logging
 from typing import Any, Literal
 
+from ._feature_stage import ExperimentalFeature, experimental
+
 logger = logging.getLogger("agent_framework")
 
 
@@ -222,6 +224,101 @@ class UserInputRequiredException(ToolException):
 
 class MiddlewareException(AgentFrameworkException):
     """An error occurred during middleware execution."""
+
+    pass
+
+
+# endregion
+
+# region Realtime Exceptions
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeException(AgentFrameworkException):
+    """Base class for realtime agent failures."""
+
+    pass
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeConnectionException(RealtimeException):
+    """The connection to the realtime provider failed to open, or died.
+
+    Providers raise it for transport and authentication failures while connecting and for a connection that closes
+    unexpectedly, with the original error as its cause.
+
+    Attributes:
+        close_code: The connection's close code, when it closed with one.
+    """
+
+    def __init__(self, message: str, *, close_code: int | None = None) -> None:
+        """Create a RealtimeConnectionException.
+
+        Args:
+            message: What went wrong.
+
+        Keyword Args:
+            close_code: The connection's close code, when it closed with one.
+        """
+        super().__init__(message)
+        self.close_code = close_code
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeControlException(RealtimeException):
+    """The provider rejected a control call, such as a session update or a response request.
+
+    Attributes:
+        code: The provider's error code, such as ``"invalid_value"``, if it gave one.
+        param: The setting the provider rejected, such as ``"session.voice"``, if it named one.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None, param: str | None = None) -> None:
+        """Create a RealtimeControlException.
+
+        Args:
+            message: The provider's error message.
+
+        Keyword Args:
+            code: The provider's error code.
+            param: The setting the provider rejected.
+        """
+        super().__init__(message)
+        self.code = code
+        self.param = param
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeControlTimeoutException(RealtimeControlException):
+    """A control call got no acknowledgement in time. The provider may still have applied it."""
+
+    pass
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeActiveResponseException(RealtimeControlException):
+    """A response was already active, or the provider started another response instead of the requested one."""
+
+    pass
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeUnsupportedException(RealtimeException):
+    """The provider can't do what was asked with the current session, such as speak verbatim with its voice."""
+
+    pass
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeConversationClosedException(RealtimeException):
+    """Input or a control call arrived after the conversation started closing."""
+
+    pass
+
+
+@experimental(feature_id=ExperimentalFeature.REALTIME)
+class RealtimeBackpressureException(RealtimeException):
+    """The conversation's bounded update queue overflowed, because updates weren't read fast enough."""
 
     pass
 

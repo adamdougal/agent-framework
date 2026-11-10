@@ -75,7 +75,7 @@ class RealtimeEvent:
     kind: RealtimeKind  # NewType over str; RealtimeKindLiteral lists the known kinds
     content: Content | None  # one payload, or None for a signal
     service_event_type: str | None  # the provider's event name, verbatim
-    additional_properties: Mapping[str, Any]  # the kind's neutral attributes and documented provider extras
+    additional_properties: Mapping[str, Any]  # neutral attributes under "core", provider extras in its namespace
     raw_representation: Any | None  # never serialized
 
 
@@ -88,7 +88,7 @@ class RealtimeClientProtocol(Protocol[RealtimeOptionsT]):
 class RealtimeClientSessionProtocol(Protocol[RealtimeOptionsT]):  # async context manager
     options: RealtimeOptionsT
 
-    async def send(self, event: RealtimeEvent) -> None: ...
+    async def send(self, value: RealtimeEvent | Message) -> None: ...  # a raw command, or input mapped by content
     def receive(self) -> AsyncIterable[RealtimeEvent]: ...  # one reader only
     async def update_session(self, options: RealtimeOptionsT, tools: Sequence[ToolTypes] | None) -> None: ...
     async def create_response(self, options: RealtimeOptionsT | None = None) -> str: ...
@@ -108,7 +108,8 @@ class RealtimeOptions(TypedDict, total=False):
     input_audio_format: str  # "audio/pcm;rate=24000", "audio/pcmu" or "audio/pcma"
     output_audio_format: str
     output_modalities: Sequence[str]
-    turn_detection: RealtimeTurnDetection | None  # type, create_response, interrupt_response, threshold, timings
+    turn_detection: RealtimeTurnDetection | None  # type, create_response, interrupt_response, threshold,
+    # prefix_padding_ms, silence_duration_ms
     transcription: RealtimeTranscription | None  # model, language
     noise_reduction: RealtimeNoiseReduction | None  # type
 ```
@@ -136,7 +137,14 @@ class RealtimeOptions(TypedDict, total=False):
   `RealtimeAgent[VoiceLiveOptions]` accepts an `AzureVoice`.
 - Clients translate the keys, nest audio settings under `audio.input` and `audio.output` for GA-protocol sessions, and
   drop keys they can't honor with a warning, such as AG-UI's `store`. They forward nothing raw. An audio format the
-  provider can't take raises before connecting.
+  provider can't take raises before connecting. If opening a session fails or is cancelled, the client closes whatever
+  it opened before re-raising.
+- A session's `send(...)` takes a raw command or input. A `RealtimeEvent` is a raw command: its `raw_representation`
+  is the wire event, sent verbatim and untracked. A `Message` is mapped one content at a time, in order. Audio `data` or
+  `uri` content is appended to the input audio buffer, whatever the role. `text` becomes a message item with the
+  message's role, and assistant text is replayed as output text. `function_call` and `function_result` content become
+  their own items, with the result as a string, and a hosted `function_approval_response` becomes the provider's
+  approval response. Anything else is dropped with a warning. Sending never requests a response.
 - `__aenter__` runs the conversation middleware chain, which opens the provider session. Opening runs `before_run`,
   applies the options and tools with what `before_run` added, replays history, sends initial `messages` as context and
   starts the single receive loop. It never requests a response. `close()` is idempotent and runs the
@@ -148,6 +156,7 @@ class RealtimeOptions(TypedDict, total=False):
 ```text
 AgentFrameworkException
 └── RealtimeException                         base for realtime failures
+    ├── RealtimeConnectionException           the connection failed to open or died, with any close code
     ├── RealtimeControlException              the provider rejected a control call, with its code and param
     │   ├── RealtimeControlTimeoutException   no acknowledgement in time; the provider may still have applied it
     │   └── RealtimeActiveResponseException   a response was active, or the provider dropped the request for one
@@ -176,7 +185,10 @@ outside the topology, and app input for a call id the conversation isn't trackin
   interleave. A response requested after `update_session(...)` returns uses the new session, whatever requested it. A
   response in flight doesn't change, and a turn-detection response racing the update has no guarantee.
 - **Timeout.** One acknowledgement timeout per conversation, set at start, defaults to about 10 seconds. An update with
-  nothing left to send after dropped keys returns at once.
+  nothing left to send after dropped keys returns at once. The conversation enforces it, wrapping each session control
+  call and `start_session(...)` in `asyncio.timeout()`, and raises `RealtimeControlTimeoutException`. Session control
+  methods have no timeout of their own and are cancellation-safe: a cancelled call leaves nothing pending and stops
+  claiming errors.
 - **Active response.** `create_response(...)` and `say(...)` raise `RealtimeActiveResponseException` while a response
   is active. Nothing is queued or cancelled implicitly.
 - **Error claiming.** Requests carry a client `event_id`, and responses an id in `response.metadata`. While a control
@@ -190,10 +202,11 @@ outside the topology, and app input for a call id the conversation isn't trackin
   the provider ignores one, the client warns when `session.updated` echoes the old voice.
 - **Tools.** A call resolves against the executable set when its `function_call` arrives. Replacing tools doesn't cancel
   running calls, and a call for a tool missing from the current set gets an error result.
-- **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked. Out-of-band responses with
-  `conversation: "none"`, input-buffer commit and clear, item delete, `output_audio_buffer.clear` and untyped session
-  fields stay raw. A raw `session.update` that changes tools or instructions leaves the executable tool set out of step
-  with the provider's, so those changes go through `update_session(...)`.
+- **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked, with the wire event as a JSON-serializable
+  mapping in its `raw_representation`. Out-of-band responses with `conversation: "none"`, input-buffer commit and
+  clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. A raw `session.update` that
+  changes tools or instructions leaves the executable tool set out of step with the provider's, so those changes go
+  through `update_session(...)`.
 - **Samples** start control calls from the update loop as tasks, so the loop keeps reading updates.
 
 ### Barge-in
@@ -220,26 +233,31 @@ outside the topology, and app input for a call id the conversation isn't trackin
 - Names are snake_case and describe meaning, with `input_` and `output_` for caller and agent media, a noun plus a past
   participle for lifecycle, content type names where the payload has one, and the .NET ADR's names where they overlap.
 
-| Kind | Update | Notes |
+Each kind's neutral attributes sit under `additional_properties["core"]` on its `RealtimeEvent`, and on its
+realtime-event content. Each kind with attributes has a `Realtime<Kind>Attributes` TypedDict, such as
+`RealtimeSpeechStartedAttributes`. Keys in bold are required; a key the provider doesn't report is left out, never
+`None`.
+
+| Kind | Update | Neutral attributes and notes |
 | --- | --- | --- |
-| `session_created` | realtime-event content | Realtime session id, model, expiry. The only place the session id appears. |
-| `session_updated` | realtime-event content | Acknowledges a session update. |
-| `speech_started`, `speech_stopped` | realtime-event content, `role="user"` | `audio_start_ms` or `audio_end_ms`, item id. The barge-in cue; there's no `barge_in` kind. |
-| `response_created` | realtime-event content, `role="assistant"` | Response id. |
-| `response_done` | realtime-event content, `role="assistant"` | Provider `status`, `reason` and `error`. The update sets `finish_reason`. |
-| `item_added` | realtime-event content | Item id, previous item id, role. The provider's conversation order. |
-| `item_truncated` | realtime-event content, `role="assistant"` | Item id, content index, `audio_end_ms`, whoever truncated. |
-| `input_transcription` | `text`, `role="user"` | Caller transcript. |
-| `input_transcription_failed` | realtime-event content, `role="user"` | Item id, error code and message. Not `error` content. |
-| `output_text` | `text`, `role="assistant"` | Agent transcript, spoken or written. |
-| `output_audio` | `data` | Media type from the session's output format; response id, item id, content index. |
-| `function_call` | `function_call` | The assembled call, once its arguments finish. Not `informational_only`. |
-| `function_result` | `function_result`, `role="tool"` | One for every settled call. |
-| `function_approval_request` | `function_approval_request` | Local approvals, and hosted ones with `hosted=True`. |
-| `handoff_completed` | realtime-event content | `source` and `target`. |
-| `usage` | `usage` | Once per response, from `response.done`. |
-| `error` | `error` | Unclaimed provider `error` events, and failed responses. |
-| `passthrough` | realtime-event content | Everything else. |
+| `session_created` | realtime-event content | **`session_id`**, `model`, `expires_at` (Unix seconds). The only place the session id appears. |
+| `session_updated` | realtime-event content | None. Acknowledges a session update. |
+| `speech_started`, `speech_stopped` | realtime-event content, `role="user"` | **`item_id`** and **`audio_start_ms`** or **`audio_end_ms`**. The barge-in cue; there's no `barge_in` kind. |
+| `response_created` | realtime-event content, `role="assistant"` | **`response_id`**. |
+| `response_done` | realtime-event content, `role="assistant"` | **`response_id`**, **`status`**, `reason`, `error_code`, `error_message`, the provider's verbatim. The update sets `finish_reason`. |
+| `item_added` | realtime-event content | **`item_id`**, **`previous_item_id`** (`None` when first), `role` (message items only). The provider's conversation order. |
+| `item_truncated` | realtime-event content, `role="assistant"` | **`item_id`**, **`content_index`**, **`audio_end_ms`**, **`truncated_by`** (`"client"` or `"provider"`). |
+| `input_transcription` | `text`, `role="user"` | **`item_id`**, **`content_index`**. Caller transcript. |
+| `input_transcription_failed` | realtime-event content, `role="user"` | **`item_id`**, **`content_index`**, `error_code`, `error_message`. Not `error` content. |
+| `output_text` | `text`, `role="assistant"` | **`response_id`**, **`item_id`**, **`content_index`**. Agent transcript, spoken or written. |
+| `output_audio` | `data` | **`response_id`**, **`item_id`**, **`content_index`**. Media type from the session's output format. |
+| `function_call` | `function_call` | **`response_id`**, **`item_id`**. The assembled call, once its arguments finish. Not `informational_only`. |
+| `function_result` | `function_result`, `role="tool"` | None. One for every settled call. |
+| `function_approval_request` | `function_approval_request` | None. Local approvals, and hosted ones with `hosted=True`. |
+| `handoff_completed` | realtime-event content | **`source`**, **`target`**. |
+| `usage` | `usage` | **`response_id`**. Once per response, from `response.done`. |
+| `error` | `error` | `response_id`, for failed responses. Unclaimed provider `error` events, and failed responses. |
+| `passthrough` | realtime-event content | None. Everything else. |
 
 These pass through: audio-done events, output-item and content-part events, input-buffer commits, clears and timeouts,
 item done and deleted events, function-call argument deltas, `rate_limits.updated`, `conversation.created`, hosted MCP
@@ -263,10 +281,14 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   only as a passthrough update.
 - **Usage.** `usage` content carries the standard keys and the audio, text and image keys ([Telemetry](#telemetry)).
   Input-transcription usage stays in the caller transcript's provider metadata.
-- **Realtime-event content** carries `kind`, the verbatim `service_event_type` and the neutral attributes each kind
-  documents as a `TypedDict`. Documented provider extras go in the owning package's namespace, `openai` or `foundry`, as
-  ADR 0048 sets out. Passthrough events carry the wire payload as JSON in that namespace. No event copies the full wire
-  event, and `created_at` is set only from a provider timestamp. Outbound raw commands are `passthrough`.
+- **Realtime-event content** carries `kind` and the verbatim `service_event_type` as `Content` fields, which it
+  serializes and other content types don't, and the kind's neutral attributes under `additional_properties["core"]`.
+  Documented provider extras go in the owning package's namespace, `openai` or `foundry`, as ADR 0048 sets out.
+  `RealtimeEvent.additional_properties` uses the same layout, so the conversation copies it across. Passthrough events
+  carry the wire payload as JSON in the provider's namespace. No event copies the full wire event, and `created_at` is
+  set only from a provider timestamp. Outbound raw commands are `passthrough`.
+- **One `response.done`** becomes up to three events, built by the session in this order: `usage`, then `error` if the
+  response failed, then `response_done`, so anything that stops at `response_done` has already seen the other two.
 
 ## Tool loop
 
@@ -590,11 +612,12 @@ report `client_cancelled`. With an Azure TTS voice, `response.done` can follow a
 Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
 
 - `agent-framework-core`: the `realtime_event` content type and `Content.from_realtime_event(kind=...)`, accepted by
-  `ContentType` and `Content.from_dict`; the kind types; `FunctionInvocationContext.realtime_conversation`;
-  `ConversationMiddleware`, `ConversationContext`, `MiddlewareType.CONVERSATION` and the conversation category in
-  `categorize_middleware`; `RawRealtimeAgent`, `RealtimeAgent`, `RealtimeConversation`, `RealtimeEvent`, the
-  client/session protocols, the options types and the realtime exceptions; the `realtime.*` span names and the
-  `agent_framework.realtime.error` and `agent_framework.realtime.item_truncated` events.
+  `ContentType` and `Content.from_dict`; the kind types and each kind's attribute TypedDict;
+  `FunctionInvocationContext.realtime_conversation`; `ConversationMiddleware`, `ConversationContext`,
+  `MiddlewareType.CONVERSATION` and the conversation category in `categorize_middleware`; `RawRealtimeAgent`,
+  `RealtimeAgent`, `RealtimeConversation`, `RealtimeEvent`, the client/session protocols, the options types and the
+  realtime exceptions; the `realtime.*` span names and the `agent_framework.realtime.error` and
+  `agent_framework.realtime.item_truncated` events.
 - `agent-framework-orchestrations`: `RealtimeHandoffBuilder` and its built agent.
 - `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeSession`,
   `OpenAIRealtimeConnection` and the `[realtime]` extra.
@@ -602,7 +625,8 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   extra; `FoundryVoiceAgent`, `RawFoundryVoiceAgent`, `FoundryVoiceAgentClient` and `FoundryVoiceAgentOptions` under
   `FOUNDRY_VOICE_AGENTS`.
 
-On stable APIs, all additive: `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
+On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content
+serializes; `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
 text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
