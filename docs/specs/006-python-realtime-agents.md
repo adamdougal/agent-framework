@@ -222,8 +222,8 @@ outside the topology, and app input for a call id the conversation isn't trackin
   index, and its generated length comes from the audio bytes and the output format. If the app is still playing an
   earlier response's tail when a later response produces audio, that tail isn't cut.
 - The first `interrupt(played_ms=...)` or provider truncation fixes a response's cuts. Each stays owed until the
-  provider acknowledges it, so a later `interrupt(...)` retries the cuts that failed or weren't sent, and never repeats
-  an acknowledged one.
+  provider acknowledges it, even after its control call timed out, so a later `interrupt(...)` retries the cuts that
+  failed or weren't sent, and never repeats an acknowledged one.
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.

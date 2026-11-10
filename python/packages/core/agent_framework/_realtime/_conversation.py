@@ -141,16 +141,24 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             if starting.done() and not starting.cancelled() and starting.exception() is None:
                 await _close_after_failed_entry(starting.result())
             raise
+        if self._closing.is_set():
+            await _close_after_failed_entry(session)
+            raise RealtimeConversationClosedException("The realtime conversation closed while it was starting.")
+        # The conversation owns the session from here, so a close that starts while the initial messages go out
+        # closes it.
+        self._session = session
         try:
-            for message in self._initial_messages:
-                self._raise_if_closed_while_starting()
-                await session.send(message)
+            async with self._write_lock:
+                for message in self._initial_messages:
+                    self._raise_if_closed_while_starting()
+                    await session.send(message)
             self._raise_if_closed_while_starting()
         except BaseException:
-            await _close_after_failed_entry(session)
+            if not self._closing.is_set():
+                # Entry failed on its own, so nothing else will close the session.
+                self._session = None
+                await _close_after_failed_entry(session)
             raise
-        # The conversation owns the session from here, with no await before the receive loop starts.
-        self._session = session
         self._receive_task = asyncio.create_task(self._receive_loop(session))
         return self
 
@@ -369,14 +377,18 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             raise RealtimeActiveResponseException(
                 "A response is active. Call interrupt() first to talk over it; nothing is queued."
             )
-        response_id = await self._acknowledged(
-            session.create_response(options),  # type: ignore[arg-type]
-            "create a response",
-        )
-        self._responses.requested(response_id)
-        if requested_by_a_tool(self):
-            self._responses.filler(response_id)
-        return response_id
+        self._responses.request_started()
+        try:
+            response_id = await self._acknowledged(
+                session.create_response(options),  # type: ignore[arg-type]
+                "create a response",
+            )
+            self._responses.requested(response_id)
+            if requested_by_a_tool(self):
+                self._responses.filler(response_id)
+            return response_id
+        finally:
+            self._responses.request_settled()
 
     async def interrupt(self, *, played_ms: int | None = None) -> None:
         """Cancel the active response, and cut the audio the caller didn't hear.
@@ -458,7 +470,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             closing.cancel()
             if not call.done():
                 call.cancel()
-                await asyncio.wait({call})
+                await _let_cancelled_call_unwind(call)
         if call.done() and not call.cancelled():
             return call.result()
         raise RealtimeConversationClosedException(f"The realtime conversation closed before it could {action}.")
@@ -558,6 +570,21 @@ class _UpdateStream:
                 return
             self._changed.clear()
             await self._changed.wait()
+
+
+async def _let_cancelled_call_unwind(call: asyncio.Future[Any]) -> None:
+    """Wait for a cancelled session call to unwind, even if this task is cancelled again meanwhile.
+
+    A second cancellation would otherwise abandon the call mid-cleanup. It's re-raised once the call has finished.
+    """
+    cancelled_again: asyncio.CancelledError | None = None
+    while not call.done():
+        try:
+            await asyncio.wait({call})
+        except asyncio.CancelledError as cancellation:
+            cancelled_again = cancellation
+    if cancelled_again is not None:
+        raise cancelled_again
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:

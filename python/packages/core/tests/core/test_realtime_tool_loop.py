@@ -782,6 +782,41 @@ async def test_calls_after_the_chain_used_its_max_iterations_do_not_run() -> Non
     assert client.session.calls == [("create_response", {"tool_choice": "none"}), ("create_response", None)]
 
 
+async def test_filler_still_being_requested_does_not_count_toward_max_iterations() -> None:
+    client = FakeRealtimeClient()
+
+    @tool
+    async def check_account(ctx: FunctionInvocationContext) -> str:
+        """Check the account, saying a filler line first."""
+        assert ctx.realtime_conversation is not None
+        await ctx.realtime_conversation.create_response()
+        return "account checked"
+
+    agent = RealtimeAgent(
+        client, tools=[get_weather, check_account], function_invocation_configuration={"max_iterations": 2}
+    )
+    async with agent.start_conversation():
+        client.session.create_response_events = [event("response_created", response_id="resp_2")]
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: len(client.session.calls) == 1)  # the first follow-up, resp_2
+        client.session.create_response_events = [event("response_created", response_id="resp_filler")]
+        acknowledge_filler = client.session.hold("create_response")
+        client.session.emit(
+            _call("call_2", "check_account", response_id="resp_2"),
+            event("response_done", response_id="resp_2", status="completed"),
+        )
+        await eventually(lambda: len(client.session.calls) == 2)  # the tool's filler, still unacknowledged
+        client.session.emit(
+            _call("call_3", "get_weather", response_id="resp_filler", city="Rome"),
+            event("response_done", response_id="resp_filler", status="completed"),
+        )
+        await asyncio.sleep(0.01)  # the filler's own batch starts while its request still waits
+        acknowledge_filler.set()
+        await eventually(lambda: "call_3" in dict(_results(client.session)))
+
+    assert dict(_results(client.session))["call_3"] == "Sunny in Rome"
+
+
 async def test_the_tool_chain_restarts_when_the_caller_speaks() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_iterations": 2})

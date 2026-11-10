@@ -198,6 +198,7 @@ class FakeRealtimeClient:
         self.start_session_delay = 0.0
         self.start_session_error: BaseException | None = None
         self.start_session_release: asyncio.Event | None = None
+        self.session_holds: dict[str, asyncio.Event] = {}
         self.send_error: BaseException | None = None
 
     @property
@@ -217,5 +218,7 @@ class FakeRealtimeClient:
             raise self.start_session_error
         session = FakeRealtimeSession(options, tools)
         session.send_error = self.send_error
+        for method, release in self.session_holds.items():
+            session._holds[method] = release  # pyright: ignore[reportPrivateUsage]
         self.sessions.append(session)
         return session

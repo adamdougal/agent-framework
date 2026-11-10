@@ -263,6 +263,9 @@ class ToolLoop:
 
     async def _run_batch_steps(self, response_id: str, calls: list[_Call]) -> None:
         chain = self._chain  # the chain this batch belongs to, even if new input starts another while it runs
+        # A filler response can be created, and finish, before its request returns and marks it as filler, so the
+        # follow-up count waits for requests in flight.
+        await self._responses.wait_until_requests_settle()
         chain_ends = chain.tripped or self._follow_ups(chain) >= chain.max_iterations
         invocation_disabled = not self._configuration.get("enabled", True)
         for call in calls:

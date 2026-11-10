@@ -24,6 +24,9 @@ class ResponseLedger:
         self._answers_only_earlier: set[str] = set()
         self._idle = asyncio.Event()
         self._idle.set()
+        self._requests_in_flight = 0
+        self._no_requests_in_flight = asyncio.Event()
+        self._no_requests_in_flight.set()
 
     @property
     def any_active(self) -> bool:
@@ -32,6 +35,20 @@ class ResponseLedger:
     async def wait_until_idle(self) -> None:
         """Wait until no response is active."""
         await self._idle.wait()
+
+    def request_started(self) -> None:
+        """Record a response request sent to the provider and not yet acknowledged and classified."""
+        self._requests_in_flight += 1
+        self._no_requests_in_flight.clear()
+
+    def request_settled(self) -> None:
+        self._requests_in_flight -= 1
+        if not self._requests_in_flight:
+            self._no_requests_in_flight.set()
+
+    async def wait_until_requests_settle(self) -> None:
+        """Wait until every response request in flight is acknowledged and classified, filler included."""
+        await self._no_requests_in_flight.wait()
 
     def created(self, response_id: str, agent: BaseAgent) -> None:
         """Record a response the provider created, credited to the agent active then."""

@@ -79,10 +79,15 @@ class AudioLedger:
     def on_item_truncated(self, event: RealtimeEvent) -> list[Truncation]:
         """Record a truncation; when the provider cut on its own, owe cuts at 0 ms for the response's later parts.
 
-        A client truncation acknowledges a cut ``interrupt()`` sent, so it owes nothing more.
+        A client truncation acknowledges a cut the conversation sent, even one whose control call timed out first, so
+        that cut is no longer owed.
         """
         core = core_attributes(event)
         if core.get("truncated_by") != "provider":
+            for owed in self._owed_by_response.values():
+                owed[:] = [
+                    cut for cut in owed if (cut.item_id, cut.content_index) != (core["item_id"], core["content_index"])
+                ]
             return []
         for response_id, parts in self._parts_by_response.items():
             position = next(
