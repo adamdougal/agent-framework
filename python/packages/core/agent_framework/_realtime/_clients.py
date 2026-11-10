@@ -151,8 +151,9 @@ class RealtimeClientProtocol(Protocol[RealtimeOptionsT]):
     ) -> RealtimeClientSessionProtocol[RealtimeOptionsT]:
         """Connect, apply the initial settings, and return the session once it's ready for input.
 
-        The caller owns the returned session and closes it. Clients translate the options and drop, with a warning,
-        any key they can't honor.
+        The caller owns the returned session and closes it. If opening fails or is cancelled before the session is
+        returned, the client closes whatever it opened before re-raising, so nothing is left for the caller to clean up.
+        Clients translate the options and drop, with a warning, any key they can't honor.
 
         Keyword Args:
             options: The session's initial settings.
@@ -160,6 +161,7 @@ class RealtimeClientProtocol(Protocol[RealtimeOptionsT]):
 
         Raises:
             RealtimeConnectionException: If the connection fails.
+            RealtimeControlException: If the provider rejects the initial settings.
             ValueError: If an audio format is one the provider can't take.
         """
         ...

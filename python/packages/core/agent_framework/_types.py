@@ -882,6 +882,8 @@ class Content:
             raise ValueError("hosted is only valid for function_call content.")
         if type == "realtime_event":
             require_realtime_kind(kind)
+        elif kind is not None or service_event_type is not None:
+            raise ValueError("kind and service_event_type are only valid for realtime_event content.")
 
         self.type = type
         self.annotations = annotations

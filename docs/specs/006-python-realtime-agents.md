@@ -137,7 +137,8 @@ class RealtimeOptions(TypedDict, total=False):
   `RealtimeAgent[VoiceLiveOptions]` accepts an `AzureVoice`.
 - Clients translate the keys, nest audio settings under `audio.input` and `audio.output` for GA-protocol sessions, and
   drop keys they can't honor with a warning, such as AG-UI's `store`. They forward nothing raw. An audio format the
-  provider can't take raises before connecting.
+  provider can't take raises before connecting. If opening a session fails or is cancelled, the client closes whatever
+  it opened before re-raising.
 - A session's `send(...)` takes a raw command or input. A `RealtimeEvent` is a raw command: its `raw_representation`
   is the wire event, sent verbatim and untracked. A `Message` is mapped one content at a time, in order. Audio `data` or
   `uri` content is appended to the input audio buffer, whatever the role. `text` becomes a message item with the
