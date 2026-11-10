@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 import json
 import logging
 import uuid
@@ -131,7 +132,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._heard_output_audio = False
         self._truncate_cuts: dict[str, tuple[str, int, int]] = {}
         """The cut each sent truncate request asked for, by request event_id, until it's acknowledged or rejected."""
-        self._sent_event_ids: set[str] = set()
+        # The session's own event ids share a prefix, so they're recognized without keeping one per audio chunk.
+        self._event_id_prefix = f"af_{uuid.uuid4().hex[:12]}_"
+        self._event_ids = itertools.count(1)
+        self._raw_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
         self._abandoned_updates: list[_PendingControl] = []
         self._write_lock = asyncio.Lock()
@@ -190,13 +194,12 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             # An error echoing this command's id is its own, so no waiting control call may claim it.
             raw_event_id = cast("Mapping[str, Any]", raw_command).get("event_id")
             if isinstance(raw_event_id, str):
-                self._sent_event_ids.add(raw_event_id)
+                self._raw_event_ids.add(raw_event_id)
             await self._write(cast("Mapping[str, Any]", raw_command))
             return
         for wire_event in self._message_events(value):
             # A client id lets a provider that echoes it tie its error to this event, never to a waiting control call.
-            wire_event["event_id"] = f"af_{uuid.uuid4().hex}"
-            self._sent_event_ids.add(wire_event["event_id"])
+            wire_event["event_id"] = self._new_event_id()
             await self._write(wire_event)
 
     async def receive(self) -> AsyncIterator[RealtimeEvent]:
@@ -521,8 +524,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         returns None, and when it raises, nothing is sent and the call raises.
         """
         self._ensure_open()
-        request = {**request, "event_id": f"af_{uuid.uuid4().hex}"}
-        self._sent_event_ids.add(request["event_id"])
+        request = {**request, "event_id": self._new_event_id()}
         if request["type"] == "response.cancel":
             self._cancel_event_ids.add(request["event_id"])
         acknowledged: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
@@ -630,7 +632,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if event_type != "error":
             return False
         echoed = _mapping(wire.get("error")).get("event_id")
-        if echoed is None or echoed not in self._sent_event_ids:
+        if echoed is None or not self._sent_by_this_session(echoed):
             self._abandoned_updates.pop(0)
             return True
         for index, abandoned in enumerate(self._abandoned_updates):
@@ -646,7 +648,17 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         another of this session's requests.
         """
         echoed = _mapping(error_event.get("error")).get("event_id")
-        return echoed is None or echoed == pending.event_id or echoed not in self._sent_event_ids
+        return echoed is None or echoed == pending.event_id or not self._sent_by_this_session(echoed)
+
+    def _new_event_id(self) -> str:
+        """A fresh client event_id this session will recognize as its own."""
+        return f"{self._event_id_prefix}{next(self._event_ids)}"
+
+    def _sent_by_this_session(self, event_id: Any) -> bool:
+        """Whether an echoed event_id is one this session sent: its own, or a raw command's."""
+        return isinstance(event_id, str) and (
+            event_id.startswith(self._event_id_prefix) or event_id in self._raw_event_ids
+        )
 
     def _answers_own_cancel(self, error_event: dict[str, Any]) -> bool:
         """Whether an error only says that a response this session cancelled had already finished."""
