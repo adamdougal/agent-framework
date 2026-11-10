@@ -498,8 +498,17 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if request["type"] == "response.cancel":
             self._cancel_event_ids.add(request["event_id"])
         acknowledged: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        owner = asyncio.current_task()
         pending = _PendingControl(
-            acknowledgement, request["event_id"], acknowledged, request_id, accepts_unechoed, concerns, accepted_options
+            acknowledgement,
+            request["event_id"],
+            acknowledged,
+            request_id,
+            accepts_unechoed,
+            concerns,
+            accepted_options,
+            owner=owner,
+            owner_cancellations=owner.cancelling() if owner is not None else 0,
         )
         self._pending = pending
         sent = False
@@ -534,7 +543,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             return False
         # A call cancelled a moment ago is still pending until its cleanup runs. Its answer is still read as its own,
         # but its caller is gone, so an error it would have claimed streams unclaimed.
-        waiting = not pending.acknowledged.done()
+        waiting = pending.caller_waiting()
         if event_type == "error":
             if self._claims(pending, wire):
                 pending.answered = True
@@ -865,6 +874,14 @@ class _PendingControl:
     answered: bool = False
     """Whether the provider answered, with an acknowledgement or a claimed error, even after the caller stopped
     waiting."""
+    owner: asyncio.Task[Any] | None = None
+    owner_cancellations: int = 0
+    """The owner's pending cancellation requests when the call began, so one it swallowed earlier doesn't count."""
+
+    def caller_waiting(self) -> bool:
+        """Whether the caller still waits for the answer: not cancelled, even while its request is still being sent."""
+        cancelled = self.owner is not None and self.owner.cancelling() > self.owner_cancellations
+        return not self.acknowledged.done() and not cancelled
 
     def concerned_by(self, acknowledgement: dict[str, Any]) -> bool:
         """Whether an acknowledgement event is about this call's target, rather than another item or response."""

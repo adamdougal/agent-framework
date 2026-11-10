@@ -627,6 +627,57 @@ async def test_an_update_cancelled_while_its_write_drains_is_still_owed_an_answe
         await asyncio.wait_for(updating, 1)
 
 
+async def test_a_rejection_read_as_its_draining_update_is_cancelled_streams_unclaimed() -> None:
+    """Update A's rejection is queued and A is cancelled while its write still drains, before the reader gets to the
+    rejection; it streams as an unclaimed error, not passthrough."""
+    drained = asyncio.Event()
+
+    class DrainingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            await super().send(event)
+            if event["type"] == "session.update":
+                await drained.wait()
+
+    connection = DrainingConnection(responder=None)
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session) as reader:
+        updating = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", event_id=None))
+        updating.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await updating
+        await read_through(connection, reader)
+
+    assert [event.service_event_type for event in reader.of_kind("error")] == ["error"]
+    assert reader.of_kind("passthrough") == []
+
+
+async def test_a_caller_that_swallowed_an_earlier_cancellation_still_gets_its_rejection() -> None:
+    """A task that suppressed its own earlier cancellation without uncancel() calls update_session(); a rejection
+    still fails that call with RealtimeControlException."""
+    session, connection = await started()
+    connection.responder = None
+
+    async def careless_caller() -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(0)
+        await session.update_session({"instructions": "New."}, None)
+
+    async with reading(session):
+        updating = asyncio.create_task(careless_caller())
+        await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", event_id=None))
+
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(updating, 1)
+
+
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
     """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})
