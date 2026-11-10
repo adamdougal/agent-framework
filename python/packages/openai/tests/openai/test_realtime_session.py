@@ -810,6 +810,22 @@ async def test_an_update_sent_before_a_raw_session_update_takes_the_first_acknow
         await asyncio.wait_for(later, 1)
 
 
+async def test_a_rejection_of_a_control_call_sent_before_a_raw_update_fails_that_call() -> None:
+    """create_response() is sent, then a raw session.update. A rejection echoing no event_id, as on Voice Live,
+    answers the request written first: create_response() raises RealtimeControlException."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        creating = asyncio.create_task(session.create_response())
+        await connection.wait_sent("response.create")
+        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
+        connection.push(rejection("invalid_value", event_id=None))
+
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(creating, 1)
+
+
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
     """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})

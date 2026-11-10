@@ -138,9 +138,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._event_ids = itertools.count(1)
         self._raw_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
-        # Nothing correlates session.updated with its request, so every session.update is numbered as it's written,
-        # and those no caller waits for are answered in that order.
-        self._update_writes = itertools.count()
+        # Many answers don't say which request they're for, so control requests and raw session updates are numbered
+        # as they're written, and providers answer them in that order.
+        self._request_writes = itertools.count()
         self._unawaited_updates: list[_UnawaitedUpdate] = []
         self._write_lock = asyncio.Lock()
         self._reading = False
@@ -204,7 +204,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             def number_a_raw_update() -> bool:
                 if command.get("type") == "session.update":
                     owned_id = raw_event_id if isinstance(raw_event_id, str) else None
-                    self._unawaited_updates.append(_UnawaitedUpdate(next(self._update_writes), owned_id))
+                    self._unawaited_updates.append(_UnawaitedUpdate(next(self._request_writes), owned_id))
                 return True
 
             await self._write(command, on_writing=number_a_raw_update)
@@ -552,17 +552,14 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             owner=owner,
             owner_cancellations=owner.cancelling() if owner is not None else 0,
         )
-        sent = False
 
         def start_sending() -> bool:
-            # Published only now, so nothing read while the request waits for the connection can answer it.
-            nonlocal sent
+            # Published only now, so nothing read while the request waits for the connection can answer it. A request
+            # counts as sent from here, with its place in the write order.
             if still_needed is not None and not still_needed():
                 return False
-            if request["type"] == "session.update":
-                pending.write_order = next(self._update_writes)
+            pending.write_order = next(self._request_writes)
             self._pending = pending
-            sent = True
             if on_sent is not None:
                 on_sent(request["event_id"])
             return True
@@ -574,8 +571,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 await self._read_into_buffer()
             return await acknowledged
         finally:
-            if sent and not pending.answered and pending.write_order is not None:
-                # A cancelled update's late answer must not be taken for a later update's.
+            if not pending.answered and pending.write_order is not None and request["type"] == "session.update":
+                # A sent update whose caller left still gets its answer, which mustn't be taken for a later update's.
                 bisect.insort(
                     self._unawaited_updates,
                     _UnawaitedUpdate(pending.write_order, pending.event_id, pending.accepted_options),
@@ -636,22 +633,24 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
     def _answers_unawaited_update(self, event_type: str, wire: dict[str, Any]) -> bool:
         """Whether ``wire`` answers a session update no caller waits for: a raw one, or one whose caller was cancelled.
 
-        Updates are answered in the order they were written, so a session.updated, or an error echoing no id or one
-        this session never sent, answers the oldest outstanding update. That's the waiting update_session() call when it
-        was written first, and otherwise the oldest unawaited update, whose accepted options merge into ``options``. An
-        error echoing an unawaited update's own id answers that one. Errors answering an unawaited update stream
-        unclaimed.
+        Requests are answered in the order they were written. A session.updated answers the oldest outstanding update:
+        the waiting update_session() call when it was written first, otherwise the oldest unawaited update, whose
+        accepted options merge into ``options``. An error echoing no id, or one this session never sent, answers the
+        oldest outstanding request of any kind, which may be a waiting control call written before every unawaited
+        update. An error echoing an unawaited update's own id answers that one. Errors answering an unawaited update
+        stream unclaimed.
         """
         if not self._unawaited_updates or event_type not in ("session.updated", "error"):
             return False
         oldest = self._unawaited_updates[0]
         pending = self._pending
-        waiting_update_is_older = (
+        waiting_call_is_older = (
             pending is not None
             and not pending.answered
             and pending.write_order is not None
             and pending.write_order < oldest.write_order
         )
+        waiting_call_is_an_update = pending is not None and pending.acknowledgement == "session.updated"
         if event_type == "error":
             echoed = _mapping(wire.get("error")).get("event_id")
             if echoed is not None and self._sent_by_this_session(echoed):
@@ -660,7 +659,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                         del self._unawaited_updates[index]
                         return True
                 return False
-        if waiting_update_is_older:
+        if waiting_call_is_older and (event_type == "error" or waiting_call_is_an_update):
             return False
         self._unawaited_updates.pop(0)
         if event_type == "session.updated" and oldest.accepted_options:
@@ -993,7 +992,7 @@ class _PendingControl:
     concerns: Callable[[dict[str, Any]], bool] | None = None
     accepted_options: dict[str, Any] | None = None
     write_order: int | None = None
-    """For a session update, its place among the session.update requests written, which providers answer in order."""
+    """Its place among the requests written, which providers answer in order."""
     answered: bool = False
     """Whether the provider answered, with an acknowledgement or a claimed error, even after the caller stopped
     waiting."""
