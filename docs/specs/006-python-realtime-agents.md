@@ -527,7 +527,9 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   a span's status. Each `item_truncated` becomes an `agent_framework.realtime.item_truncated` event with the response
   id, item id and `audio_end_ms`. Exchange reports get no spans.
 - **Cancelled tools.** `FunctionTool.invoke` records a cancelled call as ERROR with `error.type` `cancelled`, or
-  `conversation_closed` when closing the conversation cancelled it. Calls that never ran get no span.
+  `conversation_closed` when closing the conversation cancelled it, on its span and its duration metric. The
+  conversation passes that reason as the cancel message, and any other cancel message records `cancelled`, because
+  `error.type` is a metric dimension. Calls that never ran get no span.
 - **Content.** Telemetry never records audio. With sensitive data on, `realtime_inference` spans record the agent
   transcript as `transcription` parts plus text and `tool_call` parts, the app input and any caller transcript final
   before the span ends, and `gen_ai.system_instructions` as of the response's creation. The live conversation span
@@ -625,9 +627,9 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
 
 On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content
 serializes; `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
-text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR,
-in its own PR first; the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base
-shared by `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
+text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
+the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
+`HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.
 
 ## Version compatibility

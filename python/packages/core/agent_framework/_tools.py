@@ -616,6 +616,19 @@ def _format_tool_parameters(  # pyright: ignore[reportUnusedFunction]
     return "compact", compact
 
 
+_CONVERSATION_CLOSED_REASON: Final[str] = "conversation_closed"
+# Other cancel messages record "cancelled": error.type is a metric dimension, and some messages, like anyio's,
+# name a per-scope id.
+_RECORDED_CANCELLATION_REASONS: Final[frozenset[str]] = frozenset({_CONVERSATION_CLOSED_REASON})
+
+
+def _cancellation_error_type(cancellation: asyncio.CancelledError) -> str:
+    """Return the ``error.type`` recorded for a tool call cancelled while running."""
+    reason = cancellation.args[0] if cancellation.args else None
+    # An exact str: a subclass's own __hash__ or __eq__ could raise here and replace the cancellation.
+    return reason if type(reason) is str and reason in _RECORDED_CANCELLATION_REASONS else "cancelled"
+
+
 ClassT = TypeVar("ClassT", bound="SerializationMixin")
 
 
@@ -1145,6 +1158,11 @@ class FunctionTool(SerializationMixin):
         exceptions follow the existing tool-error handling, including the
         ``include_detailed_errors`` setting. Default parsing retains its string fallback.
 
+        A call cancelled while the tool runs re-raises ``asyncio.CancelledError`` unchanged.
+        With telemetry enabled, its ``execute_tool`` span ends with ERROR status, and the span
+        and the duration metric record ``error.type`` as ``conversation_closed`` when a closing
+        conversation cancelled the call, or ``cancelled`` for any other cancellation.
+
         Parsing can be skipped in two ways: configure the tool with
         ``result_parser=SKIP_PARSING`` to always skip parsing, or pass
         ``skip_parsing=True`` per call. Either way the wrapped function's raw value
@@ -1327,6 +1345,14 @@ class FunctionTool(SerializationMixin):
                 with _suspend_security_argument_materialization():
                     result = await self._invoke_function(call_kwargs)
                 end_time_stamp = perf_counter()
+            except asyncio.CancelledError as cancellation:
+                end_time_stamp = perf_counter()
+                error_type = _cancellation_error_type(cancellation)
+                metric_attributes[OtelAttr.ERROR_TYPE] = error_type
+                span.set_attribute(OtelAttr.ERROR_TYPE, error_type)
+                span.set_status(status=trace.StatusCode.ERROR)
+                logger.info("Function %s cancelled (%s).", self.name, error_type)
+                raise
             except Exception as exception:
                 end_time_stamp = perf_counter()
                 metric_attributes[OtelAttr.ERROR_TYPE] = type(exception).__name__
