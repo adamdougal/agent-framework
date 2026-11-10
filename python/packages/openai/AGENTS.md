@@ -11,6 +11,7 @@ agent_framework_openai/
 ├── _chat_completion_client.py  # OpenAIChatCompletionClient (Chat Completions API) + RawOpenAIChatCompletionClient
 ├── _embedding_client.py        # OpenAIEmbeddingClient
 ├── _exceptions.py              # OpenAI-specific exceptions
+├── _realtime_session.py        # OpenAIRealtimeSession + OpenAIRealtimeConnection (experimental)
 └── _shared.py                  # OpenAISettings and shared config helpers
 ```
 
@@ -21,8 +22,15 @@ agent_framework_openai/
 | `OpenAIChatClient` | Responses API | Primary |
 | `OpenAIChatCompletionClient` | Chat Completions API | Primary |
 | `OpenAIEmbeddingClient` | Embeddings API | Primary |
+| `OpenAIRealtimeSession` | OpenAI Realtime protocol | Experimental; base session for realtime provider clients |
 
 All clients follow the Raw + Full-Featured pattern (e.g., `RawOpenAIChatClient` + `OpenAIChatClient`).
+
+`OpenAIRealtimeSession` is the shared realtime session for every service that speaks the OpenAI Realtime protocol,
+including Azure Voice Live in `agent-framework-foundry`. A provider client opens an `OpenAIRealtimeConnection`, builds
+the session on it and awaits `start(...)`; a service's differences go in a subclass that overrides the protected
+hooks the class docstring lists. The module must import without `openai[realtime]` or websockets, because Voice
+Live brings its own transport.
 
 For Responses API continuation with service-side storage, a prior hosted
 `function_approval_request` is server-issued and must not be replayed inline, while the new hosted

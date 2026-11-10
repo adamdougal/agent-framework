@@ -131,7 +131,8 @@ class RealtimeOptions(TypedDict, total=False):
 - `RealtimeOptions` replaces ADR 0035's `RealtimeSessionOptions`, and its `create_response` lives in turn detection.
   `None` turns a feature off. `OpenAIRealtimeOptions`, `VoiceLiveOptions` and `FoundryVoiceAgentOptions` extend it.
   `AzureVoice`, `AzureTurnDetection`, `AzureTranscription` and `AzureNoiseReduction` add Azure's types and fields, and
-  Azure-only settings such as echo cancellation, animation, avatar and interim response exist only on the Azure types.
+  Azure-only settings such as echo cancellation, animation and interim response exist only on the Azure types. Avatar
+  isn't typed, because avatar video needs WebRTC; a raw `session.update` still reaches it.
   The Azure types widen `voice` to `str | AzureVoice`, as `AnthropicChatOptions` widens `instructions`. The agent, the
   conversation and the client protocols are generic over the options type, as `RawAgent` is, so a
   `RealtimeAgent[VoiceLiveOptions]` accepts an `AzureVoice`.
@@ -548,10 +549,14 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 | Foundry voice agents | `FoundryVoiceAgent`, `FoundryVoiceAgentClient`, `FoundryVoiceAgentOptions` | `agent-framework-foundry[realtime]` | `azure-ai-projects` (`.beta.voice_agents.realtime`) |
 
 - **Shared base session.** `OpenAIRealtimeSession`, public in `agent-framework-openai`, implements the typed control
-  methods, kinds, string tool outputs, replay, error claiming and the barge-in cut for services that speak the OpenAI
-  Realtime protocol. It maps wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each
-  client opens through its service's SDK, with no other SDK models and compression off. The connection maps transport
-  errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions subclass it privately.
+  methods, kinds, string tool outputs, replay and error claiming for services that speak the OpenAI Realtime protocol.
+  Its public `start(...)` applies the initial settings. It tracks the active response itself on every provider, so
+  `create_response(...)`, `say(...)` and `cancel_response()` answer from that tracking. It sends `truncate(...)` on the
+  wire, while the conversation computes the barge-in cut from `played_ms` and deduplicates unclaimed errors. It maps
+  wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each client opens through its
+  service's SDK, with no other SDK models and compression off. `receive` returns one event, or `None` on a normal close.
+  The connection maps transport errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions
+  subclass it privately.
 - **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint`, `api_key` or a `credential` for the
   `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks. It connects through
   `AsyncOpenAI(websocket_base_url=".../openai/v1")` without an `api_version`, and raises when given an
@@ -562,8 +567,9 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   names to the kinds. A managed model needs `model=`; BYOM takes `profile=`, `model=<deployment>` and optionally
   `foundry_resource_override`, sent through the SDK's `query`. It authenticates with `api_key` or `credential`, adapting
   token-provider callables and sync credentials, with `https://ai.azure.com/.default` as the default scope. It sends its
-  first `session.update` before any other event, drops per-response `instructions` with a warning, tracks the active
-  response itself, and offers `get_mcp_tool()` and `get_foundry_agent_tool()`. It reads `AZURE_VOICELIVE_ENDPOINT`,
+  first `session.update` before any other event, drops per-response `instructions` with a warning, and offers
+  `get_mcp_tool()` and `get_foundry_agent_tool()`. Caller audio may also be 16 kHz PCM, and the agent's audio 8 or
+  16 kHz PCM. It reads `AZURE_VOICELIVE_ENDPOINT`,
   `AZURE_VOICELIVE_API_KEY`, `AZURE_VOICELIVE_MODEL` and `AZURE_VOICELIVE_API_VERSION`.
 - **Foundry voice agents.** `FoundryVoiceAgent` takes `project_client`, or `project_endpoint`, `agent_name`,
   `agent_version` and a `credential` for the `https://ai.azure.com/.default` scope. It reads the same `FOUNDRY_*`
@@ -577,7 +583,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   no `tools` key is sent. Both `conversation.item.created` and `.added` map to `item_added`.
 - **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]`, with `websockets>=13,<16`.
   `agent-framework-foundry[realtime]` adds `azure-ai-voicelive[aiohttp]>=1.3.1,<2` and raises `azure-ai-projects` to
-  `>=2.7,<2.8`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
+  `>=2.7,<2.10`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
   `agent_framework.foundry` re-export the classes. Fields the base session writes go in the `openai` metadata namespace,
   and Voice Live's and Foundry's extras in `foundry`, because
   [spec 005](005-python-content-identity-and-protocol-metadata.md#metadata-namespaces) names a namespace after its
