@@ -575,6 +575,58 @@ async def test_a_cancelled_updates_late_rejection_does_not_fail_the_next_update(
     assert session.options == {"instructions": "B."}
 
 
+async def test_an_acknowledgement_read_as_its_update_is_cancelled_is_not_expected_again() -> None:
+    """Update A's session.updated is queued and A is cancelled before A's task runs again; the reader still reads it
+    as A's, so update B resolves on its own session.updated and session.options holds both."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_a", "session": {}})
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+    assert session.options == {"max_tokens": 100, "instructions": "B."}
+
+
+async def test_an_update_cancelled_while_its_write_drains_is_still_owed_an_answer() -> None:
+    """Update A is cancelled after its frame is written but while the write still waits to drain; A's late
+    session.updated then doesn't resolve update B."""
+    drained = asyncio.Event()
+
+    class DrainingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            await super().send(event)
+            if event.get("session") == {"type": "realtime", "max_output_tokens": 100}:
+                await drained.wait()
+
+    connection = DrainingConnection(responder=None)
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session):
+        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
+        await connection.wait_sent("session.update")
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
+        await connection.wait_sent("session.update")
+        connection.push({"type": "session.updated", "event_id": "evt_a", "session": {}})
+        await asyncio.sleep(0.01)
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
     """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})
@@ -800,6 +852,31 @@ async def test_truncate_ignores_another_items_truncation() -> None:
 
         connection.push(item_truncated("item_1", 0, 1500))
         await asyncio.wait_for(truncating, 1)
+
+
+async def test_a_truncation_read_while_its_truncate_drains_is_marked_client() -> None:
+    """The provider's conversation.item.truncated for "item_1" is read while truncate("item_1", 0, 500) still waits
+    for its write to drain; it yields truncated_by "client", and a later truncation of "item_1" yields "provider"."""
+
+    class DrainingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            await super().send(event)
+            if event["type"] == "conversation.item.truncate":
+                self.push(item_truncated("item_1", 0, 500))
+                await asyncio.sleep(0.02)
+
+    connection = DrainingConnection()
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session) as reader:
+        await asyncio.wait_for(session.truncate("item_1", 0, 500), 1)
+        await read_through(connection, reader, item_truncated("item_1", 0, 300))
+
+    assert [event.additional_properties["core"]["truncated_by"] for event in reader.of_kind("item_truncated")] == [
+        "client",
+        "provider",
+    ]
 
 
 async def test_a_rejected_truncate_leaves_a_later_truncation_to_the_provider() -> None:

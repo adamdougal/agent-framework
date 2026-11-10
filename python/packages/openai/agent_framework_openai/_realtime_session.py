@@ -488,8 +488,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         session reads the connection itself. A response request's acknowledgement must echo its ``request_id``, or,
         when ``accepts_unechoed``, carry no metadata at all. ``concerns`` tells whether an acknowledgement is about this
         request's target, such as the item it truncates; one that isn't is left alone. ``accepted_options`` merge into
-        ``options`` as the acknowledgement is read, so events right behind it already see them. ``on_sent`` runs once
-        the request is written, before its acknowledgement can be read.
+        ``options`` as the acknowledgement is read, so events right behind it already see them. ``on_sent`` runs as the
+        request starts going out, before its acknowledgement can be read; a request counts as sent from then on, since a
+        transport can put the frame on the wire before its send returns.
         """
         self._ensure_open()
         request = {**request, "event_id": f"af_{uuid.uuid4().hex}"}
@@ -502,16 +503,20 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         )
         self._pending = pending
         sent = False
-        try:
-            await self._write(request)
+
+        def start_sending() -> None:
+            nonlocal sent
             sent = True
             if on_sent is not None:
                 on_sent()
+
+        try:
+            await self._write(request, on_writing=start_sending)
             while read_until_acknowledged and not acknowledged.done():
                 await self._read_into_buffer()
             return await acknowledged
         finally:
-            if sent and request["type"] == "session.update" and (acknowledged.cancelled() or not acknowledged.done()):
+            if sent and not pending.answered and request["type"] == "session.update":
                 # Nothing correlates session.updated with its request, so a cancelled update's late answer must not
                 # be taken for a later update's.
                 self._abandoned_updates.append(pending)
@@ -525,18 +530,25 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if self._answers_abandoned_update(event_type, wire):
             return False
         pending = self._pending
-        if pending is None or pending.acknowledged.done():
+        if pending is None or pending.answered:
             return False
+        # A call cancelled a moment ago is still pending until its cleanup runs. Its answer is still read as its own,
+        # but its caller is gone, so an error it would have claimed streams unclaimed.
+        waiting = not pending.acknowledged.done()
         if event_type == "error":
             if self._claims(pending, wire):
-                pending.acknowledged.set_exception(_control_exception(wire))
-                return True
+                pending.answered = True
+                if waiting:
+                    pending.acknowledged.set_exception(_control_exception(wire))
+                return waiting
         elif event_type == pending.acknowledgement and not _is_out_of_band(wire) and pending.concerned_by(wire):
+            pending.answered = True
             if pending.answered_by(wire):
                 if pending.accepted_options is not None:
                     self.options = cast("RealtimeOptionsT", {**self.options, **pending.accepted_options})
-                pending.acknowledged.set_result(wire)
-            else:
+                if waiting:
+                    pending.acknowledged.set_result(wire)
+            elif waiting:
                 pending.acknowledged.set_exception(
                     RealtimeActiveResponseException("The provider started another response instead.")
                 )
@@ -607,9 +619,14 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._buffered.extend(self._handle(wire))
         return wire
 
-    async def _write(self, wire_event: Mapping[str, Any]) -> None:
-        """Send one wire event, never interleaved with another write."""
+    async def _write(self, wire_event: Mapping[str, Any], *, on_writing: Callable[[], None] | None = None) -> None:
+        """Send one wire event, never interleaved with another write.
+
+        ``on_writing`` runs once this write holds the connection, just before the transport sends.
+        """
         async with self._write_lock:
+            if on_writing is not None:
+                on_writing()
             await self._connection.send(wire_event)
 
     def _ensure_open(self) -> None:
@@ -845,6 +862,9 @@ class _PendingControl:
     accepts_unechoed: bool = False
     concerns: Callable[[dict[str, Any]], bool] | None = None
     accepted_options: dict[str, Any] | None = None
+    answered: bool = False
+    """Whether the provider answered, with an acknowledgement or a claimed error, even after the caller stopped
+    waiting."""
 
     def concerned_by(self, acknowledgement: dict[str, Any]) -> bool:
         """Whether an acknowledgement event is about this call's target, rather than another item or response."""
