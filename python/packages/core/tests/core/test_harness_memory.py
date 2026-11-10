@@ -439,12 +439,8 @@ async def test_search_transcripts_non_positive_limit_returns_nothing(tmp_path) -
     store = MemoryFileStore(tmp_path, owner_state_key="owner_id")
     await _write_transcript(store, session, "session-1", "Matching transcript.")
 
-    assert store.search_transcripts(
-        session, source_id=DEFAULT_MEMORY_SOURCE_ID, query="transcript", limit=0
-    ) == []
-    assert store.search_transcripts(
-        session, source_id=DEFAULT_MEMORY_SOURCE_ID, query="transcript", limit=-1
-    ) == []
+    assert store.search_transcripts(session, source_id=DEFAULT_MEMORY_SOURCE_ID, query="transcript", limit=0) == []
+    assert store.search_transcripts(session, source_id=DEFAULT_MEMORY_SOURCE_ID, query="transcript", limit=-1) == []
 
 
 def test_memory_file_store_rejects_owner_path_traversal(tmp_path) -> None:
