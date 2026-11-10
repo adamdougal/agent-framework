@@ -153,11 +153,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                     self._raise_if_closed_while_starting()
                     await session.send(message)
             self._raise_if_closed_while_starting()
-        except BaseException:
+        except BaseException as error:
             if not self._closing.is_set():
                 # Entry failed on its own, so nothing else will close the session.
                 self._session = None
                 await _close_after_failed_entry(session)
+                raise
+            if isinstance(error, RealtimeException) and not isinstance(error, RealtimeConversationClosedException):
+                # The close closed the socket under the pending write.
+                raise RealtimeConversationClosedException(
+                    "The realtime conversation closed while it was starting."
+                ) from error
             raise
         self._receive_task = asyncio.create_task(self._receive_loop(session))
         return self

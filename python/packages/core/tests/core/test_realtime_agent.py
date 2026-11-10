@@ -297,6 +297,21 @@ async def test_close_during_the_initial_messages_closes_the_session_once() -> No
     assert client.session.close_count == 1
 
 
+async def test_an_initial_send_that_fails_because_close_started_raises_conversation_closed() -> None:
+    client = FakeRealtimeClient()
+    release_send = client.session_holds["send"] = asyncio.Event()
+    conversation = RealtimeAgent(client).start_conversation("Hi")
+    entering = asyncio.create_task(conversation.__aenter__())
+    await eventually(lambda: bool(client.sessions) and client.session.send_attempts == 1)
+
+    await asyncio.wait_for(conversation.close(), 1)
+    client.session.send_error = RealtimeConnectionException("The socket is closed.")
+    release_send.set()
+
+    with pytest.raises(RealtimeConversationClosedException):
+        await asyncio.wait_for(entering, 1)
+
+
 async def test_entering_a_conversation_again_raises_runtime_error() -> None:
     conversation = RealtimeAgent(FakeRealtimeClient()).start_conversation()
 
