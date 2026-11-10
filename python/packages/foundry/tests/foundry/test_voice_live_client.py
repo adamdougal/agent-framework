@@ -305,11 +305,12 @@ def test_missing_model_raises() -> None:
 
 
 def test_api_version_must_be_a_supported_date() -> None:
-    """api_version "2026-09-01" is accepted; "v1", "2025-10-01" and "latest" each raise ValueError."""
+    """api_version "2026-09-01" is accepted; "v1", "2025-10-01", "latest", and the non-canonical "20260901" and
+    "2026-W36-1", each raise ValueError."""
     assert VoiceLiveClient(endpoint=ENDPOINT, model=MODEL, api_key="key", api_version="2026-09-01").api_version == (
         "2026-09-01"
     )
-    for unsupported in ("v1", "2025-10-01", "latest"):
+    for unsupported in ("v1", "2025-10-01", "latest", "20260901", "2026-W36-1"):
         with pytest.raises(ValueError, match=unsupported):
             VoiceLiveClient(endpoint=ENDPOINT, model=MODEL, api_key="key", api_version=unsupported)
 
@@ -994,6 +995,25 @@ class TestVerification:
 
         assert session.options["voice"] == sonia
         assert "ignored the voice change" not in caplog.text
+
+    async def test_an_ignored_voice_is_logged_by_name_only(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An ignored change to an Azure voice whose custom_lexicon_url is a SAS URL warns naming the voices, without
+        the URL or its signature."""
+        ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
+        sonia: AzureVoice = {
+            "type": "azure-standard",
+            "name": "en-GB-SoniaNeural",
+            "custom_lexicon_url": "https://store.blob.core.windows.net/lexicons/a.xml?sv=2024-01-01&sig=secret-signature",
+        }
+        session, connection = await voice_live_session({"voice": ava})
+        connection.echo_overrides = {"voice": ava}
+
+        async with reading(session):
+            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+
+        assert "ignored the voice change" in caplog.text
+        assert "en-GB-SoniaNeural" in caplog.text
+        assert "secret-signature" not in caplog.text
 
     async def test_azure_voice_with_a_tuple_field_is_accepted(self, caplog: pytest.LogCaptureFixture) -> None:
         """update_session({"voice": Sonia with prefer_locales ("en-GB", "es-ES")}) acknowledged with the voice echoed

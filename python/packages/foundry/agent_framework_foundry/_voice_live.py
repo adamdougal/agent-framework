@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import inspect
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import date
@@ -120,17 +122,29 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
     Examples:
         .. code-block:: python
 
+            import asyncio
+
             from agent_framework import Message
             from agent_framework_foundry import VoiceLiveClient
             from azure.identity.aio import AzureCliCredential
 
+
+            async def print_reply(session) -> None:
+                async for event in session.receive():
+                    if event.kind == "output_text" and event.content.merge_mode == "append":
+                        print(event.content.text, end="")
+                    elif event.kind == "response_done":
+                        return
+
+
             async with AzureCliCredential() as credential:
                 client = VoiceLiveClient(credential=credential)
                 async with await client.start_session(options={"instructions": "Be brief."}) as session:
+                    # Control calls such as create_response() resolve while something reads receive().
+                    reader = asyncio.create_task(print_reply(session))
                     await session.send(Message("user", ["Hello!"]))
                     await session.create_response()
-                    async for event in session.receive():
-                        ...
+                    await reader
 
     Attributes:
         endpoint: The Voice Live endpoint.
@@ -495,14 +509,12 @@ def _require_voice_live_sdk() -> None:
 def _supported_api_version(api_version: str) -> str:
     """``api_version`` if it's a dated version of the preview shape this client speaks, on or after 2026-07-15.
 
-    ISO dates sort as strings. The undocumented, GA-shaped ``v1`` isn't supported.
+    Only the canonical ``YYYY-MM-DD`` form is a Voice Live version. The undocumented, GA-shaped ``v1`` isn't supported.
     """
-    try:
-        date.fromisoformat(api_version)
-    except ValueError:
-        supported = False
-    else:
-        supported = api_version >= DEFAULT_API_VERSION
+    supported = False
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", api_version):
+        with contextlib.suppress(ValueError):
+            supported = date.fromisoformat(api_version) >= date.fromisoformat(DEFAULT_API_VERSION)
     if not supported:
         raise ValueError(
             f"Unsupported Voice Live api_version {api_version!r}: VoiceLiveClient speaks the preview shape of "

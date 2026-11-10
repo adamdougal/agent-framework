@@ -95,6 +95,11 @@ class FakeConnection:
         return await asyncio.wait_for(poll(), timeout)
 
 
+def without_event_ids(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Sent events without the client event_ids the session adds."""
+    return [{key: value for key, value in event.items() if key != "event_id"} for event in events]
+
+
 def request_id_of(request: Mapping[str, Any]) -> str:
     """The af_request_id a response.create request carries in its metadata."""
     return request["response"]["metadata"]["af_request_id"]
@@ -429,6 +434,15 @@ async def test_tool_choice_translates(tool_choice: Any, expected: Any) -> None:
     assert sent["tool_choice"] == expected
 
 
+async def test_tool_choice_allowed_tools_is_ignored_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """ToolMode {mode: "auto", allowed_tools: ["lookup"]} becomes "auto", and a warning says allowed_tools is ignored,
+    since realtime sessions can't restrict the declared tools that way."""
+    sent = await initial_session({"tool_choice": {"mode": "auto", "allowed_tools": ["lookup"]}})
+
+    assert sent["tool_choice"] == "auto"
+    assert "allowed_tools" in caplog.text
+
+
 async def test_tools_are_declared(caplog: pytest.LogCaptureFixture) -> None:
     """A FunctionTool becomes {type: "function", name, description, parameters}; a Mapping tool is sent as given;
     any other tool is dropped with a warning naming it."""
@@ -472,6 +486,22 @@ async def test_azure_voice_is_dropped_on_a_ga_session(caplog: pytest.LogCaptureF
 
     assert sent == {"type": "realtime", "instructions": "Hi"}
     assert "voice" in caplog.text
+
+
+async def test_a_dropped_voice_object_is_logged_by_name_only(caplog: pytest.LogCaptureFixture) -> None:
+    """An Azure voice whose custom_lexicon_url is a SAS URL is dropped on a GA session with a warning naming
+    "en-US-AvaNeural", without the URL or its signature."""
+    azure_voice: Any = {
+        "type": "azure-standard",
+        "name": "en-US-AvaNeural",
+        "custom_lexicon_url": "https://store.blob.core.windows.net/lexicons/a.xml?sv=2024-01-01&sig=secret-signature",
+    }
+
+    await initial_session({"instructions": "Hi", "voice": azure_voice})
+
+    assert "en-US-AvaNeural" in caplog.text
+    assert "store.blob.core.windows.net" not in caplog.text
+    assert "secret-signature" not in caplog.text
 
 
 async def test_unsupported_audio_format_raises_before_sending() -> None:
@@ -802,6 +832,37 @@ async def test_create_response_raises_while_a_response_is_active() -> None:
     assert connection.sent == []
 
 
+async def test_a_response_started_while_create_response_waits_to_send_raises() -> None:
+    """create_response() waits behind another write while turn detection starts "resp_vad": it raises
+    RealtimeActiveResponseException and sends no response.create."""
+    release = asyncio.Event()
+
+    class BlockingConnection(FakeConnection):
+        async def send(self, event: Mapping[str, Any]) -> None:
+            if event.get("type") == "blocker":
+                await release.wait()
+            await super().send(event)
+
+    connection = BlockingConnection()
+    session = OpenAIRealtimeSession(connection)
+    await session.start()
+
+    async with reading(session) as reader:
+        blocking = asyncio.create_task(
+            session.send(RealtimeEvent("passthrough", raw_representation={"type": "blocker"}))
+        )
+        await asyncio.sleep(0.01)
+        creating = asyncio.create_task(session.create_response())
+        await asyncio.sleep(0.01)
+        await read_through(connection, reader, response_created("resp_vad"))
+        release.set()
+        with pytest.raises(RealtimeActiveResponseException):
+            await asyncio.wait_for(creating, 1)
+        await asyncio.wait_for(blocking, 1)
+
+    assert "response.create" not in connection.sent_types()
+
+
 async def test_create_response_fails_on_a_lost_race() -> None:
     """While create_response() waits, a response.created {id: "resp_vad", metadata: null} that doesn't carry its
     af_request_id fails it with RealtimeActiveResponseException."""
@@ -1098,6 +1159,22 @@ async def test_a_late_rejection_of_a_cancelled_truncate_clears_its_client_mark()
     assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
 
 
+async def test_a_truncation_read_right_behind_a_truncates_rejection_is_marked_provider() -> None:
+    """truncate("item_1", 0, 500) is rejected by an error echoing no event_id, and a provider truncation at that same
+    cut is read right behind it, before truncate() resumes: it's marked provider."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        truncating = asyncio.create_task(session.truncate("item_1", 0, 500))
+        await connection.wait_sent("conversation.item.truncate")
+        connection.push(rejection("invalid_value", event_id=None), item_truncated("item_1", 0, 500))
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(truncating, 1)
+        await reader.until(lambda: "item_truncated" in reader.kinds())
+
+    assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
+
+
 async def test_a_rejected_truncate_leaves_a_later_truncation_to_the_provider() -> None:
     """truncate("item_1", 0, 99999) fails on a claimed rejection; a later conversation.item.truncated at that same
     cut yields truncated_by "provider"."""
@@ -1183,6 +1260,25 @@ async def test_an_error_echoing_a_raw_commands_event_id_is_not_claimed() -> None
         await connection.wait_sent("session.update")
         await session.send(RealtimeEvent("passthrough", raw_representation=commit))
         connection.push(rejection("input_audio_buffer_commit_empty", event_id="raw_1"))
+        await reader.until(lambda: "error" in reader.kinds())
+        assert not updating.done()
+
+        connection.push({"type": "session.updated", "event_id": "evt_srv", "session": {}})
+        await asyncio.wait_for(updating, 1)
+
+
+async def test_an_error_echoing_a_sent_messages_event_id_is_not_claimed() -> None:
+    """While update_session() waits, a function result sent with send(Message(...)) is rejected by an error echoing
+    that event's event_id: the update isn't failed, the error streams as error, and the update resolves on its
+    session.updated."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session) as reader:
+        updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
+        await connection.wait_sent("session.update")
+        await session.send(Message("tool", [Content.from_function_result("call_stale", result="42")]))
+        connection.push(rejection("invalid_value", event_id=connection.sent[-1].get("event_id")))
         await reader.until(lambda: "error" in reader.kinds())
         assert not updating.done()
 
@@ -1755,7 +1851,7 @@ async def test_send_audio_data_appends_to_the_input_buffer() -> None:
 
     await session.send(Message("user", [Content.from_data(b"\x00\x01", "audio/pcm;rate=24000")]))
 
-    assert connection.sent == [{"type": "input_audio_buffer.append", "audio": "AAE="}]
+    assert without_event_ids(connection.sent) == [{"type": "input_audio_buffer.append", "audio": "AAE="}]
 
 
 async def test_send_external_audio_uri_is_dropped_without_logging_the_uri(caplog: pytest.LogCaptureFixture) -> None:
@@ -1779,7 +1875,7 @@ async def test_send_user_and_system_text_create_input_text_items() -> None:
     await session.send(Message("user", ["Hi"]))
     await session.send(Message("system", ["Rules."]))
 
-    assert connection.sent == [
+    assert without_event_ids(connection.sent) == [
         {
             "type": "conversation.item.create",
             "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
@@ -1808,7 +1904,7 @@ async def test_send_function_call_creates_a_function_call_item() -> None:
 
     await session.send(Message("assistant", [Content.from_function_call("call_1", "lookup", arguments={"q": "x"})]))
 
-    assert connection.sent == [
+    assert without_event_ids(connection.sent) == [
         {
             "type": "conversation.item.create",
             "item": {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": '{"q": "x"}'},
@@ -1826,7 +1922,7 @@ async def test_send_function_result_creates_an_output_item(caplog: pytest.LogCap
 
     await session.send(Message("tool", [Content.from_function_result("call_1", result="42"), with_image]))
 
-    assert connection.sent == [
+    assert without_event_ids(connection.sent) == [
         {
             "type": "conversation.item.create",
             "item": {"type": "function_call_output", "call_id": "call_1", "output": "42"},
