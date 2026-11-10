@@ -12,7 +12,7 @@ permissions:
 env:
   UV_CACHE_DIR: /tmp/.uv-cache
   # The commit the realtime pieces build on; the probe branch adds the two extras on top of it.
-  BASE_SHA: 3d87ea1ef9a51f2e0b01a0bfbf4a4b09ce109a15
+  BASE_SHA: af704eb9aece5fa7ef760ac6248d66cdb857b667
 
 jobs:
   lock:
