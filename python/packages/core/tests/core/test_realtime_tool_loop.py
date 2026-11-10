@@ -1034,6 +1034,20 @@ async def test_close_drops_a_pending_follow_up() -> None:
     assert client.session.calls == []
 
 
+async def test_close_lets_a_cancelled_follow_up_finish_cleaning_up() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
+        client.session.hold("create_response")
+        client.session.cleanup_delays["create_response"] = 0.05
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: bool(client.session.calls))
+
+        await conversation.close()
+
+        assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
+
+
 async def test_a_chat_runs_tool_context_has_no_realtime_conversation(chat_client_base: MockBaseChatClient) -> None:
     seen: list[object] = []
 

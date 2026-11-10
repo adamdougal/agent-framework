@@ -197,7 +197,12 @@ class ToolLoop:
         self._running_batches.pop(batch, None)
 
     def stop(self) -> None:
-        """Start no more batches or follow-ups, from the moment close starts; ``close()`` settles the calls left."""
+        """Start no more batches or follow-ups, from the moment close starts; ``close()`` settles the calls left.
+
+        The follow-up is cancelled once, so a second cancel can't cut short its control call's cleanup.
+        """
+        if self._closing:
+            return
         self._closing = True
         if self._follow_up_task is not None:
             self._follow_up_task.cancel()
@@ -209,6 +214,8 @@ class ToolLoop:
         its calls, so their ``execute_tool`` spans record it. Settled results stream but aren't sent.
         """
         self.stop()
+        if self._follow_up_task is not None:
+            await asyncio.wait({self._follow_up_task})
         running = dict(self._running_batches)
         for batch in running:
             batch.cancel(_CONVERSATION_CLOSED_REASON)
@@ -329,7 +336,9 @@ class ToolLoop:
                 continue  # the caller spoke, a response started, or one answered, while it waited its turn
             if self._follow_ups_due == self._follow_ups_due_when_requested:
                 return
-            # Results went out while it was being requested, which its response can't act on, so request another.
+            # Results went out after the request did. The provider handles client events in order and starts a
+            # response from the conversation as it stood, so this response can't act on them, however late its
+            # response.created arrives here. Request another.
             self._responses.not_answering(response_id)
 
     async def _execute(self, calls: Sequence[_Call]) -> tuple[bool, int]:
