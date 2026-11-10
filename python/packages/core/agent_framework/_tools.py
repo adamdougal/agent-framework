@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         FunctionMiddlewareTypes,
         MiddlewareTypes,
     )
+    from ._realtime._conversation import RealtimeConversation
     from ._sessions import AgentSession
     from ._types import (
         ChatOptions,
@@ -2287,6 +2288,7 @@ async def _auto_invoke_function(
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     live_tools: list[ToolTypes] | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
 ) -> Content:
     """Invoke a function call requested by the agent, applying middleware that is defined.
 
@@ -2302,6 +2304,8 @@ async def _auto_invoke_function(
         live_tools: The live, mutable tools list for the current agent run, exposed on
             the FunctionInvocationContext so tools can add/remove tools at runtime.
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
+        realtime_conversation: The realtime conversation whose tool loop made the call, set on the
+            FunctionInvocationContext.
 
     Returns:
         The function result content.
@@ -2399,6 +2403,7 @@ async def _auto_invoke_function(
                     kwargs=runtime_kwargs.copy(),
                     parent_service_session_state_keys=parent_service_session_state_keys,
                     tools=live_tools,
+                    realtime_conversation=realtime_conversation,
                 )
                 direct_context.metadata[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = parent_approval_source_ids
                 if host_payload_budget is not None:
@@ -2440,6 +2445,7 @@ async def _auto_invoke_function(
         kwargs=runtime_kwargs.copy(),
         parent_service_session_state_keys=parent_service_session_state_keys,
         tools=live_tools,
+        realtime_conversation=realtime_conversation,
     )
     middleware_context.metadata[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = parent_approval_source_ids
     if host_payload_budget is not None:
@@ -2603,6 +2609,7 @@ async def _execute_single_function_call(
     middleware_pipeline: FunctionMiddlewarePipeline | None,
     live_tools: list[ToolTypes] | None,
     host_payload_budget: _FunctionResultPayloadBudget | None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
 ) -> tuple[list[Content], bool]:
     from ._middleware import MiddlewareTermination
     from ._sessions import _suspend_run_persistence_gate  # pyright: ignore[reportPrivateUsage]
@@ -2631,6 +2638,7 @@ async def _execute_single_function_call(
                 config=config,
                 live_tools=live_tools,
                 host_payload_budget=host_payload_budget,
+                realtime_conversation=realtime_conversation,
             )
         return [result], False
     except MiddlewareTermination as exc:
@@ -2673,6 +2681,8 @@ async def _try_execute_function_call_groups(
     approval_session_is_authoritative: bool = True,
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
+    live_tools: list[ToolTypes] | None = None,
 ) -> tuple[list[list[Content]], bool]:
     """Execute multiple function calls concurrently while preserving per-call result groups.
 
@@ -2685,6 +2695,8 @@ async def _try_execute_function_call_groups(
         approval_session_is_authoritative: Whether the invocation session owns persistent approval state.
         middleware_pipeline: Optional middleware pipeline to apply during execution.
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
+        realtime_conversation: The realtime conversation whose tool loop made the calls, for their contexts.
+        live_tools: The live tools list to expose on each call's context, when it isn't ``tools`` itself.
 
     Returns:
         A tuple of:
@@ -2707,7 +2719,8 @@ async def _try_execute_function_call_groups(
     tool_map = _get_tool_map(tools)
     # The live tools list (when tools is the run-local list) is exposed on the
     # FunctionInvocationContext so tools can add/remove tools during the run.
-    live_tools: list[ToolTypes] | None = cast("list[ToolTypes]", tools) if isinstance(tools, list) else None
+    if live_tools is None and isinstance(tools, list):
+        live_tools = cast("list[ToolTypes]", tools)
     additional_tools = tuple(config.get("additional_tools") or ())
     approval_tool_names = {
         tool_name for tool_name, tool in tool_map.items() if tool.approval_mode == "always_require"
@@ -2764,6 +2777,7 @@ async def _try_execute_function_call_groups(
                 middleware_pipeline=middleware_pipeline,
                 live_tools=live_tools,
                 host_payload_budget=host_payload_budget,
+                realtime_conversation=realtime_conversation,
             ),
         )
 
@@ -2943,6 +2957,8 @@ async def _execute_function_calls(
     approval_session_is_authoritative: bool = True,
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
+    live_tools: list[ToolTypes] | None = None,
 ) -> _FunctionExecutionBatch:
     tools = _extract_tools(options)
     if not tools:
@@ -2956,6 +2972,8 @@ async def _execute_function_calls(
         middleware_pipeline=middleware_pipeline,
         config=config,
         host_payload_budget=host_payload_budget,
+        realtime_conversation=realtime_conversation,
+        live_tools=live_tools,
     )
     return _FunctionExecutionBatch(
         result_groups=result_groups,

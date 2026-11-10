@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
     from ._agents import SupportsAgentRun
     from ._compaction import CompactionStrategy, TokenizerProtocol
+    from ._realtime._conversation import RealtimeConversation
     from ._sessions import AgentSession, _RunPersistenceGate  # pyright: ignore[reportPrivateUsage]
     from ._tools import FunctionTool, ToolTypes
     from ._types import ChatOptions
@@ -479,6 +480,9 @@ class FunctionInvocationContext:
                 Tools can add or remove tools during execution using :meth:`add_tools`
                 and :meth:`remove_tools` (progressive tool exposure). Mutations take
                 effect on the **next** model iteration, not the in-flight batch.
+        realtime_conversation: The live realtime conversation whose tool loop made the call, so a tool can
+                steer it, or ``None`` outside a realtime agent's tool loop. It isn't passed in ``kwargs``.
+                Experimental under ``ExperimentalFeature.REALTIME``.
 
     Examples:
         .. code-block:: python
@@ -521,6 +525,7 @@ class FunctionInvocationContext:
         kwargs: Mapping[str, Any] | None = None,
         tools: list[ToolTypes] | None = None,
         parent_service_session_state_keys: Collection[str] | None = None,
+        realtime_conversation: RealtimeConversation[Any] | None = None,
     ) -> None:
         """Initialize the FunctionInvocationContext.
 
@@ -539,6 +544,8 @@ class FunctionInvocationContext:
                 appending or removing tools changes the model's available tools.
             parent_service_session_state_keys: Provider-owned keys declared by the invoking parent agent and client,
                 or ``None`` when the invocation path cannot establish that ownership.
+            realtime_conversation: The live realtime conversation whose tool loop made the call, or ``None``.
+                Experimental under ``ExperimentalFeature.REALTIME``.
         """
         self.function = function
         self.arguments = arguments
@@ -550,6 +557,7 @@ class FunctionInvocationContext:
             frozenset(parent_service_session_state_keys) if parent_service_session_state_keys is not None else None
         )
         self.tools = tools
+        self.realtime_conversation = realtime_conversation
 
     @experimental(feature_id=ExperimentalFeature.PROGRESSIVE_TOOLS)
     def add_tools(
