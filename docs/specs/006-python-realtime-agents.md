@@ -251,7 +251,7 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 | `input_transcription` | `text`, `role="user"` | **`item_id`**, **`content_index`**. Caller transcript. |
 | `input_transcription_failed` | realtime-event content, `role="user"` | **`item_id`**, **`content_index`**, `error_code`, `error_message`. Not `error` content. |
 | `output_text` | `text`, `role="assistant"` | **`response_id`**, **`item_id`**, **`content_index`**. Agent transcript, spoken or written. |
-| `output_audio` | `data` | **`response_id`**, **`item_id`**, **`content_index`**. Media type from the session's output format. |
+| `output_audio` | `data` | **`response_id`**, **`item_id`**, **`content_index`**. Media type from the session's output format when the response started, since a response in flight doesn't change. |
 | `function_call` | `function_call` | **`response_id`**, **`item_id`**. The assembled call, once its arguments finish. Not `informational_only`. |
 | `function_result` | `function_result`, `role="tool"` | None. One for every settled call. |
 | `function_approval_request` | `function_approval_request` | None. Local approvals, and hosted ones with `hosted=True`. |

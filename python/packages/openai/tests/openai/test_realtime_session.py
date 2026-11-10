@@ -468,6 +468,20 @@ async def test_tools_are_declared(caplog: pytest.LogCaptureFixture) -> None:
     assert "object" in caplog.text
 
 
+async def test_an_unsupported_tool_is_logged_by_type_only(caplog: pytest.LogCaptureFixture) -> None:
+    """A tool object the session can't declare, whose repr holds an Authorization header, is dropped with a warning
+    naming its type but not the header's token."""
+
+    class HeaderedTool:
+        def __repr__(self) -> str:
+            return "HeaderedTool(headers={'Authorization': 'Bearer secret-token'})"
+
+    await initial_session({"instructions": "Hi"}, [HeaderedTool()])
+
+    assert "HeaderedTool" in caplog.text
+    assert "secret-token" not in caplog.text
+
+
 async def test_unsupported_option_is_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     """temperature 0.7 and metadata {"a": "b"} aren't GA session fields: neither is sent, and one warning names each."""
     sent = await initial_session({"instructions": "Hi", "temperature": 0.7, "metadata": {"a": "b"}})
@@ -839,6 +853,27 @@ async def test_a_rejection_of_a_truncate_sent_before_a_raw_update_fails_that_tru
 
         with pytest.raises(RealtimeControlException):
             await asyncio.wait_for(truncating, 1)
+
+
+async def test_audio_keeps_its_responses_format_after_a_format_change() -> None:
+    """While "resp_1" is active, update_session({"output_audio_format": "audio/pcmu"}) is acknowledged: resp_1's
+    later audio is still "audio/pcm;rate=24000", as a response in flight doesn't change, and audio of "resp_2",
+    created after the update, is "audio/pcmu"."""
+    session, connection = await started()
+    resp_1_audio = {**AGENT_PART, "type": "response.output_audio.delta", "event_id": "e1", "delta": "AQI="}
+    resp_2_audio = {**resp_1_audio, "response_id": "resp_2", "event_id": "e2"}
+
+    async with reading(session) as reader:
+        await activate_response(connection, reader, "resp_1")
+        await asyncio.wait_for(session.update_session({"output_audio_format": "audio/pcmu"}, None), 1)
+        await read_through(
+            connection, reader, resp_1_audio, response_done("resp_1"), response_created("resp_2"), resp_2_audio
+        )
+
+    assert [event.content.media_type for event in reader.of_kind("output_audio")] == [
+        "audio/pcm;rate=24000",
+        "audio/pcmu",
+    ]
 
 
 async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:

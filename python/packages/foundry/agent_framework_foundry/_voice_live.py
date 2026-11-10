@@ -420,8 +420,8 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
         """
         if not self._speaks_with_azure_tts_voice():
             raise RealtimeUnsupportedException(
-                "Voice Live speaks text verbatim only with an Azure text-to-speech voice, not "
-                f"{self._current_voice()!r}."
+                "Voice Live speaks text verbatim only with an Azure text-to-speech voice, and the session's voice "
+                "isn't one."
             )
         return super()._say_payload(text)
 

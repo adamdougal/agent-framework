@@ -131,6 +131,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._active_response_id: str | None = None
         self._session_state: dict[str, Any] = {}
         self._heard_output_audio = False
+        self._response_audio_formats: dict[str, str] = {}
         self._truncate_cuts: dict[str, tuple[str, int, int]] = {}
         """The cut each sent truncate request asked for, by request event_id, until it's acknowledged or rejected."""
         # The session's own event ids share a prefix, so they're recognized without keeping one per audio chunk.
@@ -411,8 +412,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             elif isinstance(candidate, Mapping):
                 declarations.append(dict(cast("Mapping[str, Any]", candidate)))
             else:
+                # Only the type is logged: a tool object's repr can hold its credentials, such as auth headers.
                 logger.warning(
-                    "Dropping tool %r: a realtime session declares function tools and hosted tools only.", candidate
+                    "Dropping a %s tool: a realtime session declares function tools and hosted tools only.",
+                    type(candidate).__name__,
                 )
         return declarations
 
@@ -808,10 +811,15 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
         An out-of-band response (``conversation_id: null``) never becomes the active response.
         """
-        if event_type == "response.created" and not _is_out_of_band(wire):
-            self._active_response_id = wire["response"]["id"]
-        elif event_type == "response.done" and wire["response"]["id"] == self._active_response_id:
-            self._active_response_id = None
+        if event_type == "response.created":
+            # A response keeps the output format it started with, whatever updates arrive while it plays.
+            self._response_audio_formats[wire["response"]["id"]] = self._output_media_type()
+            if not _is_out_of_band(wire):
+                self._active_response_id = wire["response"]["id"]
+        elif event_type == "response.done":
+            self._response_audio_formats.pop(wire["response"]["id"], None)
+            if wire["response"]["id"] == self._active_response_id:
+                self._active_response_id = None
         elif event_type == "session.updated":
             self._session_state = dict(_mapping(wire.get("session")))
         elif event_type == "response.output_audio.delta":
@@ -876,7 +884,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 full_text = wire.get("transcript") or wire.get("text") or ""
                 return [self._agent_text(wire, Content.from_text(full_text, merge_mode="replace", status="completed"))]
             case "response.output_audio.delta":
-                audio = Content.from_data(base64.b64decode(wire.get("delta") or ""), self._output_media_type())
+                media_type = self._response_audio_formats.get(str(wire.get("response_id"))) or self._output_media_type()
+                audio = Content.from_data(base64.b64decode(wire.get("delta") or ""), media_type)
                 core = _present(wire, "response_id", "item_id", "content_index")
                 return [self._payload("output_audio", wire, audio, core)]
             case "response.output_item.done" if wire["item"].get("type") == "function_call":
