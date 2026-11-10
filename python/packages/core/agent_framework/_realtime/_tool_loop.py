@@ -121,7 +121,6 @@ class ToolLoop:
         send_results: Callable[[Message], Awaitable[None]],
         report_result: Callable[[Content, str], None],
         report_error: Callable[[RealtimeException], None],
-        wait_until_ready: Callable[[], Awaitable[None]],
         request_follow_up: Callable[[Callable[[], FollowUp | None]], Awaitable[str | None]],
         session_options: Callable[[], Mapping[str, Any]],
         fail: Callable[[Exception], None],
@@ -137,7 +136,6 @@ class ToolLoop:
         self._results_marker = 0
         self._send_results = send_results
         self._request_follow_up = request_follow_up
-        self._wait_until_ready = wait_until_ready
         self._session_options = session_options
         self._follow_up_task: asyncio.Task[Any] | None = None
         self._follow_ups_due = 0
@@ -311,7 +309,11 @@ class ToolLoop:
         return None
 
     def _claim_follow_up(self) -> FollowUp | None:
-        """Claim the follow-up as it's requested, under the control lock, or return ``None`` once it isn't due."""
+        """Claim the follow-up as it's requested, under the control lock.
+
+        Returns ``None`` once a response created after the results has answered them; filler from tools and
+        middleware doesn't count.
+        """
         if self._responses.answered_since(self._results_marker):
             return None
         options = self._follow_up_options()
@@ -322,9 +324,6 @@ class ToolLoop:
 
     async def _follow_up(self) -> None:
         while True:
-            await self._wait_until_ready()
-            if self._responses.answered_since(self._results_marker):
-                return  # a response created after the results already saw them, so it is the follow-up
             try:
                 response_id = await self._request_follow_up(self._claim_follow_up)
             except RealtimeActiveResponseException:
@@ -335,7 +334,7 @@ class ToolLoop:
                 self._report_error(error)
                 return
             if response_id is None:
-                continue  # the caller spoke, a response started, or one answered, while it waited its turn
+                return  # a response created after the results already saw them, so it is the follow-up
             if self._follow_ups_due == self._follow_ups_due_when_requested:
                 return
             # Results went out after the request did. The provider handles client events in order and starts a

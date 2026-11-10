@@ -111,7 +111,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             send_results=self._send_tool_results,
             report_result=self._report_tool_result,
             report_error=self._report_error,
-            wait_until_ready=self._wait_until_ready_for_a_follow_up,
             request_follow_up=self._request_follow_up,
             session_options=self._session_options,
             fail=self._fail,
@@ -284,20 +283,25 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await self._responses.wait_until_idle()
 
     async def _request_follow_up(self, claim: Callable[[], FollowUp | None]) -> str | None:
-        """Request the tool loop's follow-up, checking just before the request that it can still go out.
+        """Request the tool loop's follow-up once no response is active and the caller is quiet.
 
-        Returns ``None``, requesting nothing, if the caller started speaking, a response started, or the tool loop no
-        longer claims it, while the request waited its turn.
+        Readiness and ``claim`` are checked under the control lock, just before the request goes out. A tool's filler
+        request holds that lock until it's recorded as filler, so the claim never mistakes it for the follow-up.
+
+        Returns:
+            The follow-up's response id, or ``None`` when ``claim`` says a response has already answered the results.
         """
-        self._require_open_session()
-        async with self._control_lock:
-            session = self._require_open_session()
-            if not self._ready_for_a_follow_up():
-                return None
-            follow_up = claim()
-            if follow_up is None:
-                return None
-            return await self._create_response_locked(session, follow_up.options)
+        while True:
+            await self._wait_until_ready_for_a_follow_up()
+            self._require_open_session()
+            async with self._control_lock:
+                session = self._require_open_session()
+                if self._ready_for_a_follow_up():
+                    follow_up = claim()
+                    if follow_up is None:
+                        return None
+                    return await self._create_response_locked(session, follow_up.options)
+            # The caller started speaking, or a response started, while this waited its turn.
 
     def _session_options(self) -> Mapping[str, Any]:
         """The live session's current settings."""

@@ -63,6 +63,7 @@ class FakeRealtimeSession:
         self.options: RealtimeOptions = cast(RealtimeOptions, dict(options or {}))
         self.tools = tools
         self.sent: list[RealtimeEvent | Message] = []
+        self.send_attempts = 0
         self.calls: list[tuple[Any, ...]] = []
         self.close_count = 0
         self.receive_count = 0
@@ -103,6 +104,7 @@ class FakeRealtimeSession:
         await self.close()
 
     async def send(self, value: RealtimeEvent | Message) -> None:
+        self.send_attempts += 1
         await asyncio.sleep(0)  # a wire write yields to the event loop
         await self._acknowledge("send")
         if self.send_error is not None:

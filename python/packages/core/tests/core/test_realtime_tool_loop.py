@@ -574,6 +574,7 @@ async def test_filler_a_tool_requests_does_not_count_as_the_follow_up() -> None:
             *_response("resp_2", _call("call_2", "check_account", response_id="resp_2")),
         )
         await eventually(lambda: _results(client.session) == [("call_1", "Sunny in Paris")])
+        acknowledge_filler = client.session.hold("create_response")
         say_filler.set()
         await eventually(lambda: len(client.session.calls) == 1)
         client.session.create_response_events = []
@@ -581,6 +582,8 @@ async def test_filler_a_tool_requests_does_not_count_as_the_follow_up() -> None:
             event("response_done", response_id="resp_filler", status="completed"),
             event("speech_stopped", item_id="item_9", audio_end_ms=900),
         )
+        await asyncio.sleep(0.01)  # the follow-up wakes while the filler's request still waits for its acknowledgement
+        acknowledge_filler.set()
 
         await eventually(lambda: len(client.session.calls) == 2)
         release.set()

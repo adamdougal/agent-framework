@@ -504,7 +504,7 @@ async def test_a_send_queued_when_close_starts_never_reaches_the_session(raw: bo
     async with RealtimeAgent(client).start_conversation() as conversation:
         release = client.session.hold("send")
         sending = asyncio.create_task(conversation.send("Hi", create_response=False))
-        await asyncio.sleep(0.01)
+        await eventually(lambda: client.session.send_attempts == 1)
         queued = asyncio.create_task(conversation.send(event("passthrough") if raw else "Bye", create_response=False))
         await asyncio.sleep(0.01)
 
