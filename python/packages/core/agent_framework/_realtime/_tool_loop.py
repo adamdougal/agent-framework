@@ -292,6 +292,8 @@ class ToolLoop:
 
     def _follow_up_due(self) -> None:
         """Request one follow-up once the provider can take it; follow-ups due together merge."""
+        if self._closing:
+            return
         self._follow_ups_due += 1
         if self._follow_up_task is None or self._follow_up_task.done():
             self._follow_up_task = self._spawn(self._follow_up())

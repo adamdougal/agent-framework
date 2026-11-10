@@ -1048,6 +1048,29 @@ async def test_close_lets_a_cancelled_follow_up_finish_cleaning_up() -> None:
         assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
 
 
+async def test_a_batch_that_finishes_while_closing_requests_no_follow_up() -> None:
+    client = FakeRealtimeClient()
+    look_up, started, release = _blocking_tool()
+    # Entered without `async with`, so a close that hangs fails the test rather than blocking it.
+    conversation = RealtimeAgent(client, tools=[look_up]).start_conversation()
+    await conversation.__aenter__()
+    client.session.emit(
+        event("speech_started", item_id="item_9", audio_start_ms=100),
+        *_response("resp_1", _call("call_1", "look_up")),
+    )
+    await started.wait()
+    session_closed = client.session.hold("close")
+    closing = asyncio.create_task(conversation.close())
+    await eventually(lambda: client.session.close_count == 1)
+    release.set()
+    await eventually(lambda: bool(_tool_messages(client.session)))
+    session_closed.set()
+
+    await asyncio.wait_for(closing, 1)
+
+    assert client.session.calls == []
+
+
 async def test_a_chat_runs_tool_context_has_no_realtime_conversation(chat_client_base: MockBaseChatClient) -> None:
     seen: list[object] = []
 
