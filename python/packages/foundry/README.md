@@ -42,6 +42,49 @@ With Application Insights connected to your project, call
 See [the tracing sample](../../samples/02-agents/observability/foundry_agent_tracing.py)
 for streaming and non-streaming examples.
 
+## Voice Live (experimental)
+
+`VoiceLiveClient` opens realtime voice sessions with Azure Voice Live, on a managed model or on your own Azure OpenAI
+realtime deployment. It needs the realtime extra:
+
+```shell
+pip install "agent-framework-foundry[realtime]" --pre
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `AZURE_VOICELIVE_ENDPOINT` | The Voice Live endpoint, such as `https://<resource>.services.ai.azure.com` |
+| `AZURE_VOICELIVE_MODEL` | A managed model, such as `gpt-realtime`, or your deployment's name |
+| `AZURE_VOICELIVE_API_KEY` | The resource key, used when no `credential` is passed |
+| `AZURE_VOICELIVE_API_VERSION` | A dated API version: `2026-07-15`, the default, or later |
+
+```python
+from agent_framework import Message
+from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
+from azure.identity.aio import AzureCliCredential
+
+async with AzureCliCredential() as credential:
+    client = VoiceLiveClient(credential=credential)
+    options: VoiceLiveOptions = {"voice": AzureVoice(type="azure-standard", name="en-US-AvaNeural")}
+    async with await client.start_session(options=options) as session:
+        await session.send(Message("user", ["Hello!"]))
+        ...
+```
+
+`VoiceLiveOptions` adds Voice Live's own settings to the neutral realtime options: Azure voices, Azure turn detection,
+transcription and noise suppression, echo cancellation, animation, interim responses, reasoning effort, parallel tool
+calls and word timestamps. For your own deployment, pass `profile="byom-azure-openai-realtime"` and
+`foundry_resource_override`. Some behaviour differs from OpenAI's realtime API:
+
+- `say(text)` speaks the text verbatim only with an Azure text-to-speech voice, and raises with an OpenAI voice.
+- Voice Live changes between Azure voices, ignores a change between OpenAI voices (the session warns and keeps
+  the old voice), and rejects a change between Azure and OpenAI voices.
+- Per-response `instructions` are dropped with a warning, because Voice Live ignores them.
+- Audio, both ways, may be 8, 16 or 24 kHz PCM, or G.711. Voice Live rejects a change to the caller audio's
+  sampling rate once the session has started.
+
+See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py).
+
 ## Embeddings
 
 `FoundryEmbeddingClient` supports OpenAI text embedding deployments exposed through a Microsoft Foundry project.

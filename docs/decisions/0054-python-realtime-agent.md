@@ -276,8 +276,8 @@ nobody has verified that the project-scoped route serves realtime.
   the agent, so their traces differ.
 - Bad, because on Voice Live a pre-generated `say(...)` can't detect a lost race, and Foundry definitions published by
   Semantic Kernel need republishing.
-- Bad, because the `[realtime]` extras constrain dependencies: `websockets` below 16, and `azure-ai-projects` 2.7 with
-  `openai>=3`.
+- Bad, because the `[realtime]` extras constrain dependencies: `websockets` below 16, and `azure-ai-projects` 2.7 or
+  later, with `openai>=3`.
 
 ## Validation
 

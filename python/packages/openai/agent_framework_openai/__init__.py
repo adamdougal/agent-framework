@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     )
     from ._embedding_client import OpenAIEmbeddingClient, OpenAIEmbeddingOptions
     from ._exceptions import ContentFilterResultSeverity, OpenAIContentFilterException
+    from ._realtime_session import OpenAIRealtimeConnection, OpenAIRealtimeSession
     from ._shared import OpenAISettings
 
 try:
@@ -44,6 +45,8 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "OpenAIContinuationToken": "._chat_client",
     "OpenAIEmbeddingClient": "._embedding_client",
     "OpenAIEmbeddingOptions": "._embedding_client",
+    "OpenAIRealtimeConnection": "._realtime_session",
+    "OpenAIRealtimeSession": "._realtime_session",
     "OpenAISettings": "._shared",
     "RawOpenAIChatClient": "._chat_client",
     "RawOpenAIChatCompletionClient": "._chat_completion_client",
@@ -61,6 +64,8 @@ __all__ = [
     "OpenAIContinuationToken",
     "OpenAIEmbeddingClient",
     "OpenAIEmbeddingOptions",
+    "OpenAIRealtimeConnection",
+    "OpenAIRealtimeSession",
     "OpenAISettings",
     "RawOpenAIChatClient",
     "RawOpenAIChatCompletionClient",
