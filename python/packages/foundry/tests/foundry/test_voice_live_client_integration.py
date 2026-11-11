@@ -4,7 +4,7 @@
 
 Marked integration and flaky, and skipped unless AZURE_VOICELIVE_ENDPOINT and AZURE_VOICELIVE_MODEL are set. They
 authenticate with AZURE_VOICELIVE_API_KEY when set, else AzureCliCredential. Each test runs its own reader task under
-asyncio.timeout(). They verify spec 006's Voice Live column of Provider capabilities.
+asyncio.timeout(), and checks Voice Live behaviour the unit tests can only assume.
 """
 
 import asyncio

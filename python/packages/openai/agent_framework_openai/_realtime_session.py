@@ -6,8 +6,6 @@
 but core and the standard library. Each provider client opens an ``OpenAIRealtimeConnection`` through its service's
 SDK, used only as a transport, and hands it to a session. Services whose protocol differs in places, such as Voice
 Live's preview shape, subclass the session and override its protected hooks.
-
-Spec 006: Provider clients, Control calls and Event kinds.
 """
 
 from __future__ import annotations

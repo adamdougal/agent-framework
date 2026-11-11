@@ -1,9 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Behaviour of the shared GA-protocol realtime session, driven through a scripted in-memory connection.
-
-Spec 006: Provider clients (shared base session), Control calls, Event kinds. Design: adamdougal/agent-framework#29.
-"""
+"""Behaviour of the shared GA-protocol realtime session, driven through a scripted in-memory connection."""
 
 import asyncio
 import base64

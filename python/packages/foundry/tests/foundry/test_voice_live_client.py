@@ -4,8 +4,6 @@
 
 The client's transport runs the real azure-ai-voicelive SDK against a loopback aiohttp websocket server on 127.0.0.1;
 payload and mapping tests drive the Voice Live session through a scripted in-memory connection. No service calls.
-
-Spec 006: Provider clients (Voice Live), Provider capabilities. Design: adamdougal/agent-framework#29.
 """
 
 import asyncio
