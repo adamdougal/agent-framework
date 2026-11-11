@@ -206,7 +206,9 @@ outside the topology, and app input for a call id the conversation isn't trackin
 - **Voice.** Where the provider refuses a voice change, the client drops `voice` before sending, with a warning. Where
   the provider ignores one, the client warns when `session.updated` echoes the old voice.
 - **Tools.** A call resolves against the executable set when its `function_call` arrives. Replacing tools doesn't cancel
-  running calls, and a call for a tool missing from the current set gets an error result.
+  running calls, and a call for a tool missing from the current set gets an error result. If a tool is replaced
+  mid-response by another with the same name, that response's calls of that name all run the tool the first of them
+  resolved to.
 - **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked, with the wire event as a JSON-serializable
   mapping in its `raw_representation`. Out-of-band responses with `conversation: "none"`, input-buffer commit and
   clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. A raw `session.update` that

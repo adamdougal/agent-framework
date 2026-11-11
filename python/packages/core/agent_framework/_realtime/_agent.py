@@ -32,9 +32,7 @@ if TYPE_CHECKING:
 class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
     """A realtime agent without middleware or telemetry layers.
 
-    A realtime agent holds a realtime client, instructions, tools and default settings. Each call to
-    ``start_conversation(...)`` opens a new live conversation with the provider. The agent's tool loop runs its tools,
-    with the agent's function invocation configuration, whichever layers wrap it.
+    Function tools still run when middleware and telemetry are bypassed.
 
     Examples:
         .. code-block:: python
@@ -165,7 +163,6 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 def _merge_session_options(
     default_options: Mapping[str, Any], instructions: str | None, start_options: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Merge the start options over the agent's defaults: instructions append, metadata merges, other keys replace."""
     merged: dict[str, Any] = {**default_options, **start_options}
     if default_options.get("metadata") is not None and start_options.get("metadata") is not None:
         merged["metadata"] = {**default_options["metadata"], **start_options["metadata"]}
@@ -179,5 +176,5 @@ def _merge_session_options(
 class RealtimeAgent(RawRealtimeAgent[RealtimeOptionsT]):
     """A realtime agent.
 
-    See ``RawRealtimeAgent`` for the constructor and ``start_conversation(...)``.
+    See ``RawRealtimeAgent`` for live-conversation behavior and configuration.
     """

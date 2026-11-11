@@ -617,17 +617,17 @@ def _format_tool_parameters(  # pyright: ignore[reportUnusedFunction]
     return "compact", compact
 
 
-_CONVERSATION_CLOSED_REASON: Final[str] = "conversation_closed"
 # Other cancel messages record "cancelled": error.type is a metric dimension, and some messages, like anyio's,
 # name a per-scope id.
-_RECORDED_CANCELLATION_REASONS: Final[frozenset[str]] = frozenset({_CONVERSATION_CLOSED_REASON})
+_CONVERSATION_CLOSED_REASON: Final[str] = "conversation_closed"
 
 
 def _cancellation_error_type(cancellation: asyncio.CancelledError) -> str:
-    """Return the ``error.type`` recorded for a tool call cancelled while running."""
     reason = cancellation.args[0] if cancellation.args else None
-    # An exact str: a subclass's own __hash__ or __eq__ could raise here and replace the cancellation.
-    return reason if type(reason) is str and reason in _RECORDED_CANCELLATION_REASONS else "cancelled"
+    # An exact str, so a subclass's own __eq__ can't run, raise, and replace the original cancellation.
+    if type(reason) is str and reason == _CONVERSATION_CLOSED_REASON:
+        return _CONVERSATION_CLOSED_REASON
+    return "cancelled"
 
 
 ClassT = TypeVar("ClassT", bound="SerializationMixin")

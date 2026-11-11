@@ -290,7 +290,8 @@ async def test_each_call_and_its_result_share_one_occurrence_id() -> None:
     assert results == calls
 
 
-async def test_calls_from_a_cancelled_response_do_not_run() -> None:
+@pytest.mark.parametrize("status", ["cancelled", "incomplete", "failed"])
+async def test_calls_from_a_response_that_did_not_complete_do_not_run(status: str) -> None:
     client = FakeRealtimeClient()
     runs: list[str] = []
 
@@ -301,13 +302,13 @@ async def test_calls_from_a_cancelled_response_do_not_run() -> None:
         return "recorded"
 
     async with RealtimeAgent(client, tools=[record_visit]).start_conversation() as conversation:
-        client.session.emit(*_response("resp_1", _call("call_1", "record_visit", city="Oslo"), status="cancelled"))
+        client.session.emit(*_response("resp_1", _call("call_1", "record_visit", city="Oslo"), status=status))
         update = await _next_function_result(conversation)
         await eventually(lambda: bool(_tool_messages(client.session)))
         await asyncio.sleep(0.01)
 
     [result] = update.contents
-    assert (result.call_id, result.exception) == ("call_1", "cancelled")
+    assert (result.call_id, result.exception) == ("call_1", status)
     assert runs == []
     assert [call_id for call_id, _ in _results(client.session)] == ["call_1"]
     assert client.session.calls == []
@@ -817,9 +818,14 @@ async def test_a_failed_follow_up_streams_an_error_and_is_dropped() -> None:
     assert client.session.calls == [("create_response", None)]
 
 
-async def test_a_follow_up_relaxes_a_required_tool_choice_to_auto() -> None:
+@pytest.mark.parametrize(
+    "tool_choice",
+    ["required", {"mode": "required", "required_function_name": "get_weather"}],
+    ids=["required", "required function"],
+)
+async def test_a_follow_up_relaxes_a_required_tool_choice_to_auto(tool_choice: Any) -> None:
     client = FakeRealtimeClient()
-    default_options: RealtimeOptions = {"tool_choice": "required"}
+    default_options: RealtimeOptions = {"tool_choice": tool_choice}
     agent = RealtimeAgent(client, tools=[get_weather], default_options=default_options)
 
     async with agent.start_conversation():
@@ -1205,7 +1211,7 @@ async def test_a_call_runs_the_tool_it_resolved_to_on_arrival() -> None:
     assert _results(client.session) == [("call_1", "retired"), ("call_2", "Sunny in Paris")]
 
 
-async def test_same_named_calls_bound_to_different_tools_each_run_their_own() -> None:
+async def test_same_named_calls_of_one_response_run_the_tool_the_first_resolved_to() -> None:
     client = FakeRealtimeClient()
 
     @tool(name="get_weather")
@@ -1236,51 +1242,8 @@ async def test_same_named_calls_bound_to_different_tools_each_run_their_own() ->
     assert _results(client.session) == [
         ("call_1", "swapped"),
         ("call_2", "Sunny in Paris"),
-        ("call_3", "Cloudy in Rome"),
+        ("call_3", "Sunny in Rome"),
     ]
-
-
-async def test_closing_while_calls_run_one_at_a_time_keeps_the_finished_results() -> None:
-    client = FakeRealtimeClient()
-    started = asyncio.Event()
-
-    @tool(name="get_weather")
-    async def slow_weather(city: str) -> str:
-        """Get the weather from a slow service."""
-        started.set()
-        await asyncio.Event().wait()
-        return f"Foggy in {city}"
-
-    @tool
-    def swap_weather(ctx: FunctionInvocationContext) -> str:
-        """Swap to the slow weather service."""
-        ctx.remove_tools("get_weather")
-        ctx.add_tools(slow_weather)
-        return "swapped"
-
-    async with RealtimeAgent(client, tools=[get_weather, swap_weather]).start_conversation() as conversation:
-        client.session.emit(
-            event("response_created", response_id="resp_2"),
-            _call("call_2", "get_weather", response_id="resp_2", city="Paris"),
-            *_response("resp_1", _call("call_1", "swap_weather")),
-        )
-        await eventually(lambda: bool(_tool_messages(client.session)))
-        client.session.emit(
-            _call("call_3", "get_weather", response_id="resp_2", city="Rome"),
-            event("response_done", response_id="resp_2", status="completed"),
-        )
-        await started.wait()
-        await conversation.close()
-        updates = await _read_all(conversation)
-
-    settled = {
-        content.call_id: (content.result, content.exception)
-        for update in updates
-        for content in update.contents
-        if content.type == "function_result"
-    }
-    assert settled["call_2"] == ("Sunny in Paris", None)
-    assert settled["call_3"][1] == "conversation_closed"
 
 
 async def test_barge_in_does_not_cancel_a_running_tool() -> None:
@@ -1580,38 +1543,6 @@ async def test_a_chat_runs_tool_context_has_no_realtime_conversation(chat_client
 
 
 class TestVerification:
-    @pytest.mark.parametrize("status", ["incomplete", "failed"])
-    async def test_calls_from_incomplete_and_failed_responses_do_not_run(self, status: str) -> None:
-        client = FakeRealtimeClient()
-        runs: list[str] = []
-
-        @tool
-        def record_visit(city: str) -> str:
-            """Record a visit."""
-            runs.append(city)
-            return "recorded"
-
-        async with RealtimeAgent(client, tools=[record_visit]).start_conversation() as conversation:
-            client.session.emit(*_response("resp_1", _call("call_1", "record_visit", city="Oslo"), status=status))
-            update = await _next_function_result(conversation)
-
-        [result] = update.contents
-        assert (result.call_id, result.exception) == ("call_1", status)
-        assert runs == []
-
-    async def test_a_follow_up_relaxes_a_required_tool_mode_naming_a_function(self) -> None:
-        client = FakeRealtimeClient()
-        default_options: RealtimeOptions = {
-            "tool_choice": {"mode": "required", "required_function_name": "get_weather"}
-        }
-        agent = RealtimeAgent(client, tools=[get_weather], default_options=default_options)
-
-        async with agent.start_conversation():
-            client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
-            await eventually(lambda: bool(client.session.calls))
-
-        assert client.session.calls == [("create_response", {"tool_choice": "auto"})]
-
     async def test_the_session_ending_during_a_batch_settles_its_calls(self) -> None:
         client = FakeRealtimeClient()
         look_up, started, _ = _blocking_tool()

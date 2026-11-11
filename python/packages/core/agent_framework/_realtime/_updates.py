@@ -13,7 +13,6 @@ from ._kinds import RealtimeKind
 if TYPE_CHECKING:
     from .._agents import BaseAgent
 
-# An update takes the role of the item it's about: the caller's speech and transcripts, or the agent's response.
 _USER_KINDS = frozenset({"speech_started", "speech_stopped", "input_transcription", "input_transcription_failed"})
 _ASSISTANT_KINDS = frozenset({
     "response_created",
@@ -32,15 +31,9 @@ _INCOMPLETE_FINISH_REASONS: dict[str, FinishReasonLiteral] = {
 
 
 def update_from_event(event: RealtimeEvent, *, author: BaseAgent, made_calls: bool = False) -> AgentResponseUpdate:
-    """Build the update for one provider event.
+    """Credit output to the agent active when its response was created, so attribution survives a change of agent.
 
-    Args:
-        event: The provider event.
-
-    Keyword Args:
-        author: The agent credited with assistant and tool output: the one active when its response was created.
-        made_calls: Whether the event's response produced function calls, which ``response_done`` reports as
-            ``finish_reason="tool_calls"``.
+    Signals without a payload still stream.
     """
     content = event.content
     if content is None:
@@ -65,7 +58,7 @@ def update_from_event(event: RealtimeEvent, *, author: BaseAgent, made_calls: bo
 
 
 def tool_result_update(result: Content, *, response_id: str, author: BaseAgent) -> AgentResponseUpdate:
-    """Build the ``function_result`` update for one settled call, credited like its response."""
+    """Keep late tool results attributed to the agent that received their call."""
     return AgentResponseUpdate(
         contents=[result],
         role="tool",
@@ -76,7 +69,6 @@ def tool_result_update(result: Content, *, response_id: str, author: BaseAgent) 
 
 
 def core_attributes(event: RealtimeEvent) -> dict[str, Any]:
-    """Return the event's neutral attributes, which live under ``additional_properties["core"]``."""
     return dict(event.additional_properties.get("core") or {})
 
 

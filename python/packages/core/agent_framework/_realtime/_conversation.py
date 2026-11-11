@@ -24,7 +24,7 @@ from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._options import RealtimeOptionsT
 from ._responses import ResponseLedger
-from ._tool_loop import FollowUp, ToolLoop, requested_by_a_tool
+from ._tool_loop import ToolLoop, requested_by_a_tool
 from ._update_stream import UpdateStream
 from ._updates import core_attributes, tool_result_update, update_from_event
 
@@ -83,7 +83,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._initial_messages = initial_messages
         self._options = options
         self._tools = tools
-        self._invocation_configuration = invocation_configuration
         self._control_timeout = control_timeout
         self._max_queued_updates = max_queued_updates
         self._session: RealtimeClientSessionProtocol[RealtimeOptionsT] | None = None
@@ -107,13 +106,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             agent_session=agent_session,
             conversation=self,
             responses=self._responses,
-            send_results=self._send_tool_results,
-            report_result=self._report_tool_result,
-            report_error=self._report_error,
-            request_follow_up=self._request_follow_up,
-            session_options=self._session_options,
-            fail=self._fail,
-            spawn=self._spawn,
         )
         self._audio = AudioLedger()
         self._previous_event: RealtimeEvent | None = None
@@ -188,11 +180,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         return self
 
     def __aiter__(self) -> AsyncIterator[AgentResponseUpdate]:
-        return self._iterate_updates()
-
-    async def _iterate_updates(self) -> AsyncIterator[AgentResponseUpdate]:
-        async for update in self._updates:
-            yield update
+        return aiter(self._updates)
 
     async def _receive_loop(self, session: RealtimeClientSessionProtocol[RealtimeOptionsT]) -> None:
         failure: Exception | None = None
@@ -249,7 +237,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             )
 
     def _fail(self, error: Exception) -> None:
-        """End the conversation with ``error``, which iteration raises once the queued updates are read."""
+        """Iteration raises ``error`` only after the updates already queued, so none are lost."""
         if self._failure is None:
             self._failure = error
         self._start_close()
@@ -261,7 +249,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         return task
 
     def _background_task_done(self, task: asyncio.Task[Any]) -> None:
-        """Forget a finished background task; one that failed unexpectedly ends the conversation, never silently."""
+        """An unexpected failure must end the conversation rather than leave it silent."""
         self._background_tasks.discard(task)
         if task.cancelled():
             return
@@ -311,7 +299,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await self.create_response()
 
     def _ready_for_a_follow_up(self) -> bool:
-        """Whether no response is active and the caller isn't speaking, so a follow-up never talks over them."""
+        """A follow-up must never talk over the caller or another response."""
         return self._caller_quiet.is_set() and not self._responses.any_active
 
     async def _wait_until_ready_for_a_follow_up(self) -> None:
@@ -319,14 +307,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await self._caller_quiet.wait()
             await self._responses.wait_until_idle()
 
-    async def _request_follow_up(self, claim: Callable[[], FollowUp | None]) -> str | None:
-        """Request the tool loop's follow-up once no response is active and the caller is quiet.
+    async def _request_follow_up(self, claim: Callable[[], Mapping[str, Any] | None]) -> str | None:
+        """The claim is made under the control lock, so it never mistakes filler for the follow-up.
 
-        Readiness and ``claim`` are checked under the control lock, just before the request goes out. A tool's filler
-        request holds that lock until it's recorded as filler, so the claim never mistakes it for the follow-up.
-
-        Returns:
-            The follow-up's response id, or ``None`` when ``claim`` says a response has already answered the results.
+        A tool's filler request holds that lock until it's recorded as filler. Returns ``None`` when the claim says a
+        response already answered the results.
         """
         while True:
             await self._wait_until_ready_for_a_follow_up()
@@ -334,18 +319,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             async with self._control_lock:
                 session = self._require_open_session()
                 if self._ready_for_a_follow_up():
-                    follow_up = claim()
-                    if follow_up is None:
+                    options = claim()
+                    if options is None:
                         return None
-                    return await self._create_response_locked(session, follow_up.options)
+                    return await self._create_response_locked(session, options or None)
             # The caller started speaking, or a response started, while this waited its turn.
 
     def _session_options(self) -> Mapping[str, Any]:
-        """The live session's current settings."""
         return self._session.options if self._session is not None else self._options
 
     def _report_error(self, error: RealtimeException) -> None:
-        """Stream a failure the conversation survives, such as a rejected follow-up, as ``error`` content."""
+        """Failures the conversation survives, such as a rejected follow-up, stream instead of ending it."""
         code = error.code if isinstance(error, RealtimeControlException) else None
         self._emit(AgentResponseUpdate(contents=[Content.from_error(message=str(error), error_code=code)]))
 
@@ -452,12 +436,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._spawn(self._truncate_unheard(truncations))
 
     async def _truncate_unheard(self, truncations: Sequence[Truncation]) -> None:
-        """Cut messages after one the provider truncated, as a control call."""
         session = self._require_session()
         try:
             async with self._control_lock:
                 if self._closing.is_set():
-                    return  # the conversation is closing, so the unheard audio no longer matters
+                    return
                 await self._send_truncations(session, truncations)
         except RealtimeException as error:
             logger.warning("Couldn't cut the audio after a provider truncation: %s", error)
@@ -475,7 +458,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._audio.acknowledged(truncation)
 
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
-        """Await a provider acknowledgement within the conversation's control timeout, or until close starts."""
         return await await_acknowledgement(
             acknowledgement, action=action, timeout=self._control_timeout, closing=self._closing
         )
@@ -502,7 +484,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         await asyncio.shield(self._start_close())
 
     def _start_close(self) -> asyncio.Task[None]:
-        """Stop accepting input now, and start the close sequence once; later calls return the same task."""
+        """Input stops at once, synchronously, so nothing new starts while the close sequence runs."""
         if self._close_task is None:
             self._closing.set()
             self._tool_loop.stop()
@@ -510,7 +492,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         return self._close_task
 
     async def _close_sequence(self) -> None:
-        """Close the session, stop reading it, settle the tool calls left, and end background work, then the updates."""
+        """The updates end last, so iteration sees every settled call before it stops."""
         try:
             if self._session is not None:
                 try:
@@ -528,7 +510,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._updates.finish(self._failure)
 
     async def _end_background_tasks(self) -> None:
-        """End what the conversation spawned that's still running, such as unsent results, so none outlives it."""
+        """Nothing the conversation spawned may outlive it."""
         remaining = list(self._background_tasks)
         for task in remaining:
             task.cancel()
@@ -537,7 +519,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
-    """Close a session the conversation won't adopt, keeping the failure that stopped entry."""
+    """The failure that stopped entry wins over a failure to close."""
     try:
         await session.close()
     except Exception as error:
@@ -545,7 +527,7 @@ async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any])
 
 
 def _reject_app_input_for_calls(messages: Sequence[Message]) -> None:
-    """Raise for tool results and approval responses: no call in this conversation waits for app input."""
+    """No call in this conversation waits for app input, so a result or approval would answer a call twice."""
     for message in messages:
         for content in message.contents:
             if content.type in ("function_result", "function_approval_response"):
@@ -556,7 +538,6 @@ def _reject_app_input_for_calls(messages: Sequence[Message]) -> None:
 
 
 def _is_audio_only(messages: Sequence[Message]) -> bool:
-    """Whether the input is the caller's audio only, which leaves responses to turn detection."""
     contents = [content for message in messages for content in message.contents]
     return bool(contents) and all(_is_audio(content) for content in contents)
 
@@ -566,7 +547,7 @@ def _is_audio(content: Content) -> bool:
 
 
 def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> bool:
-    """Whether ``event`` repeats the error just before it, which streams only once."""
+    """Voice Live can repeat one unclaimed rejection three times."""
     if event.kind != "error" or previous is None or previous.kind != "error":
         return False
     if event.content is None or previous.content is None:
@@ -575,7 +556,7 @@ def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> 
 
 
 def _error_identity(event: RealtimeEvent) -> tuple[Any, ...]:
-    """The message, code and provider metadata, on the content and on the event; neutral attributes don't count."""
+    """Neutral attributes are left out because they restate the provider's own fields."""
     error = cast(Content, event.content)
     provider_metadata = {
         namespace: value for namespace, value in event.additional_properties.items() if namespace != "core"

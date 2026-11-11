@@ -7,10 +7,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from .._middleware import FunctionMiddlewarePipeline
 from .._tools import (
@@ -34,7 +34,7 @@ from ._updates import core_attributes
 
 logger = logging.getLogger("agent_framework")
 
-# Set while a batch runs; each call's task copies it, so a request made from a tool can be told apart.
+# Set while a batch runs and copied into each call's task, so filler a tool requests can't count as a follow-up.
 _CALLING_CONVERSATION: ContextVar[object | None] = ContextVar("realtime_calling_conversation", default=None)
 
 if TYPE_CHECKING:
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class _Call:
-    """One function call the model made, and the tool it resolved to when it arrived."""
+    """Each call keeps the tool it resolved to when it arrived, even if the tools change before it runs."""
 
     content: Content
     response_id: str
@@ -77,7 +77,6 @@ class _ToolChain:
             self._started_at = time.monotonic()
 
     def count(self, executed_calls: int, *, had_errors: bool) -> None:
-        """Count a finished batch, tripping the chain when a limit is reached."""
         self._calls += executed_calls
         self._error_batches = self._error_batches + 1 if had_errors else 0
         max_function_calls = self._configuration.get("max_function_calls")
@@ -98,14 +97,8 @@ class _ToolChain:
         return self._configuration.get("max_iterations", DEFAULT_MAX_ITERATIONS)
 
 
-class FollowUp(NamedTuple):
-    """A follow-up the tool loop claimed, with its per-response options."""
-
-    options: Mapping[str, Any] | None
-
-
 class ToolLoop:
-    """Runs the function calls of each finished response, and sends their results to the provider."""
+    """Tools run off the receive task, so control calls they make, which await acknowledgements, cannot deadlock it."""
 
     def __init__(
         self,
@@ -117,13 +110,6 @@ class ToolLoop:
         agent_session: AgentSession | None,
         conversation: RealtimeConversation[Any],
         responses: ResponseLedger,
-        send_results: Callable[[Message], Awaitable[None]],
-        report_result: Callable[[Content, str], None],
-        report_error: Callable[[RealtimeException], None],
-        request_follow_up: Callable[[Callable[[], FollowUp | None]], Awaitable[str | None]],
-        session_options: Callable[[], Mapping[str, Any]],
-        fail: Callable[[Exception], None],
-        spawn: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]],
     ) -> None:
         self._tools = tools
         self._configuration = configuration
@@ -135,25 +121,21 @@ class ToolLoop:
         self._conversation = conversation
         self._responses = responses
         self._results_marker = 0
-        self._send_results = send_results
-        self._request_follow_up = request_follow_up
-        self._session_options = session_options
         self._follow_up_task: asyncio.Task[Any] | None = None
-        # The chain of each batch whose results are owed a follow-up, oldest first; a claim covers the first few.
+        # Each batch's own chain is kept, so a merged follow-up respects every chain's limits.
         self._chains_due: list[_ToolChain] = []
         self._claimed = 0
         self._chain = _ToolChain(configuration)
         self._running_batches: dict[asyncio.Task[Any], list[_Call]] = {}
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
-        self._report_result = report_result
-        self._report_error = report_error
-        self._fail = fail
-        self._spawn = spawn
         self._calls_by_response: dict[str, list[_Call]] = {}
 
     def on_function_call(self, event: RealtimeEvent) -> None:
-        """Record a call, resolving it against the tools available when it arrives, and give it an occurrence id."""
+        """A call is bound to the tool that existed when the model made it.
+
+        Its occurrence id pairs it with its result even when a provider reuses call ids.
+        """
         if event.content is None:
             return
         if event.content.id is None:
@@ -163,7 +145,6 @@ class ToolLoop:
         self._calls_by_response.setdefault(response_id, []).append(_Call(event.content, response_id, tool))
 
     def _would_pause(self, tool: FunctionTool) -> bool:
-        """Whether the executor would pause this call for an approval or the app's answer, which can't be awaited."""
         app_answered = {additional.name for additional in self._configuration.get("additional_tools") or ()}
         return tool.approval_mode == "always_require" or tool.declaration_only or tool.name in app_answered
 
@@ -175,9 +156,9 @@ class ToolLoop:
         )
 
     def on_new_input(self) -> None:
-        """Start a new tool chain: the caller spoke or the app sent input, and the loop's limits count afresh.
+        """Each caller turn or app input is a new request, so the limits count afresh.
 
-        Batches still running from the previous chain keep counting toward it, not the new one.
+        Batches still running count toward their own chain.
         """
         self._chain = _ToolChain(self._configuration)
 
@@ -189,21 +170,23 @@ class ToolLoop:
             return
         if status == "completed":
             # The chain is the one current as the response finished, before later input can start another.
-            batch = self._spawn(self._run_batch(response_id, calls, self._chain))
+            batch = self._conversation._spawn(  # pyright: ignore[reportPrivateUsage]
+                self._run_batch(calls, self._chain)
+            )
             self._running_batches[batch] = calls
             batch.add_done_callback(self._forget_batch)
             return
         for call in calls:
             call.result = _settled_with_error(call.content, f"the response ended {status} before the tool ran", status)
-        self._spawn(self._send_unrun_results(response_id, calls))
+        self._conversation._spawn(self._send_unrun_results(calls))  # pyright: ignore[reportPrivateUsage]
 
     def _forget_batch(self, batch: asyncio.Task[Any]) -> None:
         self._running_batches.pop(batch, None)
 
     def stop(self) -> None:
-        """Start no more batches or follow-ups, from the moment close starts; ``close()`` settles the calls left.
+        """Called as close starts, so nothing new runs while the session closes.
 
-        The follow-up is cancelled once, so a second cancel can't cut short its control call's cleanup.
+        The follow-up is cancelled only once, so a second cancel can't cut short its control call's cleanup.
         """
         if self._closing:
             return
@@ -212,10 +195,10 @@ class ToolLoop:
             self._follow_up_task.cancel()
 
     async def close(self) -> None:
-        """Stop new batches, cancel running tools, and settle every unfinished call.
+        """Each running batch is cancelled once, with the ``conversation_closed`` reason.
 
-        Each running batch is cancelled once with the ``conversation_closed`` reason, which the executor forwards to
-        its calls, so their ``execute_tool`` spans record it. Settled results stream but aren't sent.
+        The executor forwards the reason to the batch's calls, so their ``execute_tool`` spans record it. Settled
+        results stream but aren't sent.
         """
         self.stop()
         if self._follow_up_task is not None:
@@ -238,21 +221,21 @@ class ToolLoop:
     def _report(self, call: _Call) -> None:
         if call.result is not None and not call.reported:
             call.reported = True
-            self._report_result(call.result, call.response_id)
+            self._conversation._report_tool_result(call.result, call.response_id)  # pyright: ignore[reportPrivateUsage]
 
-    async def _send_unrun_results(self, response_id: str, calls: list[_Call]) -> None:
-        """Send the error results of calls that never ran, best effort, and request no follow-up."""
+    async def _send_unrun_results(self, calls: list[_Call]) -> None:
+        """Best effort, with no follow-up: the response that made these calls ended without completing."""
         results = [call.result for call in calls if call.result is not None]
         for call in calls:
             self._report(call)
         try:
-            await self._send_results(Message("tool", results))
+            await self._conversation._send_tool_results(Message("tool", results))  # pyright: ignore[reportPrivateUsage]
         except RealtimeException as error:
             logger.info("Couldn't send the results of calls that never ran: %s", error)
 
-    async def _run_batch(self, response_id: str, calls: list[_Call], chain: _ToolChain) -> None:
+    async def _run_batch(self, calls: list[_Call], chain: _ToolChain) -> None:
         try:
-            await self._run_batch_steps(response_id, calls, chain)
+            await self._run_batch_steps(calls, chain)
         except Exception as error:
             # Close settles this batch's calls. A provider error once close has started, such as a closing socket
             # refusing the results, comes from closing, so it doesn't fail the conversation. MiddlewareFailure, the
@@ -261,7 +244,7 @@ class ToolLoop:
             if self._closing and isinstance(error, RealtimeException):
                 logger.debug("A tool batch couldn't finish as the realtime conversation closed: %s", error)
                 return
-            self._fail(error)
+            self._conversation._fail(error)  # pyright: ignore[reportPrivateUsage]
         except asyncio.CancelledError as cancellation:
             # Close settles the calls, whatever cancelled the batch; a call close already settles is reported once.
             self._calls_left_for_close.extend(calls)
@@ -270,10 +253,10 @@ class ToolLoop:
                 # batch. Either way the conversation can't finish it, so it ends.
                 failure = ToolExecutionException("A tool batch was cancelled while the realtime conversation was open.")
                 failure.__cause__ = cancellation
-                self._fail(failure)
+                self._conversation._fail(failure)  # pyright: ignore[reportPrivateUsage]
             raise
 
-    async def _run_batch_steps(self, response_id: str, calls: list[_Call], chain: _ToolChain) -> None:
+    async def _run_batch_steps(self, calls: list[_Call], chain: _ToolChain) -> None:
         # A filler response can be created, and finish, before its request returns and marks it as filler, so the
         # follow-up count waits for requests in flight.
         await self._responses.wait_until_requests_settle()
@@ -298,14 +281,14 @@ class ToolLoop:
                     call.content, "this tool chain reached its limit, so the tool didn't run", "limit_reached"
                 )
         terminated, executed = await self._execute([call for call in calls if call.result is None], chain)
-        # Errors count across the whole batch, as in chat, where unknown calls get their error result in the executor.
+        # Count synthetic errors too, so unknown calls can't evade the consecutive-error limit.
         chain.count(
             executed,
             had_errors=any(call.result is not None and call.result.exception is not None for call in calls),
         )
         terminated = terminated or chain_ends
         results = [call.result for call in calls if call.result is not None]
-        await self._send_results(Message("tool", results))
+        await self._conversation._send_tool_results(Message("tool", results))  # pyright: ignore[reportPrivateUsage]
         self._results_marker = self._responses.created_count
         if chain.first_results_marker is None:
             chain.first_results_marker = self._results_marker
@@ -315,54 +298,59 @@ class ToolLoop:
             self._follow_up_due(chain)
 
     def _follow_up_due(self, chain: _ToolChain) -> None:
-        """Request one follow-up once the provider can take it; follow-ups due together merge."""
+        """Follow-ups due together merge into one request."""
         if self._closing:
             return
         self._chains_due.append(chain)
         if self._follow_up_task is None or self._follow_up_task.done():
-            self._follow_up_task = self._spawn(self._follow_up())
+            self._follow_up_task = self._conversation._spawn(self._follow_up())  # pyright: ignore[reportPrivateUsage]
 
     def _follow_ups(self, chain: _ToolChain) -> int:
-        """How many follow-ups ``chain`` has had: responses after its first results, apart from filler."""
+        """The provider's own responses use up ``max_iterations`` too.
+
+        Any response after the chain's first results counts, whoever requested it, apart from filler.
+        """
         if chain.first_results_marker is None:
             return 0
         return self._responses.responses_since(chain.first_results_marker)
 
-    def _follow_up_options(self, chains: Sequence[_ToolChain]) -> dict[str, Any] | None:
-        """Per-response options for a follow-up owed to ``chains``, the chains whose batches made it due.
+    def _follow_up_options(self, chains: Sequence[_ToolChain]) -> dict[str, Any]:
+        """A chain gets at most ``max_iterations`` responses with tools on, as in chat's loop.
 
-        The ``max_iterations``-th follow-up turns tools off, so a chain gets at most ``max_iterations`` responses with
-        tools on, as chat's loop does; a merged follow-up turns them off if any of its chains needs that. Otherwise a
-        required tool choice relaxes to ``"auto"``, as in chat.
+        A merged follow-up turns tools off if any of its chains needs that. Otherwise a required tool choice relaxes to
+        ``"auto"``, as in chat.
         """
         if any(chain.tripped or self._follow_ups(chain) + 1 >= chain.max_iterations for chain in chains):
             return {"tool_choice": "none"}
-        if _requires_a_tool(self._session_options().get("tool_choice")):
+        tool_choice = self._conversation._session_options().get("tool_choice")  # pyright: ignore[reportPrivateUsage]
+        if _requires_a_tool(tool_choice):
             return {"tool_choice": "auto"}
-        return None
+        return {}
 
-    def _claim_follow_up(self) -> FollowUp | None:
-        """Claim the follow-up as it's requested, under the control lock.
+    def _claim_follow_up(self) -> dict[str, Any] | None:
+        """Called under the control lock, so filler is classified before the claim.
 
-        Returns ``None`` once a response created after the results has answered them; filler from tools and
-        middleware doesn't count.
+        Returns ``None`` once a response created after the results has answered them, and ``{}`` when the follow-up
+        needs no per-response options.
         """
         if self._responses.answered_since(self._results_marker):
             self._chains_due.clear()
             return None
         self._claimed = len(self._chains_due)
-        return FollowUp(self._follow_up_options(self._chains_due))
+        return self._follow_up_options(self._chains_due)
 
     async def _follow_up(self) -> None:
         while True:
             try:
-                response_id = await self._request_follow_up(self._claim_follow_up)
+                response_id = await self._conversation._request_follow_up(  # pyright: ignore[reportPrivateUsage]
+                    self._claim_follow_up
+                )
             except RealtimeActiveResponseException:
                 continue  # another response won the race; it counts if it can act on the results
             except RealtimeConversationClosedException:
                 return
             except RealtimeException as error:
-                self._report_error(error)
+                self._conversation._report_error(error)  # pyright: ignore[reportPrivateUsage]
                 del self._chains_due[: self._claimed]
                 if not self._chains_due:
                     return
@@ -378,42 +366,35 @@ class ToolLoop:
             self._responses.answers_only_earlier_results(response_id)
 
     async def _execute(self, calls: Sequence[_Call], chain: _ToolChain) -> tuple[bool, int]:
-        """Run ``calls`` through the shared executor.
-
-        Returns:
-            Whether function middleware ended the loop, and how many calls ran.
-        """
+        """Return whether function middleware ended the loop, and how many calls ran."""
         if not calls:
             return False, 0
         chain.batch_started()
-        # The executor maps tools by name, so calls bound to different tools of one name run one at a time, in model
-        # order, each with its own tool. Only a tool swapped mid-response causes this.
-        runs = [[call] for call in calls] if _bound_to_different_tools_of_one_name(calls) else [list(calls)]
-        should_terminate = False
-        executed = 0
-        for run in runs:
-            requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
-            try:
-                batch = await self._run_executor(run)
-            finally:
-                _CALLING_CONVERSATION.reset(requested_by_tools)
-            # Results go on their calls as each run returns, so a close during a later run keeps them.
-            for call, group in zip(run, batch.result_groups, strict=True):
-                call.result = next((content for content in group if content.type == "function_result"), None)
-                if call.result is None:
-                    call.result = _settled_with_error(
-                        call.content, "the call paused for an answer it can't get", "unsupported"
-                    )
-            should_terminate = should_terminate or batch.should_terminate
-            executed += batch.executed_call_count
-        return should_terminate, executed
+        requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
+        try:
+            batch = await self._run_executor(calls)
+        finally:
+            _CALLING_CONVERSATION.reset(requested_by_tools)
+        for call, group in zip(calls, batch.result_groups, strict=True):
+            call.result = next((content for content in group if content.type == "function_result"), None)
+            if call.result is None:
+                call.result = _settled_with_error(
+                    call.content, "the call paused for an answer it can't get", "unsupported"
+                )
+        return batch.should_terminate, batch.executed_call_count
 
     async def _run_executor(self, calls: Sequence[_Call]) -> Any:
+        # The executor maps tools by name, so if a tool was replaced by a namesake between two calls of one response,
+        # both run the tool the first resolved to.
+        arrival_tools: dict[str, FunctionTool] = {}
+        for call in calls:
+            if call.tool is not None:
+                arrival_tools.setdefault(call.tool.name, call.tool)
         return await _execute_function_calls(
             custom_args=dict(self._invocation_kwargs),
             function_calls=[call.content for call in calls],
-            # Each call runs the tool it resolved to when it arrived; the context still sees the live list.
-            options={"tools": [call.tool for call in calls]},
+            # Keep the arrival-time bindings apart from the live list that tools mutate.
+            options={"tools": list(arrival_tools.values())},
             live_tools=self._tools,
             config=self._configuration,
             invocation_session=self._agent_session,
@@ -423,24 +404,12 @@ class ToolLoop:
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:
-    """A conversation-local session for function middleware that keeps per-session state, when the app passed none.
-
-    As in chat, so separate conversations on one agent never share that state.
-    """
+    """Separate conversations on one agent must never share such middleware's state, as in chat."""
     if any(getattr(middleware, "_requires_session_state", False) is True for middleware in function_middleware):
         from .._sessions import AgentSession
 
         return AgentSession()
     return None
-
-
-def _bound_to_different_tools_of_one_name(calls: Sequence[_Call]) -> bool:
-    """Whether two calls resolved to different tools sharing a name, as when a tool replaced another between them."""
-    tools_by_name: dict[str, FunctionTool] = {}
-    for call in calls:
-        if call.tool is not None and tools_by_name.setdefault(call.tool.name, call.tool) is not call.tool:
-            return True
-    return False
 
 
 def _requires_a_tool(tool_choice: Any) -> bool:
@@ -450,12 +419,11 @@ def _requires_a_tool(tool_choice: Any) -> bool:
 
 
 def requested_by_a_tool(conversation: RealtimeConversation[Any]) -> bool:
-    """Whether the current task is one of ``conversation``'s tool calls or their function middleware."""
+    """A response requested from inside a batch is filler, which never answers results."""
     return _CALLING_CONVERSATION.get() is conversation
 
 
 def _not_found_result(call: Content) -> Content:
-    """The error result chat's loop gives a call to a tool it doesn't have."""
     return Content.from_function_result(
         call_id=call.call_id or "",
         result=f'Error: Requested function "{call.name}" not found.',
@@ -465,7 +433,7 @@ def _not_found_result(call: Content) -> Content:
 
 
 def _settled_with_error(call: Content, why: str, reason: str) -> Content:
-    """An error result for a call that couldn't run or finish; ``reason`` becomes its ``exception``."""
+    """``reason`` becomes the result's ``exception``, which says why the call didn't finish."""
     return Content.from_function_result(
         call_id=call.call_id or "", result=f"Error: {why}.", exception=reason, id=call.id
     )

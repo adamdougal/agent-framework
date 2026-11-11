@@ -12,7 +12,7 @@ from .._types import AgentResponseUpdate
 
 
 class UpdateStream:
-    """The conversation's updates, read in order by one reader, with its end held outside the buffer."""
+    """The end lives outside the bounded buffer, so closing or failing wakes the reader even when it's full."""
 
     def __init__(self, capacity: int) -> None:
         self._capacity = capacity
@@ -22,9 +22,7 @@ class UpdateStream:
         self._changed = asyncio.Event()
 
     def put(self, update: AgentResponseUpdate) -> bool:
-        """Buffer ``update``, returning ``False`` when the buffer is full. Updates after the end are dropped."""
-        if self._finished:
-            return True
+        """Never block the provider reader on a slow update consumer: a full buffer returns ``False`` instead."""
         if len(self._buffer) >= self._capacity:
             return False
         self._buffer.append(update)
@@ -32,9 +30,7 @@ class UpdateStream:
         return True
 
     def finish(self, failure: Exception | None = None) -> None:
-        """End the stream once the buffered updates are read, raising ``failure`` then if there is one."""
-        if self._finished:
-            return
+        """The buffered updates are read before the end or the failure, so none are lost."""
         self._finished = True
         self._failure = failure
         self._changed.set()
