@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""The realtime function-tool loop: batches, follow-ups, tool chains and settlement (spec 006, Tool loop)."""
+"""The realtime function-tool loop: batches, follow-ups, tool chains and settlement."""
 
 import asyncio
 import logging

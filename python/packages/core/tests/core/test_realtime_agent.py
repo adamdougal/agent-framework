@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Realtime agents starting live conversations (spec 006, API shapes)."""
+"""Realtime agents starting live conversations."""
 
 import asyncio
 import logging

@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""The live realtime conversation: updates, the update queue, send, control calls and close (spec 006)."""
+"""The live realtime conversation: updates, the update queue, send, control calls and close."""
 
 import asyncio
 from typing import Any

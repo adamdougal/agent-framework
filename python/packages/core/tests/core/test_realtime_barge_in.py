@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Barge-in: cutting the unheard audio of the latest response (spec 006, Barge-in)."""
+"""Barge-in: cutting the audio the caller didn't hear."""
 
 import asyncio
 import logging
