@@ -17,6 +17,7 @@ from .._tools import (
     normalize_tools,
 )
 from .._types import _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
+from ._conversation import RealtimeConversation
 from ._options import RealtimeOptionsT
 
 if TYPE_CHECKING:
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
     from .._tools import FunctionInvocationConfiguration, ToolTypes
     from .._types import AgentRunInputs
     from ._clients import RealtimeClientProtocol
-    from ._conversation import RealtimeConversation
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
@@ -132,8 +132,6 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             ValueError: If ``control_timeout`` isn't positive, ``max_queued_updates`` is less than 1, two tools
                 share a name, or the function invocation configuration is invalid.
         """
-        from ._conversation import RealtimeConversation
-
         if control_timeout <= 0:
             raise ValueError("control_timeout must be greater than 0.")
         if max_queued_updates < 1:
@@ -167,7 +165,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 def _merge_session_options(
     default_options: Mapping[str, Any], instructions: str | None, start_options: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Merge the start options over the agent's defaults, as spec 006's API shapes describe."""
+    """Merge the start options over the agent's defaults: instructions append, metadata merges, other keys replace."""
     merged: dict[str, Any] = {**default_options, **start_options}
     if default_options.get("metadata") is not None and start_options.get("metadata") is not None:
         merged["metadata"] = {**default_options["metadata"], **start_options["metadata"]}

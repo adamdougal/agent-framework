@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Barge-in: tracking the agent's generated audio, and cutting what the caller didn't hear (spec 006, Barge-in)."""
+"""Barge-in: tracking the agent's generated audio, and cutting what the caller didn't hear."""
 
 from __future__ import annotations
 

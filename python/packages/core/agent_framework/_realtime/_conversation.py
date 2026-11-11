@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
 from .._feature_stage import ExperimentalFeature, experimental
 from .._types import AgentResponseUpdate, Content, normalize_messages
@@ -17,20 +16,19 @@ from ..exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
     RealtimeControlException,
-    RealtimeControlTimeoutException,
     RealtimeConversationClosedException,
     RealtimeException,
 )
+from ._acknowledgements import AcknowledgedT, await_acknowledgement
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._options import RealtimeOptionsT
 from ._responses import ResponseLedger
 from ._tool_loop import FollowUp, ToolLoop, requested_by_a_tool
+from ._update_stream import UpdateStream
 from ._updates import core_attributes, tool_result_update, update_from_event
 
 logger = logging.getLogger("agent_framework")
-
-AcknowledgedT = TypeVar("AcknowledgedT")
 
 _NO_ACTIVE_RESPONSE = "response_cancel_not_active"
 
@@ -95,7 +93,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._control_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
         self._failure: Exception | None = None
-        self._updates = _UpdateStream(max_queued_updates)
+        self._updates = UpdateStream(max_queued_updates)
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._receive_task: asyncio.Task[None] | None = None
         self._responses = ResponseLedger()
@@ -212,10 +210,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._start_close()
 
     def _dispatch(self, event: RealtimeEvent) -> None:
-        repeated = _is_repeated_error(event, self._previous_event)
-        self._previous_event = event
-        if repeated:
+        if _is_repeated_error(event, self._previous_event):
             return
+        self._previous_event = event
         response_id = core_attributes(event).get("response_id", "")
         if event.kind == "response_created":
             self._responses.created(response_id, self._agent)
@@ -478,29 +475,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._audio.acknowledged(truncation)
 
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
-        """Await a provider acknowledgement within the conversation's control timeout, or until close starts.
-
-        The session's call is cancelled if the wait ends without it; the protocol makes that safe. The cancelled call
-        finishes unwinding before this returns, so it never overlaps the next control call.
-        """
-        call = asyncio.ensure_future(acknowledgement)
-        closing = asyncio.ensure_future(self._closing.wait())
-        try:
-            async with asyncio.timeout(self._control_timeout):
-                await asyncio.wait({call, closing}, return_when=asyncio.FIRST_COMPLETED)
-        except TimeoutError as timeout:
-            raise RealtimeControlTimeoutException(
-                f"The provider didn't acknowledge the request to {action} within {self._control_timeout} seconds; "
-                "it may still apply it."
-            ) from timeout
-        finally:
-            closing.cancel()
-            if not call.done():
-                call.cancel()
-                await _let_cancelled_call_unwind(call)
-        if call.done() and not call.cancelled():
-            return call.result()
-        raise RealtimeConversationClosedException(f"The realtime conversation closed before it could {action}.")
+        """Await a provider acknowledgement within the conversation's control timeout, or until close starts."""
+        return await await_acknowledgement(
+            acknowledgement, action=action, timeout=self._control_timeout, closing=self._closing
+        )
 
     def _require_session(self) -> RealtimeClientSessionProtocol[RealtimeOptionsT]:
         if self._session is None:
@@ -532,7 +510,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         return self._close_task
 
     async def _close_sequence(self) -> None:
-        """Spec 006's close sequence, steps 3, 4 and 7; history (#31) and middleware (#40) add the others."""
+        """Close the session, stop reading it, settle the tool calls left, and end background work, then the updates."""
         try:
             if self._session is not None:
                 try:
@@ -556,62 +534,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             task.cancel()
         if remaining:
             await asyncio.wait(remaining)
-
-
-class _UpdateStream:
-    """The conversation's updates, read in order by one reader, with its end held outside the buffer."""
-
-    def __init__(self, capacity: int) -> None:
-        self._capacity = capacity
-        self._buffer: deque[AgentResponseUpdate] = deque()
-        self._finished = False
-        self._failure: Exception | None = None
-        self._changed = asyncio.Event()
-
-    def put(self, update: AgentResponseUpdate) -> bool:
-        """Buffer ``update``, returning ``False`` when the buffer is full. Updates after the end are dropped."""
-        if self._finished:
-            return True
-        if len(self._buffer) >= self._capacity:
-            return False
-        self._buffer.append(update)
-        self._changed.set()
-        return True
-
-    def finish(self, failure: Exception | None = None) -> None:
-        """End the stream once the buffered updates are read, raising ``failure`` then if there is one."""
-        if self._finished:
-            return
-        self._finished = True
-        self._failure = failure
-        self._changed.set()
-
-    async def __aiter__(self) -> AsyncIterator[AgentResponseUpdate]:
-        while True:
-            if self._buffer:
-                yield self._buffer.popleft()
-                continue
-            if self._finished:
-                if self._failure is not None:
-                    raise self._failure
-                return
-            self._changed.clear()
-            await self._changed.wait()
-
-
-async def _let_cancelled_call_unwind(call: asyncio.Future[Any]) -> None:
-    """Wait for a cancelled session call to unwind, even if this task is cancelled again meanwhile.
-
-    A second cancellation would otherwise abandon the call mid-cleanup. It's re-raised once the call has finished.
-    """
-    cancelled_again: asyncio.CancelledError | None = None
-    while not call.done():
-        try:
-            await asyncio.wait({call})
-        except asyncio.CancelledError as cancellation:
-            cancelled_again = cancellation
-    if cancelled_again is not None:
-        raise cancelled_again
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
@@ -644,7 +566,7 @@ def _is_audio(content: Content) -> bool:
 
 
 def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> bool:
-    """Whether ``event`` repeats the error just before it, which spec 006 counts once."""
+    """Whether ``event`` repeats the error just before it, which streams only once."""
     if event.kind != "error" or previous is None or previous.kind != "error":
         return False
     if event.content is None or previous.content is None:

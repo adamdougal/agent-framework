@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""What a live conversation knows about the provider's responses (spec 006, Control calls and Tool loop)."""
+"""What a live conversation knows about the provider's responses."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ class ResponseLedger:
         return sum(1 for response_id in self._creation_order[marker:] if response_id not in self._filler)
 
     def filler(self, response_id: str) -> None:
-        """Record a response that tools or middleware requested, which acts on no tool results (spec 006, Tool loop)."""
+        """Record a response that tools or middleware requested, which acts on no tool results."""
         self._filler.add(response_id)
 
     def answers_only_earlier_results(self, response_id: str) -> None:

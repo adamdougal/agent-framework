@@ -1176,7 +1176,10 @@ async def test_tools_that_need_approval_or_app_input_get_an_error_result(caplog:
 
     assert [call_id for call_id, _ in _results(client.session)] == ["call_1", "call_2"]
     assert all(str(result).startswith("Error:") for _, result in _results(client.session))
-    assert len([record for record in caplog.records if "approval" in record.getMessage()]) == 1
+    warnings = [record.getMessage() for record in caplog.records if "approval" in record.getMessage()]
+    assert len(warnings) == 2
+    assert "issue_refund" in warnings[0]
+    assert "ask_a_person" in warnings[1]
     assert agent_session.state == {}
 
 

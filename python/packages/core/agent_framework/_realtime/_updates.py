@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Turning each realtime event into the one update the conversation streams (spec 006, Event kinds)."""
+"""Turning each realtime event into the one update the conversation streams."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""The realtime function-tool loop: each response's calls run as one batch once it finishes (spec 006, Tool loop)."""
+"""The realtime function-tool loop: each response's calls run as one batch once it finishes."""
 
 from __future__ import annotations
 
@@ -143,7 +143,6 @@ class ToolLoop:
         self._chains_due: list[_ToolChain] = []
         self._claimed = 0
         self._chain = _ToolChain(configuration)
-        self._warned_about_pausing_tools = False
         self._running_batches: dict[asyncio.Task[Any], list[_Call]] = {}
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
@@ -154,28 +153,26 @@ class ToolLoop:
         self._calls_by_response: dict[str, list[_Call]] = {}
 
     def on_function_call(self, event: RealtimeEvent) -> None:
-        """Record a call, resolving it against the tools available now (spec 006, Control calls, Tools)."""
+        """Record a call, resolving it against the tools available when it arrives, and give it an occurrence id."""
         if event.content is None:
             return
         if event.content.id is None:
-            # As in chat, each call gets a stable occurrence id before it streams; its result carries the same id.
             event.content.id = _generate_function_call_occurrence_id()
         response_id = core_attributes(event)["response_id"]
         tool = _get_tool_map(self._tools).get(event.content.name or "")
         self._calls_by_response.setdefault(response_id, []).append(_Call(event.content, response_id, tool))
 
     def _would_pause(self, tool: FunctionTool) -> bool:
-        """Whether the executor would pause this call for an approval or the app's answer (#37 adds both)."""
+        """Whether the executor would pause this call for an approval or the app's answer, which can't be awaited."""
         app_answered = {additional.name for additional in self._configuration.get("additional_tools") or ()}
         return tool.approval_mode == "always_require" or tool.declaration_only or tool.name in app_answered
 
-    def _warn_about_pausing_tools(self) -> None:
-        if not self._warned_about_pausing_tools:
-            self._warned_about_pausing_tools = True
-            logger.warning(
-                "A realtime conversation got a call to a tool that needs approval or the app's answer; realtime agents "
-                "don't support that yet, so the call gets an error result."
-            )
+    def _warn_about_pausing_tool(self, tool: FunctionTool) -> None:
+        logger.warning(
+            "A realtime conversation got a call to %r, which needs approval or the app's answer; realtime agents "
+            "don't support that yet, so the call gets an error result.",
+            tool.name,
+        )
 
     def on_new_input(self) -> None:
         """Start a new tool chain: the caller spoke or the app sent input, and the loop's limits count afresh.
@@ -215,7 +212,7 @@ class ToolLoop:
             self._follow_up_task.cancel()
 
     async def close(self) -> None:
-        """Stop new batches, cancel running tools, and settle every unfinished call (spec 006, Tool loop, Settlement).
+        """Stop new batches, cancel running tools, and settle every unfinished call.
 
         Each running batch is cancelled once with the ``conversation_closed`` reason, which the executor forwards to
         its calls, so their ``execute_tool`` spans record it. Settled results stream but aren't sent.
@@ -293,7 +290,7 @@ class ToolLoop:
                     "this tool needs approval or the app's answer, which this agent can't wait for",
                     "unsupported",
                 )
-                self._warn_about_pausing_tools()
+                self._warn_about_pausing_tool(call.tool)
             elif invocation_disabled:
                 call.result = _settled_with_error(call.content, "function invocation is disabled", "disabled")
             elif chain_ends:

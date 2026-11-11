@@ -114,9 +114,12 @@ the root package:
   `RealtimeEvent` or a `Message`, which it maps by content type.
 - `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
   options, tools and function middleware over the agent's.
-- `_conversation.py` - `RealtimeConversation`: the single receive loop, the bounded update stream, the control calls
-  and the close sequence. It owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch`
-  hands each event kind to the concern modules below.
+- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls and the close sequence. It
+  owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch` hands each event kind to the
+  concern modules below.
+- `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
+  timeout and until close starts, and lets a cancelled session call finish unwinding.
+- `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
 - `_updates.py` - Maps each `RealtimeEvent` to one `AgentResponseUpdate`: role, author, ids and `finish_reason`.
 - `_responses.py` - `ResponseLedger`, which tracks each response's agent, calls and active state, and which responses
   can count as a tool batch's follow-up.
