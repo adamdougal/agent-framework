@@ -116,17 +116,21 @@ class AudioLedger:
         return []
 
     def cut(self, response_id: str | None, played_ms: int) -> list[Truncation]:
-        """Only the first barge-in on a response plans its cuts; later ones retry the cuts not yet acknowledged."""
+        """Only the first barge-in on a response plans its cuts; later ones retry the cuts not yet acknowledged.
+
+        Earlier responses' unacknowledged cuts come first: by the next barge-in, a later response has usually produced
+        audio and become the target.
+        """
+        retries = [cut for owner, owed in self._owed_by_response.items() if owner != response_id for cut in owed]
         if response_id is None:
-            return []
-        if (owed := self._owed_by_response.get(response_id)) is not None:
-            return list(owed)
-        parts = self._parts_by_response[response_id]
-        if any(part.generated_ms is None for part in parts):
-            return []
-        owed = _plan_cuts(parts, played_ms)
-        self._owed_by_response[response_id] = owed
-        return list(owed)
+            return retries
+        if (owed := self._owed_by_response.get(response_id)) is None:
+            parts = self._parts_by_response[response_id]
+            if any(part.generated_ms is None for part in parts):
+                return retries
+            owed = _plan_cuts(parts, played_ms)
+            self._owed_by_response[response_id] = owed
+        return [*retries, *owed]
 
     def is_owed(self, truncation: Truncation) -> bool:
         return any(truncation in owed for owed in self._owed_by_response.values())

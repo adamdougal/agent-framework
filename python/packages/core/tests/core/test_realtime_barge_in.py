@@ -248,6 +248,38 @@ async def test_interrupting_after_a_failed_cut_retries_the_cuts_still_owed() -> 
     ]
 
 
+async def test_a_failed_cut_is_retried_after_a_later_response_produces_audio() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        client.session.truncate_error = RealtimeControlException("The item can't be truncated now.")
+        with pytest.raises(RealtimeControlException):
+            await conversation.interrupt(played_ms=400)
+        client.session.truncate_error = None
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_2"),
+            _audio("resp_2", "item_b", 48 * 1000),
+            event("response_done", response_id="resp_2", status="cancelled", reason="turn_detected"),
+        )
+
+        await conversation.interrupt(played_ms=300)
+
+    assert client.session.calls == [
+        ("truncate", "item_a", 0, 400),
+        ("truncate", "item_a", 0, 400),
+        ("truncate", "item_b", 0, 300),
+    ]
+
+
 async def test_a_late_acknowledgement_of_a_timed_out_cut_stops_it_being_retried() -> None:
     client = FakeRealtimeClient()
 
