@@ -55,10 +55,15 @@ class ResponseLedger:
         await self._no_requests_in_flight.wait()
 
     def created(self, response_id: str, agent: BaseAgent) -> None:
-        """Record a response the provider created, credited to the agent active then."""
+        """Record a response the provider created, credited to the agent active then.
+
+        A response already finished, such as one ``interrupt()`` cancelled before its creation event was read, stays
+        finished.
+        """
         self._agents[response_id] = agent
         self._creation_order.append(response_id)
-        self._activate(response_id)
+        if response_id not in self._finished:
+            self._activate(response_id)
 
     def requested(self, response_id: str) -> None:
         """Record a response the conversation requested, which may already have finished by the time it returns."""

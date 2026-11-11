@@ -640,6 +640,20 @@ async def test_a_response_can_be_requested_as_soon_as_interrupt_returns() -> Non
     assert client.session.calls == [("cancel_response",), ("create_response", None)]
 
 
+async def test_a_late_creation_event_does_not_revive_a_cancelled_response() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await conversation.create_response()  # resp_1, whose response_created hasn't been read yet
+        await conversation.interrupt()
+        client.session.emit(event("response_created", response_id="resp_1"))
+        await next_update(conversation)
+
+        await conversation.create_response()
+
+    assert client.session.calls == [("create_response", None), ("cancel_response",), ("create_response", None)]
+
+
 async def test_a_created_response_counts_as_active_before_its_event_arrives() -> None:
     client = FakeRealtimeClient()
 
