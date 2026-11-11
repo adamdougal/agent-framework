@@ -33,6 +33,7 @@ from agent_framework.exceptions import (
     RealtimeActiveResponseException,
     RealtimeConnectionException,
     RealtimeControlException,
+    ToolExecutionException,
 )
 from agent_framework.observability import OtelAttr
 
@@ -510,6 +511,29 @@ async def test_a_middleware_failure_settles_its_batchs_calls() -> None:
     assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
 
 
+async def test_a_tool_that_cancels_itself_ends_the_conversation_and_its_call_is_settled() -> None:
+    client = FakeRealtimeClient()
+    updates: list[AgentResponseUpdate] = []
+
+    @tool
+    async def give_up() -> str:
+        """Give up by cancelling."""
+        raise asyncio.CancelledError
+
+    async def read_all(conversation: Any) -> None:
+        async for update in conversation:
+            updates.append(update)
+
+    async with RealtimeAgent(client, tools=[give_up]).start_conversation() as conversation:
+        client.session.emit(*_response("resp_1", _call("call_1", "give_up")))
+        with pytest.raises(ToolExecutionException):
+            await asyncio.wait_for(read_all(conversation), 1)
+
+    settled = [content for update in updates for content in update.contents if content.type == "function_result"]
+    assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
+    assert client.session.close_count == 1
+
+
 # endregion
 
 # region Follow-ups
@@ -732,6 +756,22 @@ async def test_results_sent_while_a_follow_up_is_rejected_still_get_a_follow_up(
     assert client.session.calls == [("create_response", None), ("create_response", None)]
 
 
+async def test_an_unexpected_failure_in_a_follow_up_ends_the_conversation() -> None:
+    client = FakeRealtimeClient()
+
+    async def read_all(conversation: Any) -> None:
+        async for _ in conversation:
+            pass
+
+    async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
+        client.session.create_response_error = KeyError("response")
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        with pytest.raises(KeyError):
+            await asyncio.wait_for(read_all(conversation), 1)
+
+    assert client.session.close_count == 1
+
+
 async def test_a_failed_follow_up_streams_an_error_and_is_dropped() -> None:
     client = FakeRealtimeClient()
 
@@ -929,6 +969,41 @@ async def test_a_batch_from_an_earlier_tool_chain_does_not_count_toward_the_new_
     assert _results(client.session)[1] == ("call_2", "Sunny in Paris")
 
 
+async def test_a_batch_belongs_to_the_chain_of_the_response_that_made_it() -> None:
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_function_calls": 1})
+
+    async with agent.start_conversation():
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "get_weather", city="Paris")),
+            event("speech_started", item_id="item_9", audio_start_ms=100),  # read before the batch starts
+        )
+        await eventually(lambda: len(_tool_messages(client.session)) == 1)
+        client.session.emit(*_response("resp_2", _call("call_2", "get_weather", response_id="resp_2", city="Rome")))
+        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+    assert _results(client.session)[1] == ("call_2", "Sunny in Rome")
+
+
+async def test_a_follow_up_keeps_the_tool_policy_of_the_chain_that_made_it_due() -> None:
+    client = FakeRealtimeClient()
+    look_up, started, release = _blocking_tool()
+    agent = RealtimeAgent(client, tools=[look_up], function_invocation_configuration={"max_function_calls": 1})
+
+    async with agent.start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "look_up")))
+        await started.wait()
+        client.session.emit(
+            event("speech_started", item_id="item_9", audio_start_ms=100),  # a new chain starts
+            event("speech_stopped", item_id="item_9", audio_end_ms=900),
+        )
+        await asyncio.sleep(0.01)
+        release.set()  # the old chain's batch reaches max_function_calls
+        await eventually(lambda: bool(client.session.calls))
+
+    assert client.session.calls == [("create_response", {"tool_choice": "none"})]
+
+
 async def test_reaching_max_function_calls_turns_tools_off() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_function_calls": 2})
@@ -1038,6 +1113,17 @@ async def test_disabled_function_invocation_runs_no_calls() -> None:
     [(call_id, result)] = _results(client.session)
     assert call_id == "call_1"
     assert "disabled" in str(result)
+    assert client.session.calls == [("create_response", {"tool_choice": "none"})]
+
+
+async def test_disabled_function_invocation_turns_tools_off_whatever_the_calls_were() -> None:
+    client = FakeRealtimeClient()
+
+    agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"enabled": False})
+    async with agent.start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "book_flight")))
+        await eventually(lambda: bool(client.session.calls))
+
     assert client.session.calls == [("create_response", {"tool_choice": "none"})]
 
 

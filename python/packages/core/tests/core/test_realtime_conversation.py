@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from agent_framework import AgentResponseUpdate, Content, Message, RealtimeAgent, RealtimeEvent
+from agent_framework import AgentResponseUpdate, Content, Message, RealtimeAgent, RealtimeEvent, RealtimeKind
 from agent_framework.exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -238,6 +238,24 @@ async def test_different_errors_both_stream(difference: dict[str, str]) -> None:
 
     async with RealtimeAgent(client).start_conversation() as conversation:
         client.session.emit(_provider_error(), _provider_error(**difference), event("session_updated"))
+        updates = [await next_update(conversation) for _ in range(3)]
+
+    assert _kinds(updates) == ["error", "error", "session_updated"]
+
+
+async def test_errors_with_different_event_level_provider_metadata_both_stream() -> None:
+    client = FakeRealtimeClient()
+
+    def error_for(event_id: str) -> RealtimeEvent:
+        return RealtimeEvent(
+            RealtimeKind("error"),
+            content=Content.from_error(message="Invalid value", error_code="invalid_value"),
+            service_event_type="error",
+            additional_properties={"foundry": {"event_id": event_id}},
+        )
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.emit(error_for("evt_1"), error_for("evt_2"), event("session_updated"))
         updates = [await next_update(conversation) for _ in range(3)]
 
     assert _kinds(updates) == ["error", "error", "session_updated"]
@@ -607,6 +625,19 @@ async def test_a_control_call_queued_when_close_starts_never_reaches_the_session
             with pytest.raises(RealtimeConversationClosedException):
                 await asyncio.wait_for(call, 1)
     assert client.session.calls == [("create_response", None)]
+
+
+async def test_a_response_can_be_requested_as_soon_as_interrupt_returns() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.emit(event("response_created", response_id="resp_1"))
+        await next_update(conversation)
+
+        await conversation.interrupt()  # the provider cancelled resp_1; its response_done hasn't been read yet
+        await conversation.create_response()
+
+    assert client.session.calls == [("cancel_response",), ("create_response", None)]
 
 
 async def test_a_created_response_counts_as_active_before_its_event_arrives() -> None:

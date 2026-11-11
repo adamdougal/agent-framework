@@ -32,6 +32,10 @@ class ResponseLedger:
     def any_active(self) -> bool:
         return bool(self._active)
 
+    @property
+    def active(self) -> frozenset[str]:
+        return frozenset(self._active)
+
     async def wait_until_idle(self) -> None:
         """Wait until no response is active."""
         await self._idle.wait()

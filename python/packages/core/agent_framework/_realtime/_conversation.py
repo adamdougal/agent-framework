@@ -9,7 +9,7 @@ import logging
 from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 from .._feature_stage import ExperimentalFeature, experimental
 from .._types import AgentResponseUpdate, Content, normalize_messages
@@ -231,9 +231,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         elif event.kind == "speech_stopped":
             self._caller_quiet.set()
         elif event.kind == "output_audio":
-            self._audio.on_output_audio(event)
-        elif event.kind == "item_truncated" and (truncations := self._audio.on_item_truncated(event)):
-            self._spawn(self._truncate_unheard(truncations))
+            self._cut_unheard(self._audio.on_output_audio(event))
+        elif event.kind == "item_truncated":
+            self._cut_unheard(self._audio.on_item_truncated(event))
         self._emit(
             update_from_event(
                 event,
@@ -260,8 +260,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     def _spawn(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._background_task_done)
         return task
+
+    def _background_task_done(self, task: asyncio.Task[Any]) -> None:
+        """Forget a finished background task; one that failed unexpectedly ends the conversation, never silently."""
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        if isinstance(error := task.exception(), Exception):
+            logger.warning("A realtime conversation's background task failed: %s", error)
+            self._fail(error)
 
     async def send(self, value: AgentRunInputs | RealtimeEvent, *, create_response: bool = True) -> None:
         """Send input or a raw provider command, and request a response to text or message input.
@@ -400,14 +409,16 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """Cancel the active response, and cut the audio the caller didn't hear.
 
         With an active response, waits until it finishes. The provider's error for having no active response counts
-        as done, since the response finished first. With no active response, there is nothing to cancel.
+        as done, since the response finished first. Either way, a new response can be requested as soon as this
+        returns. With no active response, there is nothing to cancel.
 
-        With ``played_ms``, the conversation cuts the latest response that produced audio where playback stopped, and
-        cuts its later audio at 0 ms. ``played_ms`` counts that response's audio across its assistant messages' audio
-        parts in order, and each part is cut on its own. A part heard to within 40 ms of its end isn't cut. The first
-        interrupt with ``played_ms`` fixes a response's cuts; a later one retries any the provider didn't acknowledge,
-        and never repeats one it did. If the app is still playing an earlier response while a later one produces
-        audio, ``played_ms`` is measured against the later one.
+        With ``played_ms``, the conversation cuts the latest response that had produced audio when this was called,
+        where playback stopped, and cuts its later audio at 0 ms, including audio that arrives afterwards. ``played_ms``
+        counts that response's audio across its assistant messages' audio parts in order, and each part is cut on its
+        own. A part heard to within 40 ms of its end isn't cut. The first interrupt with ``played_ms`` fixes a
+        response's cuts; a later one retries any the provider didn't acknowledge, and never repeats one it did. If the
+        app is still playing an earlier response while a later one produces audio, ``played_ms`` is measured against the
+        later one.
 
         Keyword Args:
             played_ms: How many milliseconds of the response's audio the caller heard, or ``None`` to cut nothing.
@@ -420,18 +431,28 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """
         if played_ms is not None and played_ms < 0:
             raise ValueError(f"played_ms must be 0 or more, not {played_ms}.")
+        # The response the app was playing when it called, before a later one can start while this waits.
+        playing = self._audio.latest_response_id
         self._require_open_session()
         async with self._control_lock:
             session = self._require_open_session()  # close may have started while this call waited its turn
-            if self._responses.any_active:
+            if cancelling := self._responses.active:
                 try:
                     await self._acknowledged(session.cancel_response(), "cancel the active response")
                 except RealtimeControlException as rejection:
                     # The response finished before the cancel reached the provider, which is what interrupt() wants.
                     if rejection.code != _NO_ACTIVE_RESPONSE:
                         raise
+                # The provider has finished it, though its response_done may not have been read yet. A response that
+                # started meanwhile stays active.
+                for response_id in cancelling:
+                    self._responses.finished(response_id)
             if played_ms is not None:
-                await self._send_truncations(session, self._audio.cut(played_ms))
+                await self._send_truncations(session, self._audio.cut(playing, played_ms))
+
+    def _cut_unheard(self, truncations: Sequence[Truncation]) -> None:
+        if truncations:
+            self._spawn(self._truncate_unheard(truncations))
 
     async def _truncate_unheard(self, truncations: Sequence[Truncation]) -> None:
         """Cut messages after one the provider truncated, as a control call."""
@@ -628,8 +649,13 @@ def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> 
         return False
     if event.content is None or previous.content is None:
         return False
-    return _error_identity(event.content) == _error_identity(previous.content)
+    return _error_identity(event) == _error_identity(previous)
 
 
-def _error_identity(error: Content) -> tuple[Any, ...]:
-    return (error.message, error.error_code, error.additional_properties)
+def _error_identity(event: RealtimeEvent) -> tuple[Any, ...]:
+    """The message, code and provider metadata, on the content and on the event; neutral attributes don't count."""
+    error = cast(Content, event.content)
+    provider_metadata = {
+        namespace: value for namespace, value in event.additional_properties.items() if namespace != "core"
+    }
+    return (error.message, error.error_code, error.additional_properties, provider_metadata)

@@ -45,9 +45,9 @@ class _AudioPart:
 class AudioLedger:
     """The audio each response generated, and the cuts each response is owed.
 
-    The first ``interrupt(played_ms=...)`` or provider truncation of a response fixes its cuts. Each cut stays owed
-    until the provider acknowledges it, so a later ``interrupt()`` retries the cuts that failed or weren't sent, and
-    never sends an acknowledged one again.
+    The first ``interrupt(played_ms=...)`` or provider truncation of a response fixes its cuts, and any audio part of
+    that response that arrives later is owed a cut at 0 ms. Each cut stays owed until the provider acknowledges it, so a
+    later ``interrupt()`` retries the cuts that failed or weren't sent, and never sends an acknowledged one again.
     """
 
     def __init__(self) -> None:
@@ -56,14 +56,30 @@ class AudioLedger:
         self._latest_response_id: str | None = None
         self._unmeasurable_media_types: set[str] = set()
 
-    def on_output_audio(self, event: RealtimeEvent) -> None:
+    @property
+    def latest_response_id(self) -> str | None:
+        """The latest response that produced audio, which the app is playing."""
+        return self._latest_response_id
+
+    def on_output_audio(self, event: RealtimeEvent) -> list[Truncation]:
+        """Record audio, and return the cut owed for a new part of a response that's already been cut."""
         core = core_attributes(event)
-        parts = self._parts_by_response.setdefault(core["response_id"], [])
-        self._latest_response_id = core["response_id"]
+        response_id = core["response_id"]
+        parts = self._parts_by_response.setdefault(response_id, [])
+        self._latest_response_id = response_id
         part = next((part for part in parts if part.is_part(core["item_id"], core["content_index"])), None)
+        owed_now: list[Truncation] = []
         if part is None:
             part = _AudioPart(core["item_id"], core["content_index"])
             parts.append(part)
+            if (owed := self._owed_by_response.get(response_id)) is not None:
+                # The response was cut before this part arrived, so none of it was heard.
+                owed_now.append(Truncation(part.item_id, part.content_index, 0))
+                owed.extend(owed_now)
+        self._measure(part, event)
+        return owed_now
+
+    def _measure(self, part: _AudioPart, event: RealtimeEvent) -> None:
         if event.content is None or part.generated_ms is None:
             return
         media_type = event.content.media_type or ""
@@ -106,12 +122,11 @@ class AudioLedger:
                 return list(owed)
         return []
 
-    def cut(self, played_ms: int) -> list[Truncation]:
-        """The cuts owed for a barge-in after ``played_ms`` of the latest response's audio.
+    def cut(self, response_id: str | None, played_ms: int) -> list[Truncation]:
+        """The cuts owed for a barge-in after ``played_ms`` of ``response_id``'s audio.
 
         The first call for a response plans them from ``played_ms``; later calls return those still unacknowledged.
         """
-        response_id = self._latest_response_id
         if response_id is None:
             return []
         if (owed := self._owed_by_response.get(response_id)) is not None:

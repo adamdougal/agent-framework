@@ -163,6 +163,32 @@ async def test_interrupt_cuts_the_latest_response_that_produced_audio() -> None:
     assert client.session.calls == [("cancel_response",), ("truncate", "item_2", 0, 100)]
 
 
+async def test_interrupt_cuts_the_response_playing_when_it_was_called() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+        )
+        cancelled = client.session.hold("cancel_response")
+        interrupting = asyncio.create_task(conversation.interrupt(played_ms=400))
+        await eventually(lambda: bool(client.session.calls))
+        await _play(
+            conversation,
+            client.session,
+            event("response_done", response_id="resp_1", status="cancelled"),
+            event("response_created", response_id="resp_2"),
+            _audio("resp_2", "item_b", 48 * 1000),
+        )
+        cancelled.set()
+        await asyncio.wait_for(interrupting, 1)
+
+    assert client.session.calls == [("cancel_response",), ("truncate", "item_a", 0, 400)]
+
+
 async def test_interrupt_cuts_a_response_that_already_finished() -> None:
     client = FakeRealtimeClient()
 
@@ -379,6 +405,24 @@ async def test_close_lets_a_cancelled_provider_triggered_cut_finish_cleaning_up(
         await conversation.close()
 
         assert client.session.calls == [("truncate", "item_b", 0, 0), ("cleaned up", "truncate")]
+
+
+async def test_audio_that_arrives_after_a_provider_truncation_is_cut_at_0_ms() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+            _audio("resp_1", "item_b", 48 * 1000),
+        )
+        await eventually(lambda: bool(client.session.calls))
+        await asyncio.sleep(0.01)
+
+    assert client.session.calls == [("truncate", "item_b", 0, 0)]
 
 
 async def test_a_client_truncation_cuts_nothing_more() -> None:

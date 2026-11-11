@@ -192,12 +192,14 @@ outside the topology, and app input for a call id the conversation isn't trackin
   cancelled call leaves nothing pending and stops claiming errors. A control call or `send(...)` still waiting when
   close starts, for an acknowledgement or its turn, raises `RealtimeConversationClosedException`.
 - **Active response.** `create_response(...)` and `say(...)` raise `RealtimeActiveResponseException` while a response
-  is active. Nothing is queued or cancelled implicitly.
+  is active. Nothing is queued or cancelled implicitly. A response `interrupt(...)` cancelled stops counting as active
+  once the cancel is acknowledged, even before its `response.done` is read.
 - **Error claiming.** Requests carry a client `event_id`, and responses an id in `response.metadata`. While a control
   call waits, an error that carries its id, `null` or a server id fails it. An error that echoes another request's id
   doesn't. Claiming runs before deduplication, and only unclaimed back-to-back identical errors count once. The
   conversation deduplicates: back-to-back means consecutive session events, and identical means the same message, code
-  and provider metadata. Every other error becomes `error` content.
+  and provider metadata, on the content and on the event, apart from neutral attributes. Every other error becomes
+  `error` content.
 - **Lost races.** While `create_response(...)` or `say(...)` waits, a `response.created` without its `metadata` id
   fails the call with `RealtimeActiveResponseException`. A pre-generated `say(...)` takes the first `response.created`
   after its send instead, because Voice Live returns `metadata: null` for those responses.
@@ -216,14 +218,16 @@ outside the topology, and app input for a call id the conversation isn't trackin
 
 - The app stops its playback on `speech_started` and calls `interrupt(played_ms=...)`. Turn detection has already
   cancelled the response, through `interrupt_response`.
-- `played_ms` counts the audio of the latest response that produced audio, across its assistant messages' audio content
-  parts in order. The conversation truncates the part where playback stopped, clamped below its generated length, and
-  doesn't cut a part heard to within 40 ms of its end. Each part is measured and cut on its own, by item id and content
-  index, and its generated length comes from the audio bytes and the output format. If the app is still playing an
-  earlier response's tail when a later response produces audio, that tail isn't cut.
-- The first `interrupt(played_ms=...)` or provider truncation fixes a response's cuts. Each stays owed until the
-  provider acknowledges it, even after its control call timed out, so a later `interrupt(...)` retries the cuts that
-  failed or weren't sent, and never repeats an acknowledged one.
+- `played_ms` counts the audio of the latest response that had produced audio when `interrupt(...)` was called, across
+  its assistant messages' audio content parts in order. The conversation truncates the part where playback stopped,
+  clamped below its generated length, and doesn't cut a part heard to within 40 ms of its end. Each part is measured and
+  cut on its own, by item id and content index, and its generated length comes from the audio bytes and the output
+  format. If the app is still playing an earlier response's tail when a later response produces audio, that tail isn't
+  cut.
+- The first `interrupt(played_ms=...)` or provider truncation fixes a response's cuts, and any audio part of that
+  response that arrives later is cut at 0 ms. Each cut stays owed until the provider acknowledges it, even after its
+  control call timed out, so a later `interrupt(...)` retries the cuts that failed or weren't sent, and never repeats an
+  acknowledged one.
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.
@@ -309,15 +313,15 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `items` or a raw value. They drop images, audio and files with a warning. As in chat, each call gets an occurrence
   `id` before it streams, unless it has one, and its result carries the same `id`.
 - **Follow-ups.** Once every call in a batch has a result, the loop sends the results in model order and requests one
-  follow-up response, after any active response finishes and while the caller isn't speaking. Any response created
-  after the results counts as the follow-up, except responses that tools or middleware request through `say(...)` or
-  `create_response(...)`. A follow-up relaxes a required `tool_choice` to `"auto"`. Follow-ups due together merge. A
-  follow-up the provider rejects or doesn't acknowledge streams as `error` content and is dropped, unless results went
-  out after it was requested.
-  Batches from different responses run concurrently. `MiddlewareTermination` sends the results without a follow-up.
-  `run(...)` ends at the first response that finishes without tool calls, or when `MiddlewareTermination` stops the
-  loop. Responses that tools or middleware request through `say(...)` or `create_response(...)`, such as a filler line,
-  don't end it.
+  follow-up response, after any active response finishes and while the caller isn't speaking. Any response created after
+  the results counts as the follow-up, except responses that tools or middleware request through `say(...)` or
+  `create_response(...)`. A follow-up relaxes a required `tool_choice` to `"auto"`. Follow-ups due together merge, and a
+  merged follow-up uses `tool_choice: "none"` if any of the chains it answers needs that. A follow-up the provider
+  rejects or doesn't acknowledge streams as `error` content and is dropped, unless results went out after it was
+  requested. Batches from different responses run concurrently. `MiddlewareTermination` sends the results without a
+  follow-up. `run(...)` ends at the first response that finishes without tool calls, or when `MiddlewareTermination`
+  stops the loop. Responses that tools or middleware request through `say(...)` or `create_response(...)`, such as a
+  filler line, don't end it.
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
   `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
@@ -328,21 +332,25 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
-  when the caller speaks or the app sends input. A batch counts toward the chain it started in, even if new input
-  starts another while it runs. `max_iterations` counts follow-ups: the responses created after the chain's first
-  results, whoever requested them, apart from filler. The other limits count across the chain's batches. When a limit
-  trips, the loop still sends the results and requests the follow-up with `tool_choice: "none"`, as do the chain's
-  follow-ups from the `max_iterations`-th on. Calls that arrive later in a tripped chain, or in a response once the
-  chain's follow-ups reach `max_iterations`, don't run: each gets an error result, sent without a follow-up. With
-  `enabled=False`, no call runs. Unknown calls always get an error result, so `terminate_on_unknown_calls` doesn't
-  apply. `run(...)` keeps chat's per-run limits.
+  when the caller speaks or the app sends input. A batch counts toward the chain that was current when its response
+  finished, even if new input starts another before or while it runs. `max_iterations` counts follow-ups: the responses
+  created after the chain's first results, whoever requested them, apart from filler. The other limits count across the
+  chain's batches. When a limit trips, the loop still sends the results and requests the follow-up with
+  `tool_choice: "none"`, as do the chain's follow-ups from the `max_iterations`-th on. Calls that arrive later in a
+  tripped chain, or in a response once the chain's follow-ups reach `max_iterations`, don't run: each gets an error
+  result, sent without a follow-up. With `enabled=False`, no call runs and the follow-up uses `tool_choice: "none"`.
+  Unknown calls always get an error result, so `terminate_on_unknown_calls` doesn't apply. `run(...)` keeps chat's
+  per-run limits.
 - **Slow tools.** There are no timeout or filler settings. Function middleware covers both, by wrapping `call_next()` in
   `asyncio.timeout()` or by saying a filler line and catching `RealtimeActiveResponseException`.
 - **Settlement.** Calls from a response that ended `cancelled`, `incomplete` or `failed` don't run; each gets an error
   result, sent on a best-effort basis, and no follow-up. Barge-in never cancels running tools. Close stops new batches,
   cancels running tools and waits for them, settles every unfinished call with an error result that isn't sent, and
   clears pending approvals from the agent session. A settled error's `exception` says why, such as `cancelled` or
-  `conversation_closed`. `MiddlewareFailure` ends the conversation the same way, and iteration raises it.
+  `conversation_closed`. `MiddlewareFailure` ends the conversation the same way, and iteration raises it. A tool or
+  middleware that raises `CancelledError` while the conversation is open ends it too, and iteration raises
+  `ToolExecutionException`. So does an unexpected failure in the conversation's background work, such as a follow-up
+  request, and iteration raises that failure.
 - **Paused runs.** A `run(...)` that ends because its batch paused for an approval, an app-run tool or a user-input
   request leaves those calls pending. It returns them in its `AgentResponse` and keeps the approvals in the agent
   session, so the next run resumes them by replaying the call into its new realtime session. Close settles calls only
