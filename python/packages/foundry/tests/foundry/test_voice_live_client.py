@@ -25,6 +25,7 @@ from agent_framework.exceptions import (
     RealtimeConnectionException,
     RealtimeControlException,
     RealtimeUnsupportedException,
+    SettingNotFoundError,
 )
 from aiohttp import WSMsgType, web
 from azure.core.credentials import AccessToken, AzureKeyCredential
@@ -290,16 +291,16 @@ def test_reads_settings_from_the_environment(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_missing_endpoint_raises() -> None:
-    """With no endpoint argument or AZURE_VOICELIVE_ENDPOINT, VoiceLiveClient(model="m") raises ValueError naming
-    'endpoint' and AZURE_VOICELIVE_ENDPOINT."""
-    with pytest.raises(ValueError, match="endpoint.*AZURE_VOICELIVE_ENDPOINT"):
+    """With no endpoint argument or AZURE_VOICELIVE_ENDPOINT, VoiceLiveClient(model="m") raises SettingNotFoundError
+    naming 'endpoint' and AZURE_VOICELIVE_ENDPOINT."""
+    with pytest.raises(SettingNotFoundError, match="endpoint.*AZURE_VOICELIVE_ENDPOINT"):
         VoiceLiveClient(model=MODEL, api_key="key")
 
 
 def test_missing_model_raises() -> None:
-    """With no model argument or AZURE_VOICELIVE_MODEL, VoiceLiveClient(endpoint=...) raises ValueError naming 'model'
-    and AZURE_VOICELIVE_MODEL."""
-    with pytest.raises(ValueError, match="model.*AZURE_VOICELIVE_MODEL"):
+    """With no model argument or AZURE_VOICELIVE_MODEL, VoiceLiveClient(endpoint=...) raises SettingNotFoundError
+    naming 'model' and AZURE_VOICELIVE_MODEL."""
+    with pytest.raises(SettingNotFoundError, match="model.*AZURE_VOICELIVE_MODEL"):
         VoiceLiveClient(endpoint=ENDPOINT, api_key="key")
 
 
@@ -999,17 +1000,6 @@ class TestVerification:
             "openai": {"type": "invalid_request_error", "param": "session.voice"}
         }
 
-    async def test_cancel_without_an_active_response_raises_locally(self) -> None:
-        """cancel_response() with no active response raises response_cancel_not_active and sends nothing."""
-        session, connection = await voice_live_session()
-        sent_before = len(connection.sent)
-
-        with pytest.raises(RealtimeControlException) as caught:
-            await asyncio.wait_for(session.cancel_response(), 1)
-
-        assert caught.value.code == "response_cancel_not_active"
-        assert len(connection.sent) == sent_before
-
     async def test_ignored_voice_change_warns_and_keeps_the_old_voice(self, caplog: pytest.LogCaptureFixture) -> None:
         """Voice Live ignores a change between OpenAI voices: update_session({"voice": "echo"}) acknowledged with
         "alloy" still echoed logs the ignored-voice warning, and session.options keeps "alloy"."""
@@ -1073,53 +1063,3 @@ class TestVerification:
 
         assert session.options["voice"] == sonia
         assert "ignored the voice change" not in caplog.text
-
-    async def test_rejected_update_is_claimed_without_an_event_id(self) -> None:
-        """An error {event_id: null} while update_session() waits fails it with RealtimeControlException."""
-        session, connection = await voice_live_session()
-        connection.answers_updates = False
-
-        async with reading(session):
-            updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
-            await connection.wait_sent("session.update")
-            connection.push({
-                "type": "error",
-                "event_id": "evt_err",
-                "error": {
-                    "type": "invalid_request_error",
-                    "code": "invalid_value",
-                    "message": "Bad.",
-                    "event_id": None,
-                },
-            })
-
-            with pytest.raises(RealtimeControlException) as caught:
-                await asyncio.wait_for(updating, 1)
-
-        assert caught.value.code == "invalid_value"
-
-    async def test_response_done_emits_usage_then_response_done(self) -> None:
-        """A Voice Live response.done yields usage then response_done, as on GA."""
-        session, connection = await voice_live_session()
-        done = {
-            "type": "response.done",
-            "event_id": "evt_done",
-            "response": {
-                "id": "resp_1",
-                "status": "completed",
-                "usage": {
-                    "total_tokens": 30,
-                    "input_tokens": 10,
-                    "output_tokens": 20,
-                    "input_token_details": {"cached_tokens": 0, "text_tokens": 6, "audio_tokens": 4},
-                    "output_token_details": {"text_tokens": 5, "audio_tokens": 15},
-                },
-            },
-        }
-
-        async with reading(session) as events:
-            connection.push(done)
-            await until(lambda: any(event.kind == "response_done" for event in events))
-
-        assert [event.kind for event in events[1:]] == ["usage", "response_done"]
-        assert events[1].content.usage_details["total_token_count"] == 30

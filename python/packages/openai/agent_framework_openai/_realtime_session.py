@@ -1,18 +1,11 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""The shared realtime session for services that speak the OpenAI Realtime protocol.
-
-``OpenAIRealtimeSession`` implements Agent Framework's realtime session protocol over wire JSON, so it imports nothing
-but core and the standard library. Each provider client opens an ``OpenAIRealtimeConnection`` through its service's
-SDK, used only as a transport, and hands it to a session. Services whose protocol differs in places, such as Voice
-Live's preview shape, subclass the session and override its protected hooks.
-"""
+"""A shared realtime session, and the transport it runs over, for services that speak the OpenAI Realtime protocol."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import bisect
 import itertools
 import json
 import logging
@@ -79,10 +72,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
     so ``create_response(...)``, ``say(...)`` and ``cancel_response()`` answer from that tracking without asking the
     provider, which matters on services that drop invalid events silently.
 
-    Subclasses adapt it to a service by overriding the protected hooks: ``_SESSION_OPTION_KEYS``, ``_honored``,
-    ``_voice_change_allowed``, ``_session_payload``, ``_response_payload``, ``_say_payload``, ``_current_voice``,
-    ``_ASSISTANT_TEXT_PART``, ``_EVENT_ALIASES``, ``_event_namespace``, ``_INITIAL_UPDATE_REQUIRED`` and
-    ``_before_initial_update``.
+    Only one task may iterate ``receive()`` at a time.
 
     Attributes:
         options: The session's accepted settings: the initial ones, then each acknowledged update, without the keys
@@ -101,20 +91,16 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         "transcription",
         "noise_reduction",
     })
-    """The neutral options this protocol's session object takes. Others are dropped with a warning."""
 
     _ASSISTANT_TEXT_PART: ClassVar[str] = "output_text"
-    """The content part type assistant text is replayed as."""
 
     _INITIAL_UPDATE_REQUIRED: ClassVar[bool] = False
     """Whether ``start(...)`` sends a session.update even with nothing to apply, for services that reject any other
     event first."""
 
     _VOICE_OBJECTS_ACCEPTED: ClassVar[bool] = False
-    """Whether the service takes voice objects, such as an ``AzureVoice``, as well as voice names."""
 
     _EVENT_ALIASES: ClassVar[Mapping[str, str]] = {}
-    """A service's own event names, mapped to the GA names the session handles them as."""
 
     def __init__(self, connection: OpenAIRealtimeConnection) -> None:
         """Create a session over an open connection. Await ``start(...)`` before using it.
@@ -130,22 +116,18 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._session_state: dict[str, Any] = {}
         self._heard_output_audio = False
         self._response_audio_formats: dict[str, str] = {}
+        # Sent cuts outlive a cancelled caller, so their acknowledgements are still marked as the client's.
         self._truncate_cuts: dict[str, tuple[str, int, int]] = {}
-        """The cut each sent truncate request asked for, by request event_id, until it's acknowledged or rejected."""
         # The session's own event ids share a prefix, so they're recognized without keeping one per audio chunk.
         self._event_id_prefix = f"af_{uuid.uuid4().hex[:12]}_"
         self._event_ids = itertools.count(1)
         self._raw_event_ids: set[str] = set()
         self._cancel_event_ids: set[str] = set()
-        # Many answers don't say which request they're for, so control requests and raw session updates are numbered
-        # as they're written, and providers answer them in that order.
-        self._request_writes = itertools.count()
-        self._unawaited_updates: list[_UnawaitedUpdate] = []
+        # A session.updated doesn't say which update it answers, so a cancelled update's late answer has to be told
+        # apart from the next update's by order.
+        self._abandoned_updates: list[_PendingControl] = []
         self._write_lock = asyncio.Lock()
-        self._reading = False
         self._closed = False
-
-    # region Session protocol
 
     async def start(self, *, options: RealtimeOptionsT | None = None, tools: Sequence[ToolTypes] | None = None) -> None:
         """Apply the initial settings and tools, returning once the provider acknowledges them.
@@ -162,7 +144,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             ValueError: If an audio format is one the provider can't take.
         """
         await self._before_initial_update()
-        honored = self._honored(dict(options or {}))
+        honored = self._honored(options or {})
         session = self._session_payload(honored, tools)
         if not session and not self._INITIAL_UPDATE_REQUIRED:
             self.options = cast("RealtimeOptionsT", honored)
@@ -178,7 +160,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         """Send input or a raw command to the provider, without waiting for an acknowledgement.
 
         A ``RealtimeEvent`` is a raw command: its ``raw_representation``, the wire event as a mapping, is sent
-        verbatim and untracked. A ``Message`` is mapped one content at a time, in order: audio data is appended to the
+        verbatim and untracked. Nothing ties a raw ``session.update`` to its ``session.updated``, so wait for that
+        acknowledgement before starting a control call such as ``update_session(...)``, or the call can take it for its
+        own. A ``Message`` is mapped one content at a time, in order: audio data is appended to the
         input audio buffer, text becomes a message item with the message's role, and function calls and results become
         their own items, the result as its text. Anything else is dropped with a warning. Sending never requests a
         response.
@@ -200,13 +184,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             if isinstance(raw_event_id, str):
                 self._raw_event_ids.add(raw_event_id)
 
-            def number_a_raw_update() -> bool:
-                if command.get("type") == "session.update":
-                    owned_id = raw_event_id if isinstance(raw_event_id, str) else None
-                    self._unawaited_updates.append(_UnawaitedUpdate(next(self._request_writes), owned_id))
-                return True
-
-            await self._write(command, on_writing=number_a_raw_update)
+            await self._write(command)
             return
         for wire_event in self._message_events(value):
             # A client id lets a provider that echoes it tie its error to this event, never to a waiting control call.
@@ -218,20 +196,11 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
         Only one task may iterate at a time. Iteration ends when the connection closes normally, and raises
         ``RealtimeConnectionException`` when it fails. Either way, a waiting control call fails.
-
-        Raises:
-            RuntimeError: If another task is already iterating.
         """
-        if self._reading:
-            raise RuntimeError("Another task is already reading this realtime session; receive() allows one reader.")
-        self._reading = True
-        try:
-            while self._buffered:
-                yield self._buffered.pop(0)
-            async for event in self._events_from_connection():
-                yield event
-        finally:
-            self._reading = False
+        while self._buffered:
+            yield self._buffered.pop(0)
+        async for event in self._events_from_connection():
+            yield event
 
     async def update_session(self, options: RealtimeOptionsT, tools: Sequence[ToolTypes] | None) -> None:
         """Update the live session's settings and, when ``tools`` isn't ``None``, replace its declared tools.
@@ -244,7 +213,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         Raises:
             RealtimeControlException: If the provider rejects the update.
         """
-        honored = self._honored(dict(options or {}))
+        honored = self._honored(options or {})
         session = self._session_payload(honored, tools)
         if not session:
             return
@@ -337,12 +306,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         """Close the session."""
         await self.close()
 
-    # endregion
-
-    # region Hooks a subclass overrides for its service
-
-    def _honored(self, options: dict[str, Any]) -> dict[str, Any]:
-        """The options the provider can take now, dropping with a warning any it would refuse."""
+    def _honored(self, options: Mapping[str, Any]) -> dict[str, Any]:
         honored: dict[str, Any] = {}
         for key, value in options.items():
             if key in self._SESSION_OPTION_KEYS:
@@ -360,11 +324,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return honored
 
     def _voice_change_allowed(self, voice: Any) -> bool:
-        """Whether the provider accepts a new voice now: here, only until the session's first output audio."""
+        """GA rejects a voice change once the session has produced output audio."""
         return not self._heard_output_audio
 
     def _session_payload(self, options: dict[str, Any], tools: Sequence[ToolTypes] | None) -> dict[str, Any]:
-        """Translate honored options and tools into the GA session object, empty when there's nothing to send."""
         session: dict[str, Any] = {}
         audio_input: dict[str, Any] = {}
         audio_output: dict[str, Any] = {}
@@ -397,7 +360,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
     @staticmethod
     def _tool_declarations(tools: Sequence[ToolTypes]) -> list[Any]:
-        """Declare function tools, pass hosted tools given as mappings through, and drop anything else."""
         declarations: list[Any] = []
         for candidate in tools:
             if isinstance(candidate, FunctionTool):
@@ -419,7 +381,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
     @staticmethod
     def _translate_tool_choice(choice: Any) -> Any:
-        """The protocol's tool choice for a neutral one: a mode string, or a ToolMode."""
         if isinstance(choice, str):
             return choice
         if choice.get("required_function_name"):
@@ -432,7 +393,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return choice["mode"]
 
     def _response_payload(self, options: dict[str, Any]) -> dict[str, Any]:
-        """Translate neutral per-response options into the protocol's response object."""
         response: dict[str, Any] = {}
         for key, value in options.items():
             match key:
@@ -449,7 +409,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return response
 
     def _say_payload(self, text: str) -> dict[str, Any]:
-        """The response that speaks ``text`` verbatim: pre-generated with an Azure TTS voice, else the prompt."""
         if self._speaks_with_azure_tts_voice():
             return {
                 "pre_generated_assistant_message": {
@@ -468,22 +427,16 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return _is_azure_tts_voice(self._current_voice())
 
     def _current_voice(self) -> Any:
-        """The voice the provider last reported for this session."""
         return self._session_state.get("audio", {}).get("output", {}).get("voice")
 
     async def _before_initial_update(self) -> None:
-        """Wait for whatever the service sends before it takes the initial session.update. Nothing, by default.
+        """Some services send something, such as an agent definition, before they take settings.
 
-        An override reads the connection with ``_read_into_buffer()``, which keeps each event for ``receive()``.
+        An override reads it with ``_read_into_buffer()``, which keeps the startup events for ``receive()``.
         """
 
     def _event_namespace(self, service_event_type: str) -> str:
-        """The metadata namespace that owns an event: ``openai``, for every event of the OpenAI Realtime protocol."""
         return "openai"
-
-    # endregion
-
-    # region Control calls
 
     async def _create_response(self, response: dict[str, Any]) -> str:
         """Request a response and return its id once its own response.created arrives.
@@ -506,7 +459,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return str(created["response"]["id"])
 
     def _raise_if_a_response_is_active(self) -> bool:
-        """Raise ``RealtimeActiveResponseException`` while a response is active; otherwise return True."""
         if self._active_response_id is not None:
             raise RealtimeActiveResponseException(f"Response {self._active_response_id} is still active.")
         return True
@@ -526,22 +478,17 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
     ) -> Any:
         """Send a control request and wait for its acknowledgement, leaving nothing pending however it ends.
 
-        A reader of receive() settles the acknowledgement, except while opening, when no reader exists yet and the
-        session reads the connection itself. A response request's acknowledgement must echo its ``request_id``, or,
-        when ``accepts_unechoed``, carry no metadata at all. ``concerns`` tells whether an acknowledgement is about this
-        request's target, such as the item it truncates; one that isn't is left alone. ``accepted_options`` merge into
-        ``options`` as the acknowledgement is read, so events right behind it already see them. ``on_sent``, given the
-        request's event_id, runs as the request starts going out, before its acknowledgement can be read; a request
-        counts as sent from then on, since a transport can put the frame on the wire before its send returns.
-        ``still_needed`` runs once the request holds the connection: when it returns False, nothing is sent and the call
-        returns None, and when it raises, nothing is sent and the call raises.
+        Control calls are serialized by the caller, but send() can run alongside one, so the call is published only
+        once its request holds the connection: an acknowledgement can arrive before the transport's send returns, and
+        nothing read while the request waits for the connection may answer it. Accepted options merge as the
+        acknowledgement is read, so the events right behind it already see them. ``still_needed`` returning False
+        sends nothing and returns None.
         """
         self._ensure_open()
         request = {**request, "event_id": self._new_event_id()}
         if request["type"] == "response.cancel":
             self._cancel_event_ids.add(request["event_id"])
         acknowledged: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        owner = asyncio.current_task()
         pending = _PendingControl(
             acknowledgement,
             request["event_id"],
@@ -550,16 +497,14 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             accepts_unechoed,
             concerns,
             accepted_options,
-            owner=owner,
-            owner_cancellations=owner.cancelling() if owner is not None else 0,
+            owner=asyncio.current_task(),
         )
 
         def start_sending() -> bool:
-            # Published only now, so nothing read while the request waits for the connection can answer it. A request
-            # counts as sent from here, with its place in the write order.
             if still_needed is not None and not still_needed():
                 return False
-            pending.write_order = next(self._request_writes)
+            # A transport can put the frame on the wire before its send returns, so the request counts as sent here.
+            pending.sent = True
             self._pending = pending
             if on_sent is not None:
                 on_sent(request["event_id"])
@@ -572,22 +517,14 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 await self._read_into_buffer()
             return await acknowledged
         finally:
-            if not pending.answered and pending.write_order is not None and request["type"] == "session.update":
-                # A sent update whose caller left still gets its answer, which mustn't be taken for a later update's.
-                bisect.insort(
-                    self._unawaited_updates,
-                    _UnawaitedUpdate(pending.write_order, pending.event_id, pending.accepted_options),
-                    key=lambda unawaited: unawaited.write_order,
-                )
+            if pending.sent and not pending.answered and request["type"] == "session.update":
+                self._abandoned_updates.append(pending)
             if self._pending is pending:
                 self._pending = None
 
     def _settle_pending(self, event_type: str, wire: dict[str, Any]) -> bool:
-        """Resolve or fail the waiting control call when ``wire`` acknowledges it, rejects it, or beats it.
-
-        Returns whether ``wire`` is an error the waiting call claimed.
-        """
-        if self._answers_unawaited_update(event_type, wire):
+        """Return whether ``wire`` is an error the waiting call claimed, so that error streams only as passthrough."""
+        if self._answers_abandoned_update(event_type, wire):
             return False
         pending = self._pending
         if pending is None or pending.answered:
@@ -631,41 +568,31 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             )
         self.options = cast("RealtimeOptionsT", {**self.options, **accepted})
 
-    def _answers_unawaited_update(self, event_type: str, wire: dict[str, Any]) -> bool:
-        """Whether ``wire`` answers a session update no caller waits for: a raw one, or one whose caller was cancelled.
+    def _answers_abandoned_update(self, event_type: str, wire: dict[str, Any]) -> bool:
+        """Keep a later control call from taking the late answer of an update whose caller was cancelled.
 
-        Requests are answered in the order they were written. A session.updated answers the oldest outstanding update:
-        the waiting update_session() call when it was written first, otherwise the oldest unawaited update, whose
-        accepted options merge into ``options``. An error echoing no id, or one this session never sent, answers the
-        oldest outstanding request of any kind, which may be a waiting control call written before every unawaited
-        update. An error echoing an unawaited update's own id answers that one. Errors answering an unawaited update
-        stream unclaimed.
+        Control calls are serialized, so every abandoned update was sent before the call now waiting, and its answer
+        comes first. An error echoing an abandoned update's own id answers that one; streamed unclaimed, as its caller
+        is gone.
         """
-        if not self._unawaited_updates or event_type not in ("session.updated", "error"):
+        if not self._abandoned_updates:
             return False
-        oldest = self._unawaited_updates[0]
-        pending = self._pending
-        waiting_call_is_older = (
-            pending is not None
-            and not pending.answered
-            and pending.write_order is not None
-            and pending.write_order < oldest.write_order
-        )
-        waiting_call_is_an_update = pending is not None and pending.acknowledgement == "session.updated"
-        if event_type == "error":
-            echoed = _mapping(wire.get("error")).get("event_id")
-            if echoed is not None and self._sent_by_this_session(echoed):
-                for index, unawaited in enumerate(self._unawaited_updates):
-                    if echoed == unawaited.event_id:
-                        del self._unawaited_updates[index]
-                        return True
-                return False
-        if waiting_call_is_older and (event_type == "error" or waiting_call_is_an_update):
+        if event_type == "session.updated":
+            answered = self._abandoned_updates.pop(0)
+            if answered.accepted_options:
+                self._merge_accepted(answered.accepted_options)
+            return True
+        if event_type != "error":
             return False
-        self._unawaited_updates.pop(0)
-        if event_type == "session.updated" and oldest.accepted_options:
-            self._merge_accepted(oldest.accepted_options)
-        return True
+        echoed = _mapping(wire.get("error")).get("event_id")
+        if echoed is None or not self._sent_by_this_session(echoed):
+            self._abandoned_updates.pop(0)
+            return True
+        for index, abandoned in enumerate(self._abandoned_updates):
+            if echoed == abandoned.event_id:
+                del self._abandoned_updates[index]
+                return True
+        return False
 
     def _claims(self, pending: _PendingControl, error_event: dict[str, Any]) -> bool:
         """Whether the waiting call owns an error: its own id, no id, or an id this session never sent.
@@ -677,17 +604,14 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return echoed is None or echoed == pending.event_id or not self._sent_by_this_session(echoed)
 
     def _new_event_id(self) -> str:
-        """A fresh client event_id this session will recognize as its own."""
         return f"{self._event_id_prefix}{next(self._event_ids)}"
 
     def _sent_by_this_session(self, event_id: Any) -> bool:
-        """Whether an echoed event_id is one this session sent: its own, or a raw command's."""
         return isinstance(event_id, str) and (
             event_id.startswith(self._event_id_prefix) or event_id in self._raw_event_ids
         )
 
     def _answers_own_cancel(self, error_event: dict[str, Any]) -> bool:
-        """Whether an error only says that a response this session cancelled had already finished."""
         error = _mapping(error_event.get("error"))
         return error.get("code") == "response_cancel_not_active" and error.get("event_id") in self._cancel_event_ids
 
@@ -697,23 +621,13 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if pending is not None and not pending.acknowledged.done():
             pending.acknowledged.set_exception(error)
 
-    # endregion
-
-    # region Reading and writing the connection
-
     async def _events_from_connection(self) -> AsyncIterator[RealtimeEvent]:
-        """Map every wire event until the connection ends, failing any waiting call when it does."""
         try:
             while (wire := await self._connection.receive()) is not None:
                 for event in self._handle(dict(wire)):
                     yield event
-        except RealtimeConnectionException as error:
-            self._fail_pending(error)
-            raise
         except Exception as error:
-            failure = RealtimeConnectionException(f"The realtime connection failed: {error}")
-            failure.__cause__ = error
-            self._fail_pending(failure)
+            self._fail_pending(error)
             raise
         self._fail_pending(RealtimeConnectionException("The realtime connection closed."))
 
@@ -727,10 +641,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return wire
 
     async def _write(self, wire_event: Mapping[str, Any], *, on_writing: Callable[[], bool] | None = None) -> bool:
-        """Send one wire event, never interleaved with another write, and return whether it was sent.
+        """A control is checked and published in ``on_writing``, once its write owns the connection.
 
-        ``on_writing`` runs once this write holds the connection, just before the transport sends; when it returns
-        False, nothing is sent.
+        Queued writes then can't take its acknowledgement. ``on_writing`` returning False sends nothing.
         """
         async with self._write_lock:
             if on_writing is not None and not on_writing():
@@ -743,7 +656,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             raise RealtimeConnectionException("The realtime session is closed.")
 
     def _message_events(self, message: Message) -> list[dict[str, Any]]:
-        """Map a message's contents, in order, to the wire events that add them to the provider's conversation."""
         wire_events: list[dict[str, Any]] = []
         for content in message.contents:
             if content.type == "text":
@@ -786,15 +698,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 logger.warning("Dropping %s content: a realtime session can't send it.", content.type)
         return wire_events
 
-    # endregion
-
-    # region Mapping server events
-
     def _handle(self, wire: dict[str, Any]) -> list[RealtimeEvent]:
-        """Track state, settle a waiting control call that ``wire`` answers, then map ``wire`` to realtime events.
+        """Make the session's state current before any reader sees the event.
 
-        Dispatch uses the GA name ``_EVENT_ALIASES`` gives a service's own event name, while events keep the wire
-        name as their ``service_event_type``.
+        Aliases only choose how an event is handled; ``service_event_type`` keeps the wire name.
         """
         event_type = self._EVENT_ALIASES.get(wire["type"], wire["type"])
         self._track_state(event_type, wire)
@@ -823,11 +730,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         elif event_type == "response.output_audio.delta":
             self._heard_output_audio = True
         elif event_type == "error" and (echoed := _mapping(wire.get("error")).get("event_id")) in self._truncate_cuts:
-            # A provider that echoes the request id rejected one of this session's cuts, even one whose caller left.
+            # A cancelled truncate can still be rejected; a later provider cut there mustn't be marked as ours.
             del self._truncate_cuts[echoed]
 
     def _map_event(self, event_type: str, wire: dict[str, Any]) -> list[RealtimeEvent]:
-        """Map one wire event to its realtime events, keyed by its GA event name."""
         match event_type:
             case "session.created":
                 session = _mapping(wire.get("session"))
@@ -917,15 +823,12 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return events
 
     def _agent_text(self, wire: dict[str, Any], text: Content) -> RealtimeEvent:
-        """Agent transcript text, spoken or written, tied to its response, item and content part."""
         return self._payload("output_text", wire, text, _present(wire, "response_id", "item_id", "content_index"))
 
     def _output_media_type(self) -> str:
-        """The media type of the agent's audio: the session's output format, 24 kHz PCM by default."""
         return cast("dict[str, Any]", self.options).get("output_audio_format") or DEFAULT_AUDIO_FORMAT
 
     def _truncated_by(self, cut: tuple[Any, Any, Any]) -> str:
-        """Who made a cut: this session's own truncate request, or the provider on its own."""
         for event_id, sent_cut in self._truncate_cuts.items():
             if sent_cut == cut:
                 del self._truncate_cuts[event_id]
@@ -933,7 +836,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return "provider"
 
     def _error_event(self, wire: dict[str, Any]) -> RealtimeEvent:
-        """An unclaimed provider error as error content, with the provider's details under ``openai``."""
         error = _mapping(wire.get("error"))
         details = _present(error, "type", "param", "event_id")
         content = Content.from_error(
@@ -944,7 +846,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         return RealtimeEvent("error", content=content, service_event_type=wire["type"], raw_representation=wire)
 
     def _passthrough(self, wire: dict[str, Any]) -> RealtimeEvent:
-        """An event Agent Framework gives no meaning to, carrying its wire fields under its owner's namespace."""
         return RealtimeEvent(
             "passthrough",
             service_event_type=wire["type"],
@@ -954,7 +855,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
     @staticmethod
     def _event(kind: RealtimeKindLiteral, wire: dict[str, Any], *, core: dict[str, Any] | None = None) -> RealtimeEvent:
-        """A signal kind's event, with its neutral attributes under core."""
         return RealtimeEvent(
             kind,
             service_event_type=wire["type"],
@@ -966,7 +866,6 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
     def _payload(
         kind: RealtimeKindLiteral, wire: dict[str, Any], content: Content, core: dict[str, Any]
     ) -> RealtimeEvent:
-        """A payload kind's event: its content, and its neutral attributes under core."""
         return RealtimeEvent(
             kind,
             content=content,
@@ -975,21 +874,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             raw_representation=wire,
         )
 
-    # endregion
-
-
-@dataclass
-class _UnawaitedUpdate:
-    """A session update no caller waits for: a raw command's, or one whose caller was cancelled after sending it."""
-
-    write_order: int
-    event_id: str | None
-    accepted_options: dict[str, Any] | None = None
-
 
 @dataclass
 class _PendingControl:
-    """The one control call waiting for its acknowledgement."""
+    """Only a serialized control call may own an acknowledgement; sends can still run alongside it."""
 
     acknowledgement: str
     event_id: str
@@ -998,26 +886,21 @@ class _PendingControl:
     accepts_unechoed: bool = False
     concerns: Callable[[dict[str, Any]], bool] | None = None
     accepted_options: dict[str, Any] | None = None
-    write_order: int | None = None
-    """Its place among the requests written, which providers answer in order."""
+    sent: bool = False
+    # Kept apart from the future: a cancelled caller's future is done before the provider answers, and that late
+    # answer still mustn't be taken for a later call's.
     answered: bool = False
-    """Whether the provider answered, with an acknowledgement or a claimed error, even after the caller stopped
-    waiting."""
     owner: asyncio.Task[Any] | None = None
-    owner_cancellations: int = 0
-    """The owner's pending cancellation requests when the call began, so one it swallowed earlier doesn't count."""
 
     def caller_waiting(self) -> bool:
-        """Whether the caller still waits for the answer: not cancelled, even while its request is still being sent."""
-        cancelled = self.owner is not None and self.owner.cancelling() > self.owner_cancellations
+        # A caller cancelled while its request is still being sent hasn't reached the future yet.
+        cancelled = self.owner is not None and self.owner.cancelling() > 0
         return not self.acknowledged.done() and not cancelled
 
     def concerned_by(self, acknowledgement: dict[str, Any]) -> bool:
-        """Whether an acknowledgement event is about this call's target, rather than another item or response."""
         return self.concerns is None or self.concerns(acknowledgement)
 
     def answered_by(self, acknowledgement: dict[str, Any]) -> bool:
-        """Whether an acknowledgement event belongs to this call rather than to a request it raced."""
         if self.request_id is None:
             return True
         metadata = acknowledgement.get("response", {}).get("metadata")
@@ -1027,7 +910,6 @@ class _PendingControl:
 
 
 def _control_exception(wire: dict[str, Any]) -> RealtimeControlException:
-    """The exception a control call raises for a provider error it claimed."""
     error = _mapping(wire.get("error"))
     exception_type = (
         RealtimeActiveResponseException
@@ -1038,10 +920,7 @@ def _control_exception(wire: dict[str, Any]) -> RealtimeControlException:
 
 
 def _function_output(result: Any) -> str:
-    """A function result as the protocol's string output.
-
-    Text goes as it is and anything else as JSON, as the chat clients send it.
-    """
+    """The wire format takes only string tool results: text goes as it is, anything else as JSON."""
     if isinstance(result, str):
         return result
     if result is None:
@@ -1076,12 +955,12 @@ def _voice_echoed(requested: Any, echoed: Any) -> bool:
 
 
 def _truncation_cut(wire: dict[str, Any]) -> tuple[Any, Any, Any]:
-    """A truncation's whole cut: its item, content part and the audio it keeps."""
+    """Repeated cuts can share an item, so all three coordinates identify an acknowledgement."""
     return (wire.get("item_id"), wire.get("content_index"), wire.get("audio_end_ms"))
 
 
 def _is_out_of_band(wire: dict[str, Any]) -> bool:
-    """Whether a response event belongs to an out-of-band response, which GA marks with ``conversation_id: null``."""
+    """Out-of-band responses must neither block nor acknowledge the conversation's control calls."""
     response = wire.get("response")
     return isinstance(response, Mapping) and "conversation_id" in response and response["conversation_id"] is None
 
@@ -1090,7 +969,6 @@ _AZURE_TTS_VOICE_TYPES = frozenset({"azure-standard", "azure-custom", "azure-per
 
 
 def _is_azure_tts_voice(voice: Any) -> bool:
-    """Whether ``voice`` is an Azure text-to-speech voice, which can speak pre-generated text."""
     return isinstance(voice, Mapping) and cast("Mapping[str, Any]", voice).get("type") in _AZURE_TTS_VOICE_TYPES
 
 
@@ -1102,7 +980,6 @@ _GA_AUDIO_FORMATS: dict[str, dict[str, Any]] = {
 
 
 def _audio_format(media_type: str) -> dict[str, Any]:
-    """The GA audio format object for a neutral audio media type."""
     if media_type not in _GA_AUDIO_FORMATS:
         raise ValueError(
             f"Unsupported audio format {media_type!r}: this realtime session takes {', '.join(_GA_AUDIO_FORMATS)}."
@@ -1111,12 +988,11 @@ def _audio_format(media_type: str) -> dict[str, Any]:
 
 
 def _item_create(item: dict[str, Any]) -> dict[str, Any]:
-    """The wire event that adds ``item`` to the provider's conversation."""
     return {"type": "conversation.item.create", "item": item}
 
 
 def _usage_details(usage: Mapping[str, Any]) -> dict[str, Any]:
-    """Map a response's wire usage to UsageDetails keys, leaving out what the provider didn't report."""
+    """An unreported counter is unknown, not zero, so it's left out."""
     input_details = _mapping(usage.get("input_token_details"))
     cached_details = _mapping(input_details.get("cached_tokens_details"))
     output_details = _mapping(usage.get("output_token_details"))
@@ -1148,5 +1024,4 @@ def _reported(**values: Any) -> dict[str, Any]:
 
 
 def _present(source: Mapping[str, Any], *keys: str) -> dict[str, Any]:
-    """The ``keys`` that ``source`` reports, under the same names."""
     return _reported(**{key: source.get(key) for key in keys})

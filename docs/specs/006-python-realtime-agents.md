@@ -207,7 +207,8 @@ outside the topology, and app input for a call id the conversation isn't trackin
   mapping in its `raw_representation`. Out-of-band responses with `conversation: "none"`, input-buffer commit and
   clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. A raw `session.update` that
   changes tools or instructions leaves the executable tool set out of step with the provider's, so those changes go
-  through `update_session(...)`.
+  through `update_session(...)`. Nothing ties a raw `session.update` to its `session.updated`, so the app waits for
+  that acknowledgement before starting a control call, or the call can take it for its own.
 - **Samples** start control calls from the update loop as tasks, so the loop keeps reading updates.
 
 ### Barge-in

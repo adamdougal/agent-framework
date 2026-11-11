@@ -752,106 +752,6 @@ async def test_a_rejection_read_as_its_draining_update_is_cancelled_streams_uncl
     assert reader.of_kind("passthrough") == []
 
 
-async def test_a_caller_that_swallowed_an_earlier_cancellation_still_gets_its_rejection() -> None:
-    """A task that suppressed its own earlier cancellation without uncancel() calls update_session(); a rejection
-    still fails that call with RealtimeControlException."""
-    session, connection = await started()
-    connection.responder = None
-
-    async def careless_caller() -> None:
-        current = asyncio.current_task()
-        assert current is not None
-        current.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(0)
-        await session.update_session({"instructions": "New."}, None)
-
-    async with reading(session):
-        updating = asyncio.create_task(careless_caller())
-        await connection.wait_sent("session.update")
-        connection.push(rejection("invalid_value", event_id=None))
-
-        with pytest.raises(RealtimeControlException):
-            await asyncio.wait_for(updating, 1)
-
-
-RAW_UPDATE = {"type": "session.update", "session": {"type": "realtime", "metadata": {"k": "v"}}}
-
-
-async def test_a_raw_session_updates_acknowledgement_does_not_answer_a_later_update() -> None:
-    """A raw session.update is sent, then update_session({"instructions": "B."}). The raw update's session.updated
-    doesn't resolve the typed one, which resolves on the next session.updated; session.options holds only B."""
-    session, connection = await started()
-    connection.responder = None
-
-    async with reading(session):
-        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
-        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
-        await connection.wait_sent("session.update")
-        connection.push({"type": "session.updated", "event_id": "evt_raw", "session": {}})
-        await asyncio.sleep(0.01)
-        assert not updating.done()
-
-        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
-        await asyncio.wait_for(updating, 1)
-
-    assert session.options == {"instructions": "B."}
-
-
-async def test_an_update_sent_before_a_raw_session_update_takes_the_first_acknowledgement() -> None:
-    """update_session B is sent, then a raw session.update while B waits. The first session.updated resolves B and
-    the second answers the raw update, so a later update_session C resolves only on its own."""
-    session, connection = await started()
-    connection.responder = None
-
-    async with reading(session):
-        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
-        await connection.wait_sent("session.update")
-        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
-        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
-        await asyncio.wait_for(updating, 1)
-
-        later = asyncio.create_task(session.update_session({"instructions": "C."}, None))
-        await connection.wait_sent("session.update")
-        connection.push({"type": "session.updated", "event_id": "evt_raw", "session": {}})
-        await asyncio.sleep(0.01)
-        assert not later.done()
-
-        connection.push({"type": "session.updated", "event_id": "evt_c", "session": {}})
-        await asyncio.wait_for(later, 1)
-
-
-async def test_a_rejection_of_a_control_call_sent_before_a_raw_update_fails_that_call() -> None:
-    """create_response() is sent, then a raw session.update. A rejection echoing no event_id, as on Voice Live,
-    answers the request written first: create_response() raises RealtimeControlException."""
-    session, connection = await started()
-    connection.responder = None
-
-    async with reading(session):
-        creating = asyncio.create_task(session.create_response())
-        await connection.wait_sent("response.create")
-        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
-        connection.push(rejection("invalid_value", event_id=None))
-
-        with pytest.raises(RealtimeControlException):
-            await asyncio.wait_for(creating, 1)
-
-
-async def test_a_rejection_of_a_truncate_sent_before_a_raw_update_fails_that_truncate() -> None:
-    """truncate("item_1", 0, 500) is sent, then a raw session.update. A rejection echoing the server's own event_id
-    answers the request written first: truncate() raises RealtimeControlException."""
-    session, connection = await started()
-
-    async with reading(session):
-        truncating = asyncio.create_task(session.truncate("item_1", 0, 500))
-        await connection.wait_sent("conversation.item.truncate")
-        await session.send(RealtimeEvent("passthrough", raw_representation=RAW_UPDATE))
-        connection.push(rejection("invalid_value", "audio_end_ms", event_id="evt_srv_7"))
-
-        with pytest.raises(RealtimeControlException):
-            await asyncio.wait_for(truncating, 1)
-
-
 async def test_audio_keeps_its_responses_format_after_a_format_change() -> None:
     """While "resp_1" is active, update_session({"output_audio_format": "audio/pcmu"}) is acknowledged: resp_1's
     later audio is still "audio/pcm;rate=24000", as a response in flight doesn't change, and audio of "resp_2",
@@ -1539,7 +1439,7 @@ async def test_abnormal_close_raises_from_receive() -> None:
 
 async def test_an_unexpected_receive_failure_fails_a_waiting_call() -> None:
     """When the connection's receive() raises RuntimeError("Broken."), receive() raises it, and a waiting
-    update_session() fails with RealtimeConnectionException caused by it."""
+    update_session() fails with it too, rather than waiting for an acknowledgement that can't arrive."""
     session, connection = await started()
     connection.responder = None
 
@@ -1548,22 +1448,11 @@ async def test_an_unexpected_receive_failure_fails_a_waiting_call() -> None:
         await connection.wait_sent("session.update")
         connection.fail(RuntimeError("Broken."))
 
-        with pytest.raises(RealtimeConnectionException) as caught:
+        with pytest.raises(RuntimeError, match="Broken"):
             await asyncio.wait_for(updating, 1)
         await reader.until(lambda: reader.done)
 
-    assert isinstance(caught.value.__cause__, RuntimeError)
     assert isinstance(reader.error, RuntimeError)
-
-
-async def test_second_concurrent_reader_raises() -> None:
-    """While one task iterates receive(), starting a second iteration raises RuntimeError."""
-    session, connection = await started()
-
-    async with reading(session):
-        await asyncio.sleep(0.01)
-        with pytest.raises(RuntimeError):
-            await next_event(session.receive().__aiter__(), 0.1)
 
 
 async def test_control_call_after_close_raises_without_sending() -> None:

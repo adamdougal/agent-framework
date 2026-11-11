@@ -1,11 +1,8 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Azure realtime option types: Voice Live's session settings, shared with Foundry voice agents.
+"""Azure realtime option types: Voice Live's session settings, shared with Foundry voice agents."""
 
-The fields follow the Voice Live ``2026-07-15`` reference. This module omits ``from __future__ import annotations`` so
-``Required[...]`` keys are recorded at runtime.
-"""
-
+# No ``from __future__ import annotations``: required keys need evaluated annotations at runtime.
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Literal, Required
@@ -208,4 +205,3 @@ VoiceLiveOptionsT = TypeVar(
     bound=TypedDict,  # type: ignore[valid-type]
     default=VoiceLiveOptions,
 )
-"""The options type a ``VoiceLiveClient`` is generic over."""

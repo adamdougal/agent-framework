@@ -10,7 +10,6 @@ from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOption
 from azure.identity.aio import AzureCliCredential
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 """
@@ -33,7 +32,7 @@ OUTPUT_SAMPLE_RATE = 24_000
 
 
 async def main() -> None:
-    # Voice Live reads AZURE_VOICELIVE_API_KEY when it's set; otherwise this signs in with the Azure CLI.
+    # A CLI credential is made only when no key is configured; the sample owns it, so it closes it.
     credential = None if os.getenv("AZURE_VOICELIVE_API_KEY") else AzureCliCredential()
     client = VoiceLiveClient(credential=credential)
     options: VoiceLiveOptions = {
@@ -55,7 +54,7 @@ async def main() -> None:
                     if event.kind == "output_text" and event.content and event.content.merge_mode == "append":
                         print(event.content.text, end="", flush=True)
                     elif event.kind == "output_audio" and event.content and event.content.uri:
-                        # Audio arrives as 24 kHz, 16-bit mono PCM in a base64 data URI.
+                        # The WAV writer needs the decoded 24 kHz, 16-bit mono PCM, not the content's base64 URI.
                         reply_audio.extend(base64.b64decode(event.content.uri.split(";base64,", 1)[1]))
                     elif event.kind == "response_done":
                         return

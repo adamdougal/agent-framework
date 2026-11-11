@@ -61,7 +61,6 @@ _OUTPUT_AUDIO_FORMATS: dict[str, dict[str, Any]] = {
     "audio/pcmu": {"output_audio_format": "g711_ulaw"},
     "audio/pcma": {"output_audio_format": "g711_alaw"},
 }
-"""The agent audio formats Voice Live produces, as its session fields."""
 
 _FOUNDRY_EVENT_PREFIXES = (
     "warning",
@@ -75,7 +74,6 @@ _FOUNDRY_EVENT_PREFIXES = (
     "response.video.",
     "session.avatar.",
 )
-"""The names of server events that exist only in Voice Live, which carry their payloads under ``foundry``."""
 
 
 def _check_audio_formats(options: Mapping[str, Any]) -> None:
@@ -95,7 +93,6 @@ def _voice_live_modalities(output_modalities: Sequence[str]) -> list[str]:
 
 
 def _voice_live_format(media_type: str, formats: dict[str, dict[str, Any]], direction: str) -> dict[str, Any]:
-    """The session fields for a neutral audio media type, raising for one Voice Live can't take."""
     if media_type not in formats:
         raise ValueError(f"Unsupported {direction} audio format {media_type!r}: Voice Live takes {', '.join(formats)}.")
     return dict(formats[media_type])
@@ -175,8 +172,8 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
         Keyword Args:
             endpoint: The Voice Live endpoint, such as ``https://<resource>.services.ai.azure.com``. Read from
                 ``AZURE_VOICELIVE_ENDPOINT`` when not passed.
-            model: The model, such as ``"gpt-realtime"``, or your deployment's name. Read from
-                ``AZURE_VOICELIVE_MODEL`` when not passed.
+            model: The model, such as ``"gpt-realtime"``, or, with ``profile="byom-azure-openai-realtime"``, your
+                deployment's name. Read from ``AZURE_VOICELIVE_MODEL`` when not passed.
             api_key: The resource key. Read from ``AZURE_VOICELIVE_API_KEY`` when neither it nor ``credential`` is
                 passed.
             credential: An ``AzureKeyCredential``, an async or sync token credential, or a callable that returns a
@@ -188,8 +185,9 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             env_file_encoding: The ``.env`` file's encoding.
 
         Raises:
-            ValueError: If the endpoint, model or authentication is missing, the API version isn't supported, or both
-                ``api_key`` and ``credential`` are passed.
+            SettingNotFoundError: If the endpoint or model is missing.
+            ValueError: If authentication is missing, the API version isn't supported, or both ``api_key`` and
+                ``credential`` are passed.
             ModuleNotFoundError: If the realtime extra isn't installed.
         """
         if api_key is not None and credential is not None:
@@ -204,32 +202,22 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             api_version=api_version,
             env_file_path=env_file_path,
             env_file_encoding=env_file_encoding,
+            required_fields=["endpoint", "model"],
         )
-        resolved_endpoint = settings.get("endpoint")
-        resolved_model = settings.get("model")
-        if not resolved_endpoint:
-            raise ValueError(
-                "Voice Live needs an endpoint: pass 'endpoint' or set the AZURE_VOICELIVE_ENDPOINT environment "
-                "variable."
-            )
-        if not resolved_model:
-            raise ValueError(
-                "Voice Live needs a model: pass 'model' or set the AZURE_VOICELIVE_MODEL environment variable. For "
-                "BYOM, it's your deployment's name."
-            )
-        resolved_api_key = settings.get("api_key")
-        if credential is None and (resolved_api_key is None or not resolved_api_key.get_secret_value()):
-            raise ValueError(
-                "Voice Live needs authentication: pass 'api_key' or 'credential', or set the AZURE_VOICELIVE_API_KEY "
-                "environment variable."
-            )
-        self.endpoint: str = resolved_endpoint
-        self.model: str = resolved_model
+        if credential is None:
+            resolved_api_key = settings.get("api_key")
+            if not resolved_api_key:
+                raise ValueError(
+                    "Voice Live needs authentication: pass 'api_key' or 'credential', or set the "
+                    "AZURE_VOICELIVE_API_KEY environment variable."
+                )
+            credential = AzureKeyCredential(resolved_api_key.get_secret_value())
+        self.endpoint = cast("str", settings.get("endpoint"))
+        self.model = cast("str", settings.get("model"))
         self.api_version = _supported_api_version(settings.get("api_version") or DEFAULT_API_VERSION)
         self.profile = profile
         self.foundry_resource_override = foundry_resource_override
-        self._api_key = resolved_api_key
-        self._credential = credential
+        self._credential = _sdk_credential(credential)
 
     async def start_session(
         self, *, options: VoiceLiveOptionsT | None = None, tools: Sequence[ToolTypes] | None = None
@@ -251,7 +239,7 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
 
         _check_audio_formats(options or {})
         manager = connect(
-            credential=self._sdk_credential(),
+            credential=self._credential,
             endpoint=self.endpoint,
             api_version=self.api_version,
             model=self.model,
@@ -276,22 +264,6 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             raise
         return cast("RealtimeClientSessionProtocol[VoiceLiveOptionsT]", session)
 
-    def _sdk_credential(self) -> AzureKeyCredential | AsyncTokenCredential:
-        """The credential the Voice Live SDK takes.
-
-        A key, or an ``AzureKeyCredential``, is sent as the ``api-key`` header, and an async token credential passes
-        through. A sync token credential is wrapped so its ``get_token`` runs in a worker thread, rather than blocking
-        the event loop as the SDK would.
-        """
-        credential = self._credential
-        if credential is None:
-            return AzureKeyCredential(self._api_key.get_secret_value() if self._api_key is not None else "")
-        if isinstance(credential, (AzureKeyCredential, AsyncTokenCredential)):
-            return credential
-        if callable(credential) and not hasattr(credential, "get_token"):
-            return _TokenProviderCredential(credential)
-        return _ThreadedTokenCredential(credential)
-
     def _handshake_query(self) -> dict[str, str]:
         """BYOM's query parameters. The SDK ignores a ``profile=`` keyword, so they go through its ``query``."""
         return {
@@ -302,6 +274,17 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             )
             if value
         }
+
+
+def _sdk_credential(
+    credential: AzureKeyCredential | AsyncTokenCredential | TokenCredential | AzureTokenProvider,
+) -> AzureKeyCredential | AsyncTokenCredential:
+    """Sync authentication can block the event loop; adapt it without taking the caller's credential."""
+    if isinstance(credential, (AzureKeyCredential, AsyncTokenCredential)):
+        return credential
+    if callable(credential) and not hasattr(credential, "get_token"):
+        return _TokenProviderCredential(credential)
+    return _ThreadedTokenCredential(credential)
 
 
 class _CredentialAdapter:
@@ -387,7 +370,6 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
     }
 
     def _session_payload(self, options: dict[str, Any], tools: Any) -> dict[str, Any]:
-        """Translate honored options and tools into Voice Live's flat session object."""
         session: dict[str, Any] = {}
         for key, value in options.items():
             match key:
@@ -426,7 +408,6 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
         return super()._say_payload(text)
 
     def _current_voice(self) -> Any:
-        """The voice Voice Live last reported, from its flat session."""
         return self._session_state.get("voice")
 
     def _voice_change_allowed(self, voice: Any) -> bool:
@@ -438,7 +419,7 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
         return True
 
     def _event_namespace(self, service_event_type: str) -> str:
-        """``foundry`` for an event only Voice Live sends, ``openai`` for an event of the OpenAI Realtime protocol."""
+        """Protocol ownership, not the hosting service, decides the metadata namespace."""
         return "foundry" if service_event_type.startswith(_FOUNDRY_EVENT_PREFIXES) else "openai"
 
     def _response_payload(self, options: dict[str, Any]) -> dict[str, Any]:
@@ -459,7 +440,7 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
 
 
 class _VoiceLiveConnection:
-    """An ``OpenAIRealtimeConnection`` over the Voice Live SDK's websocket, used only as a transport."""
+    """Raw JSON keeps the SDK's models out of the shared protocol mapping."""
 
     def __init__(self, manager: Any, connection: Any) -> None:
         self._manager = manager
@@ -501,11 +482,10 @@ class _VoiceLiveConnection:
 
 
 _CLOSINGS_AFTER_HANDSHAKE: set[asyncio.Task[None]] = set()
-"""Closes of connections whose start was cancelled during the handshake, kept until they finish."""
+"""The event loop holds tasks weakly, so a close task needs a strong reference until it finishes."""
 
 
 def _close_after_handshake(manager: Any, handshake: asyncio.Future[Any]) -> None:
-    """Close the connection a handshake opened after its start was cancelled; a failed handshake opened nothing."""
     if handshake.cancelled() or handshake.exception() is not None:
         return
     closing = asyncio.ensure_future(manager.__aexit__(None, None, None))
@@ -514,7 +494,6 @@ def _close_after_handshake(manager: Any, handshake: asyncio.Future[Any]) -> None
 
 
 def _require_voice_live_sdk() -> None:
-    """Raise an install hint unless the Voice Live SDK, which the ``realtime`` extra installs, is available."""
     try:
         found = importlib.util.find_spec("azure.ai.voicelive") is not None
     except ModuleNotFoundError:

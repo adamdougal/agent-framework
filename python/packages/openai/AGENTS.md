@@ -29,8 +29,10 @@ All clients follow the Raw + Full-Featured pattern (e.g., `RawOpenAIChatClient` 
 `OpenAIRealtimeSession` is the shared realtime session for every service that speaks the OpenAI Realtime protocol,
 including Azure Voice Live in `agent-framework-foundry`. A provider client opens an `OpenAIRealtimeConnection`, builds
 the session on it and awaits `start(...)`; a service's differences go in a subclass that overrides the protected
-hooks the class docstring lists. The module must import without `openai[realtime]` or websockets, because Voice
-Live brings its own transport.
+hooks: `_SESSION_OPTION_KEYS`, `_ASSISTANT_TEXT_PART`, `_INITIAL_UPDATE_REQUIRED`, `_VOICE_OBJECTS_ACCEPTED`,
+`_EVENT_ALIASES`, `_honored`, `_voice_change_allowed`, `_session_payload`, `_response_payload`, `_say_payload`,
+`_current_voice`, `_event_namespace` and `_before_initial_update`. The module must import without `openai[realtime]` or
+websockets, because Voice Live brings its own transport.
 
 For Responses API continuation with service-side storage, a prior hosted
 `function_approval_request` is server-issued and must not be replayed inline, while the new hosted
