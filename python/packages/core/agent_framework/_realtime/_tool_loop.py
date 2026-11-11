@@ -266,10 +266,11 @@ class ToolLoop:
                 return
             self._fail(error)
         except asyncio.CancelledError as cancellation:
+            # Close settles the calls, whatever cancelled the batch; a call close already settles is reported once.
+            self._calls_left_for_close.extend(calls)
             if not self._closing:
                 # A tool or middleware raised the cancellation, or something outside the conversation cancelled the
-                # batch. Either way the conversation can't finish it, so it ends, and close settles the calls.
-                self._calls_left_for_close.extend(calls)
+                # batch. Either way the conversation can't finish it, so it ends.
                 failure = ToolExecutionException("A tool batch was cancelled while the realtime conversation was open.")
                 failure.__cause__ = cancellation
                 self._fail(failure)

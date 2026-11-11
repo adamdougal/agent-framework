@@ -534,6 +534,34 @@ async def test_a_tool_that_cancels_itself_ends_the_conversation_and_its_call_is_
     assert client.session.close_count == 1
 
 
+async def test_a_tool_that_cancels_itself_while_closing_still_has_its_call_settled() -> None:
+    client = FakeRealtimeClient()
+    started = asyncio.Event()
+    give_up_now = asyncio.Event()
+
+    @tool
+    async def give_up_later() -> str:
+        """Give up by cancelling, once told to."""
+        started.set()
+        await give_up_now.wait()
+        raise asyncio.CancelledError
+
+    async with RealtimeAgent(client, tools=[give_up_later]).start_conversation() as conversation:
+        client.session.emit(*_response("resp_1", _call("call_1", "give_up_later")))
+        await started.wait()
+        session_closed = client.session.hold("close")
+        closing = asyncio.create_task(conversation.close())
+        await eventually(lambda: client.session.close_count == 1)
+        give_up_now.set()
+        await asyncio.sleep(0.01)
+        session_closed.set()
+        await asyncio.wait_for(closing, 1)
+        updates = await _read_all(conversation)
+
+    settled = [content for update in updates for content in update.contents if content.type == "function_result"]
+    assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
+
+
 # endregion
 
 # region Follow-ups
