@@ -448,14 +448,22 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _send_truncations(
         self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], truncations: Sequence[Truncation]
     ) -> None:
+        first_failure: RealtimeControlException | None = None
         for truncation in truncations:
             if not self._audio.is_owed(truncation):
                 continue  # another control call made this cut while this one waited its turn
-            await self._acknowledged(
-                session.truncate(truncation.item_id, truncation.content_index, truncation.audio_end_ms),
-                "cut the audio the caller didn't hear",
-            )
+            try:
+                await self._acknowledged(
+                    session.truncate(truncation.item_id, truncation.content_index, truncation.audio_end_ms),
+                    "cut the audio the caller didn't hear",
+                )
+            except RealtimeControlException as failure:
+                # The cut stays owed, but one the provider keeps rejecting mustn't stop the cuts after it.
+                first_failure = first_failure or failure
+                continue
             self._audio.acknowledged(truncation)
+        if first_failure is not None:
+            raise first_failure
 
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
         return await await_acknowledgement(

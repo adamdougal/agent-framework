@@ -233,7 +233,8 @@ outside the topology, and app input for a call id the conversation isn't trackin
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.
-- `interrupt(...)` waits for each truncate's acknowledgement.
+- `interrupt(...)` waits for each truncate's acknowledgement. A cut the provider rejects or doesn't acknowledge stays
+  owed without stopping the cuts after it, and `interrupt(...)` then raises the first failure.
 
 ## Event kinds
 

@@ -243,6 +243,7 @@ async def test_interrupting_after_a_failed_cut_retries_the_cuts_still_owed() -> 
 
     assert client.session.calls == [
         ("truncate", "item_a", 0, 400),
+        ("truncate", "item_b", 0, 0),
         ("truncate", "item_a", 0, 400),
         ("truncate", "item_b", 0, 0),
     ]
@@ -272,6 +273,38 @@ async def test_a_failed_cut_is_retried_after_a_later_response_produces_audio() -
         )
 
         await conversation.interrupt(played_ms=300)
+
+    assert client.session.calls == [
+        ("truncate", "item_a", 0, 400),
+        ("truncate", "item_a", 0, 400),
+        ("truncate", "item_b", 0, 300),
+    ]
+
+
+async def test_a_cut_the_provider_keeps_rejecting_does_not_stop_later_cuts() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        client.session.truncate_rejections["item_a"] = RealtimeControlException("The item was deleted.")
+        with pytest.raises(RealtimeControlException):
+            await conversation.interrupt(played_ms=400)
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_2"),
+            _audio("resp_2", "item_b", 48 * 1000),
+            event("response_done", response_id="resp_2", status="cancelled", reason="turn_detected"),
+        )
+
+        with pytest.raises(RealtimeControlException, match="deleted"):
+            await conversation.interrupt(played_ms=300)
 
     assert client.session.calls == [
         ("truncate", "item_a", 0, 400),
