@@ -112,6 +112,24 @@ the root package:
 - `_options.py` - `RealtimeOptions` and its turn-detection, transcription and noise-reduction TypedDicts.
 - `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
   `RealtimeEvent` or a `Message`, which it maps by content type.
+- `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
+  options, tools and function middleware over the agent's.
+- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls and the close sequence. It
+  owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch` hands each event kind to the
+  concern modules below.
+- `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
+  timeout and until close starts, and lets a cancelled session call finish unwinding.
+- `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
+- `_updates.py` - Maps each `RealtimeEvent` to one `AgentResponseUpdate`: role, author, ids and `finish_reason`.
+- `_responses.py` - `ResponseLedger`, which tracks each response's agent, calls and active state, and which responses
+  can count as a tool batch's follow-up.
+- `_tool_loop.py` - `ToolLoop`, which runs each finished response's calls through `_execute_function_calls(...)`,
+  sends the results, requests one follow-up per batch, and settles unfinished calls on close.
+- `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
+  a provider truncation into truncates.
+
+Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, and the
+live tool list, as private keywords; chat passes neither.
 
 A kind's neutral attributes live under `additional_properties["core"]`, on both the `RealtimeEvent` and the
 `realtime_event` content built with `Content.from_realtime_event(...)`, whose `kind` and `service_event_type` are

@@ -347,8 +347,6 @@ ADR 0035's comparisons with Semantic Kernel and .NET, its protocol sketch and it
 - **Naming alignment with .NET.** .NET's draft calls its live conversation `AgentConversation` and has no counterparts
   yet for `handoff(...)`, `handoff_completed` or `RealtimeHandoffBuilder`.
 - **Release.** Shipping in 1.x rather than the next major version is the maintainers' call.
-- **Settings.** The acknowledgement timeout and the update queue's capacity are set at start. Their parameter
-  names, and the queue's default capacity, are left to the implementation.
 
 ### Evidence
 
