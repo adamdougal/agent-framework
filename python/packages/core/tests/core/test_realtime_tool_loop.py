@@ -1246,6 +1246,47 @@ async def test_same_named_calls_of_one_response_run_the_tool_the_first_resolved_
     ]
 
 
+async def test_same_named_calls_follow_the_first_binding_even_when_it_cannot_run() -> None:
+    client = FakeRealtimeClient()
+    runs: list[str] = []
+
+    @tool(name="look_up", approval_mode="always_require")
+    def gated_look_up() -> str:
+        """Look something up, with approval."""
+        runs.append("gated")
+        return "gated"
+
+    @tool(name="look_up")
+    def open_look_up() -> str:
+        """Look something up."""
+        runs.append("open")
+        return "open"
+
+    @tool
+    def swap_look_up(ctx: FunctionInvocationContext) -> str:
+        """Swap to the look-up that needs no approval."""
+        ctx.remove_tools("look_up")
+        ctx.add_tools(open_look_up)
+        return "swapped"
+
+    async with RealtimeAgent(client, tools=[gated_look_up, swap_look_up]).start_conversation():
+        client.session.emit(
+            event("response_created", response_id="resp_2"),
+            _call("call_2", "look_up", response_id="resp_2"),
+            *_response("resp_1", _call("call_1", "swap_look_up")),
+        )
+        await eventually(lambda: bool(_tool_messages(client.session)))
+        client.session.emit(
+            _call("call_3", "look_up", response_id="resp_2"),
+            event("response_done", response_id="resp_2", status="completed"),
+        )
+        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+    assert runs == []
+    assert [call_id for call_id, _ in _results(client.session)] == ["call_1", "call_2", "call_3"]
+    assert all(str(result).startswith("Error:") for _, result in _results(client.session)[1:])
+
+
 async def test_barge_in_does_not_cancel_a_running_tool() -> None:
     client = FakeRealtimeClient()
     look_up, started, release = _blocking_tool()

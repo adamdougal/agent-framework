@@ -261,6 +261,7 @@ class ToolLoop:
         # follow-up count waits for requests in flight.
         await self._responses.wait_until_requests_settle()
         chain_ends = chain.tripped or self._follow_ups(chain) >= chain.max_iterations
+        _bind_namesakes_to_the_first(calls)
         invocation_disabled = not self._configuration.get("enabled", True)
         if invocation_disabled:
             chain.tripped = True  # whatever the calls were, the follow-up turns tools off
@@ -384,17 +385,11 @@ class ToolLoop:
         return batch.should_terminate, batch.executed_call_count
 
     async def _run_executor(self, calls: Sequence[_Call]) -> Any:
-        # The executor maps tools by name, so if a tool was replaced by a namesake between two calls of one response,
-        # both run the tool the first resolved to.
-        arrival_tools: dict[str, FunctionTool] = {}
-        for call in calls:
-            if call.tool is not None:
-                arrival_tools.setdefault(call.tool.name, call.tool)
         return await _execute_function_calls(
             custom_args=dict(self._invocation_kwargs),
             function_calls=[call.content for call in calls],
             # Keep the arrival-time bindings apart from the live list that tools mutate.
-            options={"tools": list(arrival_tools.values())},
+            options={"tools": [call.tool for call in calls]},
             live_tools=self._tools,
             config=self._configuration,
             invocation_session=self._agent_session,
@@ -410,6 +405,14 @@ def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddl
 
         return AgentSession()
     return None
+
+
+def _bind_namesakes_to_the_first(calls: Sequence[_Call]) -> None:
+    """The executor maps tools by name, so a tool replaced by a namesake mid-response can't run beside it."""
+    first_bindings: dict[str, FunctionTool] = {}
+    for call in calls:
+        if call.tool is not None:
+            call.tool = first_bindings.setdefault(call.tool.name, call.tool)
 
 
 def _requires_a_tool(tool_choice: Any) -> bool:
