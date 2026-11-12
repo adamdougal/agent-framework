@@ -129,11 +129,14 @@ class RealtimeItemAddedAttributes(TypedDict, total=False):
         item_id: The item's id. Required.
         previous_item_id: The id of the item before it, or ``None`` when it's first. Required.
         role: The role of a message item. Absent for other items, such as function calls.
+        input_audio: Whether a user message item holds the caller's audio, rather than text the app or history added.
+            Absent for other items.
     """
 
     item_id: Required[str]
     previous_item_id: Required[str | None]
     role: str
+    input_audio: bool
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)

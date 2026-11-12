@@ -52,7 +52,7 @@ def update_from_event(event: RealtimeEvent, *, author: BaseAgent, made_calls: bo
         agent_id=author.id if credited else None,
         response_id=core.get("response_id"),
         message_id=core.get("item_id"),
-        finish_reason=_finish_reason_of(core, made_calls) if event.kind == "response_done" else None,
+        finish_reason=finish_reason_of(core, made_calls) if event.kind == "response_done" else None,
         raw_representation=event,
     )
 
@@ -84,7 +84,7 @@ def _role_of(event: RealtimeEvent) -> str | None:
     return None
 
 
-def _finish_reason_of(response_done: dict[str, Any], made_calls: bool) -> FinishReasonLiteral | None:
+def finish_reason_of(response_done: dict[str, Any], made_calls: bool) -> FinishReasonLiteral | None:
     status = response_done.get("status")
     if status == "completed":
         return "tool_calls" if made_calls else "stop"

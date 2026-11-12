@@ -1186,7 +1186,8 @@ async def test_tools_that_need_approval_or_app_input_get_an_error_result(caplog:
     assert len(warnings) == 2
     assert "issue_refund" in warnings[0]
     assert "ask_a_person" in warnings[1]
-    assert agent_session.state == {}
+    history_state = {provider.source_id for provider in agent.context_providers}
+    assert set(agent_session.state) <= history_state
 
 
 async def test_a_call_runs_the_tool_it_resolved_to_on_arrival() -> None:
@@ -1578,6 +1579,34 @@ async def test_a_chat_runs_tool_context_has_no_realtime_conversation(chat_client
     await Agent(client=chat_client_base, tools=[inspect_conversation]).run("Check")
 
     assert seen == [None]
+
+
+@pytest.mark.parametrize("concurrent", [True, False], ids=["concurrent", "sequential"])
+async def test_closing_during_a_batch_keeps_the_result_of_a_call_that_finished(concurrent: bool) -> None:
+    client = FakeRealtimeClient()
+    look_up, started, _ = _blocking_tool()
+    agent = RealtimeAgent(
+        client,
+        tools=[get_weather, look_up],
+        function_invocation_configuration={"allow_concurrent_invocation": concurrent},
+    )
+
+    async with agent.start_conversation() as conversation:
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "get_weather", city="Paris"), _call("call_2", "look_up"))
+        )
+        await started.wait()
+        await conversation.close()
+        updates = await _read_all(conversation)
+
+    settled = {
+        content.call_id: (content.result, content.exception)
+        for update in updates
+        for content in update.contents
+        if content.type == "function_result"
+    }
+    assert settled["call_1"] == ("Sunny in Paris", None)
+    assert settled["call_2"][1] == "conversation_closed"
 
 
 # endregion

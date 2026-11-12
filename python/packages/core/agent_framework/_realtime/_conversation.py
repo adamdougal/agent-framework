@@ -5,13 +5,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
 from .._feature_stage import ExperimentalFeature, experimental
-from .._types import AgentResponseUpdate, Content, normalize_messages
+from .._sessions import AgentSession, ContextProvider, HistoryProvider, SessionContext
+from .._tools import _append_unique_tools, normalize_tools  # pyright: ignore[reportPrivateUsage]
+from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
 from ..exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -22,19 +25,22 @@ from ..exceptions import (
 from ._acknowledgements import AcknowledgedT, await_acknowledgement
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
+from ._history import CallHistory, is_audio
 from ._options import RealtimeOptionsT
+from ._reporting import ExchangeReporter
 from ._responses import ResponseLedger
 from ._tool_loop import ToolLoop, requested_by_a_tool
 from ._update_stream import UpdateStream
-from ._updates import core_attributes, tool_result_update, update_from_event
+from ._updates import core_attributes, finish_reason_of, tool_result_update, update_from_event
 
 logger = logging.getLogger("agent_framework")
 
 _NO_ACTIVE_RESPONSE = "response_cancel_not_active"
 
+CALLER_TRANSCRIPT_WAIT_SECONDS = 3.0
+
 if TYPE_CHECKING:
     from .._middleware import FunctionMiddlewareTypes
-    from .._sessions import AgentSession
     from .._tools import FunctionInvocationConfiguration, ToolTypes
     from .._types import AgentRunInputs, Message
     from ._agent import RawRealtimeAgent
@@ -53,6 +59,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     Read the updates from a single task, and start control calls such as ``interrupt(...)`` as separate tasks so the
     loop keeps reading. Iteration ends when the conversation closes, and raises the error that ended it, such as
     ``RealtimeConnectionException`` or ``RealtimeBackpressureException``, after the queued updates are read.
+
+    The call's turns are kept as text in ``history``. Opening runs the agent's context providers' ``before_run`` once,
+    applies their instructions and tools, and replays the history they load into the new realtime session. Each
+    exchange, the input from the caller or the app with the reply and tool calls it drives, then reaches their
+    ``after_run`` during the call, and close reports the rest.
 
     Examples:
         .. code-block:: python
@@ -108,6 +119,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             responses=self._responses,
         )
         self._audio = AudioLedger()
+        self._history = CallHistory()
+        self._history_changed = asyncio.Event()
+        self._provider_session = agent_session if agent_session is not None else AgentSession()
+        self._reporter = (
+            ExchangeReporter(agent, self._provider_session, self._history, self._report_context_provider_failure)
+            if agent.context_providers
+            else None
+        )
         self._previous_event: RealtimeEvent | None = None
 
     @property
@@ -115,12 +134,25 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """The agent whose instructions, tools and voice are live, which is the agent that started the conversation."""
         return self._agent
 
+    @property
+    def history(self) -> list[Message]:
+        """A snapshot of the call's turns so far, as text messages in the provider's conversation order.
+
+        It holds the caller's turns as their transcripts, the agent's turns, app input and tool calls with their
+        results, including exchanges not yet reported to context providers, and the final record after close. A cut-off
+        turn keeps only what the caller heard, marked ``status="incomplete"``. A caller turn without text has no
+        contents and says why in ``additional_properties["core"]["text_less"]``: ``"transcript_pending"``,
+        ``"transcription_failed"``, ``"transcription_off"`` or ``"transcript_missing"``.
+        """
+        return self._history.messages()
+
     async def __aenter__(self) -> Self:
         if self._entered:
             raise RuntimeError("A realtime conversation can be entered only once; start a new one instead.")
         self._entered = True
         if self._closing.is_set():
             raise RealtimeConversationClosedException("The realtime conversation is closed.")
+        start_context = await self._prepare_from_context_providers()
         starting = asyncio.ensure_future(
             self._agent.client.start_session(options=self._options, tools=self._tools)  # type: ignore[arg-type]
         )
@@ -139,9 +171,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._session = session
         try:
             async with self._write_lock:
-                for message in self._initial_messages:
+                # Loaded history is already the agent session's, so it's replayed without being recorded again.
+                for message in start_context.get_messages():
                     self._raise_if_closed_while_starting()
                     await session.send(message)
+                for message in self._initial_messages:
+                    self._raise_if_closed_while_starting()
+                    await self._add_app_input(session, message)
             self._raise_if_closed_while_starting()
         except BaseException as error:
             if not self._closing.is_set():
@@ -156,7 +192,54 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 ) from error
             raise
         self._receive_task = asyncio.create_task(self._receive_loop(session))
+        if self._reporter is not None:
+            self._spawn(self._reporter.run())
         return self
+
+    async def _prepare_from_context_providers(self) -> SessionContext:
+        start_context = await self._load_start_context()
+        self._apply_start_context(start_context)
+        if self._reporter is not None:
+            self._reporter.start(start_context)
+        if not self._options.get("transcription") and any(
+            isinstance(provider, HistoryProvider) for provider in self._agent.context_providers
+        ):
+            # Switching transcription on would bill a second model, which is the app's call.
+            logger.warning(
+                "The realtime conversation has a history provider but no transcription, so caller turns are stored "
+                "without text. Set the transcription option to keep what the caller said."
+            )
+        return start_context
+
+    async def _load_start_context(self) -> SessionContext:
+        """Context providers run once per conversation, as they run once per chat run."""
+        context = SessionContext(session_id=self._provider_session.session_id, input_messages=[])
+        for provider in self._agent.context_providers:
+            if isinstance(provider, HistoryProvider) and not provider.load_messages:
+                continue
+            await provider.before_run(
+                agent=self._agent,  # type: ignore[arg-type]
+                session=self._provider_session,
+                context=context,
+                state=self._provider_session.state.setdefault(provider.source_id, {}),
+            )
+        return context
+
+    def _apply_start_context(self, context: SessionContext) -> None:
+        """As in chat, providers' instructions follow the agent's, and their tools join the call's."""
+        if context.instructions:
+            self._options = {
+                **self._options,
+                "instructions": _append_instructions(
+                    self._options.get("instructions"), "\n".join(context.instructions)
+                ),
+            }
+        if context.tools:
+            provider_tools = normalize_tools(context.tools)
+            self._tools = _append_unique_tools(
+                list(self._tools), provider_tools, duplicate_error_message="Tool names must be unique."
+            )
+            self._tool_loop.add_tools(provider_tools)
 
     def _raise_if_closed_while_starting(self) -> None:
         if self._closing.is_set():
@@ -201,15 +284,26 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if _is_repeated_error(event, self._previous_event):
             return
         self._previous_event = event
-        response_id = core_attributes(event).get("response_id", "")
+        core = core_attributes(event)
+        response_id = core.get("response_id", "")
         if event.kind == "response_created":
             self._responses.created(response_id, self._agent)
+            self._history.on_response_created(response_id)
         elif event.kind == "response_done":
+            status = core.get("status", "")
             self._responses.finished(response_id)
-            self._tool_loop.on_response_done(response_id, core_attributes(event).get("status", ""))
+            self._history.on_response_done(
+                response_id,
+                status,
+                core.get("reason"),
+                finish_reason_of(core, self._responses.made_calls(response_id)),
+            )
+            self._tool_loop.on_response_done(response_id, status)
+            self._cut_unheard([], unheard_text_of=self._unheard_text_ready(response_id))
         elif event.kind == "function_call":
             self._responses.called(response_id)
             self._tool_loop.on_function_call(event)
+            self._history.on_function_call(event, self._responses.agent_of(response_id, default=self._agent))
         elif event.kind == "speech_started":
             self._caller_quiet.clear()
             self._tool_loop.on_new_input()
@@ -218,7 +312,24 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         elif event.kind == "output_audio":
             self._cut_unheard(self._audio.on_output_audio(event))
         elif event.kind == "item_truncated":
-            self._cut_unheard(self._audio.on_item_truncated(event))
+            truncations = self._audio.on_item_truncated(event)
+            self._cut_unheard(
+                truncations, unheard_text_of=self._unheard_text_ready(self._audio.response_cut_at(core["item_id"]))
+            )
+            self._history.on_item_truncated(event, self._audio.generated_ms(core["item_id"], core["content_index"]))
+        elif event.kind == "item_added":
+            self._history.on_item_added(event, transcribing=bool(self._session_options().get("transcription")))
+        elif event.kind == "input_transcription":
+            self._history.on_input_transcription(event)
+        elif event.kind == "input_transcription_failed":
+            self._history.on_input_transcription_failed(event)
+        elif event.kind == "usage":
+            self._history.on_usage(event)
+        elif event.kind == "output_text":
+            self._history.on_output_text(event, self._responses.agent_of(response_id, default=self._agent))
+        self._history_changed.set()
+        if self._reporter is not None:
+            self._reporter.wake()
         self._emit(
             update_from_event(
                 event,
@@ -291,12 +402,16 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         async with self._write_lock:
             for message in messages:
                 # Close may have started while this send waited its turn, or while an earlier message went out.
-                await self._require_open_session().send(message)
+                await self._add_app_input(self._require_open_session(), message)
         if _is_audio_only(messages):
             return  # the caller's audio: turn detection starts the chain and requests the response
         self._tool_loop.on_new_input()
         if create_response:
             await self.create_response()
+
+    async def _add_app_input(self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], message: Message) -> None:
+        await session.send(message)
+        self._history.on_app_input(message)
 
     def _ready_for_a_follow_up(self) -> bool:
         """A follow-up must never talk over the caller or another response."""
@@ -333,7 +448,15 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         code = error.code if isinstance(error, RealtimeControlException) else None
         self._emit(AgentResponseUpdate(contents=[Content.from_error(message=str(error), error_code=code)]))
 
+    def _report_context_provider_failure(self, provider: ContextProvider, error: Exception) -> None:
+        """The call goes on: the provider retries this exchange with the next report, and close raises if it can't."""
+        message = f"Context provider '{provider.source_id}' failed to record an exchange: {error}"
+        self._emit(AgentResponseUpdate(contents=[Content.from_error(message=message)]))
+
     def _report_tool_result(self, result: Content, response_id: str) -> None:
+        self._history.on_tool_result(result)
+        if self._reporter is not None:
+            self._reporter.wake()
         author = self._responses.agent_of(response_id, default=self._agent)
         self._emit(tool_result_update(result, response_id=response_id, author=author))
 
@@ -430,18 +553,28 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                     self._responses.finished(response_id)
             if played_ms is not None:
                 await self._send_truncations(session, self._audio.cut(playing, played_ms))
+                if playing is not None:
+                    await self._delete_unheard_text(session, playing)
 
-    def _cut_unheard(self, truncations: Sequence[Truncation]) -> None:
-        if truncations:
-            self._spawn(self._truncate_unheard(truncations))
+    def _unheard_text_ready(self, response_id: str | None) -> str | None:
+        """A message without audio is unheard only once its response has a cut and can't produce audio for it."""
+        if response_id is None or self._audio.cut_point(response_id) is None or response_id in self._responses.active:
+            return None
+        return response_id
 
-    async def _truncate_unheard(self, truncations: Sequence[Truncation]) -> None:
+    def _cut_unheard(self, truncations: Sequence[Truncation], *, unheard_text_of: str | None = None) -> None:
+        if truncations or unheard_text_of is not None:
+            self._spawn(self._truncate_unheard(truncations, unheard_text_of))
+
+    async def _truncate_unheard(self, truncations: Sequence[Truncation], unheard_text_of: str | None) -> None:
         session = self._require_session()
         try:
             async with self._control_lock:
                 if self._closing.is_set():
                     return
                 await self._send_truncations(session, truncations)
+                if unheard_text_of is not None:
+                    await self._delete_unheard_text(session, unheard_text_of)
         except RealtimeException as error:
             logger.warning("Couldn't cut the audio after a provider truncation: %s", error)
 
@@ -465,6 +598,18 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if first_failure is not None:
             raise first_failure
 
+    async def _delete_unheard_text(
+        self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], response_id: str
+    ) -> None:
+        if (cut_point := self._audio.cut_point(response_id)) is None:
+            return
+        for item_id in self._history.heard_messages_after(response_id, cut_point):
+            if not self._audio.has_audio(item_id):
+                # Marked first, so history leaves it out even if the delete fails, and a failed delete isn't retried:
+                # the conversation can't see a late deletion, so a retry could hit "item not found".
+                self._history.unheard(item_id)
+                await self._acknowledged(session.delete_item(item_id), "delete a message the caller didn't hear")
+
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
         return await await_acknowledgement(
             acknowledgement, action=action, timeout=self._control_timeout, closing=self._closing
@@ -484,10 +629,16 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def close(self) -> None:
         """Close the conversation and its realtime session.
 
-        Closing stops new input and control calls at once, then closes the session, cancels running tools with the
-        ``conversation_closed`` reason, and streams an error result for each call that didn't finish. Iteration ends
-        once the queued updates are read. Closing again waits for the same close, and a cancelled caller doesn't
+        Closing stops new input and control calls at once. While the session is still open, it waits up to about 3
+        seconds for caller transcripts still on their way. It then closes the session, cancels running tools with the
+        ``conversation_closed`` reason, and streams an error result for each call that didn't finish; calls that had
+        finished keep their results. It reports the remaining exchanges to the agent's context providers. Iteration
+        ends once the queued updates are read. Closing again waits for the same close, and a cancelled caller doesn't
         cancel the close itself.
+
+        Raises:
+            Exception: The failure of a context provider that still couldn't record the conversation, after cleanup,
+                or an ``ExceptionGroup`` when several couldn't.
         """
         await asyncio.shield(self._start_close())
 
@@ -499,9 +650,20 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._close_task = asyncio.create_task(self._close_sequence())
         return self._close_task
 
+    async def _wait_for_caller_transcripts(self) -> None:
+        """Transcription runs beside the reply, so a caller's last words can still be on their way when close starts."""
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(CALLER_TRANSCRIPT_WAIT_SECONDS):
+                while self._history.waiting_for_caller_transcripts:
+                    self._history_changed.clear()
+                    await self._history_changed.wait()
+
     async def _close_sequence(self) -> None:
         """The updates end last, so iteration sees every settled call before it stops."""
+        provider_failures: list[Exception] = []
         try:
+            if self._receive_task is not None and not self._receive_task.done():
+                await self._wait_for_caller_transcripts()
             if self._session is not None:
                 try:
                     await self._session.close()
@@ -513,9 +675,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             if self._receive_task is not None:
                 await asyncio.wait({self._receive_task})
             await self._tool_loop.close()
+            self._history.stop_waiting_for_caller_transcripts()
+            if self._reporter is not None:
+                provider_failures = await self._reporter.report_remaining()
             await self._end_background_tasks()
         finally:
             self._updates.finish(self._failure)
+        _raise_unrecorded_history(provider_failures)
 
     async def _end_background_tasks(self) -> None:
         """Nothing the conversation spawned may outlive it."""
@@ -524,6 +690,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             task.cancel()
         if remaining:
             await asyncio.wait(remaining)
+
+
+def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
+    """The call's turns really happened, so a provider that couldn't record them must not fail silently."""
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
@@ -547,11 +721,7 @@ def _reject_app_input_for_calls(messages: Sequence[Message]) -> None:
 
 def _is_audio_only(messages: Sequence[Message]) -> bool:
     contents = [content for message in messages for content in message.contents]
-    return bool(contents) and all(_is_audio(content) for content in contents)
-
-
-def _is_audio(content: Content) -> bool:
-    return content.type in ("data", "uri") and content.has_top_level_media_type("audio")
+    return bool(contents) and all(is_audio(content) for content in contents)
 
 
 def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> bool:

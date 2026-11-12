@@ -52,6 +52,7 @@ class AudioLedger:
         self._parts_by_response: dict[str, list[_AudioPart]] = {}
         self._owed_by_response: dict[str, list[Truncation]] = {}
         self._latest_response_id: str | None = None
+        self._cut_points: dict[str, str] = {}
 
     @property
     def latest_response_id(self) -> str | None:
@@ -112,6 +113,7 @@ class AudioLedger:
                     return []
                 owed = [Truncation(later.item_id, later.content_index, 0) for later in parts[position + 1 :]]
                 self._owed_by_response[response_id] = owed
+                self._cut_points[response_id] = core["item_id"]
                 return list(owed)
         return []
 
@@ -130,10 +132,29 @@ class AudioLedger:
                 return retries
             owed = _plan_cuts(parts, played_ms)
             self._owed_by_response[response_id] = owed
+            if owed:
+                self._cut_points[response_id] = owed[0].item_id
         return [*retries, *owed]
 
     def is_owed(self, truncation: Truncation) -> bool:
         return any(truncation in owed for owed in self._owed_by_response.values())
+
+    def response_cut_at(self, item_id: str) -> str | None:
+        return next((response_id for response_id, cut in self._cut_points.items() if cut == item_id), None)
+
+    def cut_point(self, response_id: str) -> str | None:
+        """The message where the caller stopped hearing the response, if it was cut."""
+        return self._cut_points.get(response_id)
+
+    def has_audio(self, item_id: str) -> bool:
+        return any(part.item_id == item_id for parts in self._parts_by_response.values() for part in parts)
+
+    def generated_ms(self, item_id: str, content_index: int) -> float | None:
+        for parts in self._parts_by_response.values():
+            for part in parts:
+                if part.is_part(item_id, content_index):
+                    return part.generated_ms
+        return None
 
     def acknowledged(self, truncation: Truncation) -> None:
         for owed in self._owed_by_response.values():

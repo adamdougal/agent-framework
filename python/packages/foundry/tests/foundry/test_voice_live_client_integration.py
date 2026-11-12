@@ -16,7 +16,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any
 
 import pytest
-from agent_framework import Content, Message, tool
+from agent_framework import AgentSession, Content, InMemoryHistoryProvider, Message, RealtimeAgent, tool
 from agent_framework.exceptions import (
     RealtimeConnectionException,
     RealtimeControlException,
@@ -223,3 +223,63 @@ async def test_bad_credentials_raise() -> None:
 
     with pytest.raises(RealtimeConnectionException):
         await asyncio.wait_for(client.start_session(), 30)
+
+
+class TestVerification:
+    async def test_replayed_history_reaches_the_model(self) -> None:
+        """A conversation opened on an AgentSession whose history holds the caller saying their name is Ada, the
+        agent's reply, a get_time call and its result answers "What's my name?" with "Ada", streams no error, and
+        records the new turns in conversation.history."""
+        history = InMemoryHistoryProvider()
+        agent_session = AgentSession()
+        await history.save_messages(
+            agent_session.session_id,
+            [
+                Message("user", ["Hi, my name is Ada."]),
+                Message("assistant", ["Nice to meet you, Ada."]),
+                Message("assistant", [Content.from_function_call("call_1", "get_time", arguments='{"city": "Paris"}')]),
+                Message("tool", [Content.from_function_result("call_1", result="12:00")]),
+            ],
+            state=agent_session.state.setdefault(history.source_id, {}),
+        )
+        options: VoiceLiveOptions = {
+            "instructions": "Answer in one short sentence.",
+            "voice": AVA,
+            "turn_detection": None,
+        }
+
+        async with contextlib.AsyncExitStack() as stack, asyncio.timeout(TURN_TIMEOUT):
+            credential = None
+            if not os.getenv("AZURE_VOICELIVE_API_KEY"):
+                credential = await stack.enter_async_context(AzureCliCredential())
+            client = VoiceLiveClient(credential=credential)
+            agent: RealtimeAgent[VoiceLiveOptions] = RealtimeAgent(client, context_providers=[history])
+            conversation = await stack.enter_async_context(
+                agent.start_conversation(session=agent_session, options=options)
+            )
+            await conversation.send("What's my name?")
+            updates = []
+            async for update in conversation:
+                updates.append(update)
+                if update.finish_reason is not None or any(
+                    content.kind == "response_done" for content in update.contents
+                ):
+                    break
+            recorded = conversation.history
+
+        assert not [content for update in updates for content in update.contents if content.type == "error"]
+        reply = " ".join(message.text for message in recorded if message.role == "assistant")
+        assert "ada" in reply.lower()
+        assert recorded[0].text == "What's my name?"
+
+    async def test_delete_item_is_acknowledged(self) -> None:
+        """delete_item() on a user text item the test sent returns once Voice Live confirms the deletion."""
+        async with asyncio.timeout(TURN_TIMEOUT):
+            async with live_session({"voice": AVA, "turn_detection": None}) as (session, reader):
+                await session.send(Message("user", ["Remember the number seven."]))
+                await reader.until(lambda: any(event.kind == "item_added" for event in reader.events))
+                added = next(event for event in reader.events if event.kind == "item_added")
+
+                await session.delete_item(_core(added)["item_id"])
+
+        assert _core(added)["input_audio"] is False

@@ -96,6 +96,7 @@ class RealtimeClientSessionProtocol(Protocol[RealtimeOptionsT]):  # async contex
     async def say(self, text: str) -> str: ...
     async def cancel_response(self) -> None: ...
     async def truncate(self, item_id: str, content_index: int, audio_end_ms: int) -> None: ...
+    async def delete_item(self, item_id: str) -> None: ...
     async def close(self) -> None: ...
 
 
@@ -212,7 +213,9 @@ outside the topology, and app input for a call id the conversation isn't trackin
   resolved to.
 - **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked, with the wire event as a JSON-serializable
   mapping in its `raw_representation`. Out-of-band responses with `conversation: "none"`, input-buffer commit and
-  clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. A raw `session.update` that
+  clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. The conversation itself deletes
+  only the unheard text-only messages of a cut response ([barge-in](#barge-in)), through the session's internal
+  `delete_item(...)`, which returns on that item's `conversation.item.deleted`. A raw `session.update` that
   changes tools or instructions leaves the executable tool set out of step with the provider's, so those changes go
   through `update_session(...)`. Nothing ties a raw `session.update` to its `session.updated`, so the app waits for
   that acknowledgement before starting a control call, or the call can take it for its own.
@@ -234,6 +237,10 @@ outside the topology, and app input for a call id the conversation isn't trackin
   acknowledged one.
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
+- A later assistant message that carries text but no audio can't be truncated. Once the cut response has finished,
+  the conversation deletes each such message with `delete_item(...)`, and history leaves it out. `interrupt(...)` waits
+  for each delete and raises the first failure. A delete that fails or times out isn't retried, because the
+  conversation can't see a late `conversation.item.deleted`.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.
 - `interrupt(...)` waits for each truncate's acknowledgement. A cut the provider rejects or doesn't acknowledge stays
   owed without stopping the cuts after it, and `interrupt(...)` then raises the first failure.
@@ -262,7 +269,7 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 | `speech_started`, `speech_stopped` | realtime-event content, `role="user"` | **`item_id`** and **`audio_start_ms`** or **`audio_end_ms`**. The barge-in cue; there's no `barge_in` kind. |
 | `response_created` | realtime-event content, `role="assistant"` | **`response_id`**. |
 | `response_done` | realtime-event content, `role="assistant"` | **`response_id`**, **`status`**, `reason`, `error_code`, `error_message`, the provider's verbatim. The update sets `finish_reason`. |
-| `item_added` | realtime-event content | **`item_id`**, **`previous_item_id`** (`None` when first), `role` (message items only). The provider's conversation order. |
+| `item_added` | realtime-event content | **`item_id`**, **`previous_item_id`** (`None` when first), `role` (message items only), `input_audio` (user message items only: whether the item holds the caller's audio). The provider's conversation order. |
 | `item_truncated` | realtime-event content, `role="assistant"` | **`item_id`**, **`content_index`**, **`audio_end_ms`**, **`truncated_by`** (`"client"` or `"provider"`). |
 | `input_transcription` | `text`, `role="user"` | **`item_id`**, **`content_index`**. Caller transcript. |
 | `input_transcription_failed` | realtime-event content, `role="user"` | **`item_id`**, **`content_index`**, `error_code`, `error_message`. Not `error` content. |
@@ -377,19 +384,24 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 - **Contents.** History holds the provider conversation's authored turns as text: each caller audio item as its final
   caller transcript with `role="user"`, each assistant message item as its final agent transcript, app input as sent,
   `create_response=False` context included, function calls with their settled results, and approval requests and
-  responses. It holds no realtime-event content, `error` content, usage, session updates, out-of-band responses or
-  hosted-tool events. Each conversation item is one message with the provider's item id as `message_id`.
+  responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It holds no
+  realtime-event content, `error` content, usage, session updates, out-of-band responses or hosted-tool events. Each
+  conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only
+  when `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
 - **Text-less caller turns.** A caller turn whose transcription failed, wasn't configured, or was still pending after
-  close's wait is a `role="user"` message with no contents and a namespaced marker saying why. Partial text before a
-  failure is kept as `status="incomplete"`. Replay skips text-less turns. With history providers but no transcription,
-  the conversation logs one warning at start and never switches transcription on.
+  close's wait is a `role="user"` message with no contents, marked in `additional_properties["core"]["text_less"]` as
+  `"transcription_failed"`, `"transcription_off"` or `"transcript_missing"`; read during the call, a turn still
+  waiting is `"transcript_pending"`. Partial text before a failure is kept as `status="incomplete"`. A caller turn
+  whose response ended `content_filter` stops waiting at once, as in close's wait, because the provider never finishes
+  its transcript. Replay skips text-less turns. With history providers but no transcription, the conversation logs one
+  warning at start and never switches transcription on.
 - **Cut-off turns.** After a truncation, history keeps the final agent transcript cut at the word boundary nearest
   `audio_end_ms / generated audio length`, as `status="incomplete"`, and leaves out a turn cut at 0 ms. A response cut
   short without a truncation keeps the text generated so far, as `status="incomplete"`. The full generated text isn't
   kept, and a truncation that arrives after its exchange was reported changes nothing.
-- **Order.** History follows `item_added` order, linked by `previous_item_id`, falling back to the order of each item's
-  first event. A caller turn keeps its place before the reply even when its transcript arrives later; text fills in by
-  item id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
+- **Order.** History follows `item_added` order, linked by `previous_item_id`; app input takes its place when it's
+  sent. A caller turn keeps its place before the reply even when its transcript arrives later; text fills in by item
+  id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
   reported.
 - **Attribution.** A live conversation writes to the session passed to `start_conversation(session=...)`, through the
   starting agent's context providers. Assistant and tool messages carry the `author_name` of the agent that was active

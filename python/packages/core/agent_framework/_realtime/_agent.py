@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Generic
 from .._agents import BaseAgent, _provider_service_session_state_keys  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
 from .._middleware import categorize_middleware
+from .._sessions import HistoryProvider, InMemoryHistoryProvider
 from .._tools import (
     _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
     _append_unique_tools,  # pyright: ignore[reportPrivateUsage]
@@ -73,7 +74,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             id: The agent's id. A new one is generated when ``None``.
             name: The agent's name, which assistant and tool updates carry as their author.
             description: A description of the agent.
-            context_providers: The agent's context providers.
+            context_providers: The agent's context providers. A live conversation runs their ``before_run`` once,
+                when it opens, and their ``after_run`` once per exchange, during the call and at close.
             middleware: The agent's middleware. Realtime conversations run its function middleware.
         """
         super().__init__(
@@ -101,7 +103,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
     ) -> RealtimeConversation[RealtimeOptionsT]:
         """Create a live conversation with the provider, which opens when entered with ``async with``.
 
-        Entering the conversation starts the provider session with the merged options and tools, then sends
+        Entering the conversation runs the context providers' ``before_run``, starts the provider session with the
+        merged options and tools, including those the providers added, replays the history they loaded, then sends
         ``messages`` as context; it never requests a response. Leaving it closes the conversation and its session.
 
         Options merge over the agent's ``default_options``: ``instructions`` are appended to the agent's instructions,
@@ -111,7 +114,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             messages: Context to add to the provider's conversation when it opens.
 
         Keyword Args:
-            session: The agent session that tool calls and function middleware receive.
+            session: The agent session that keeps the conversation's history, and that tool calls and function
+                middleware receive. When no context provider loads history, an ``InMemoryHistoryProvider`` is added to
+                the agent, as for a chat agent.
             options: Session settings for this conversation.
             tools: Tools for this conversation, in addition to the agent's.
             middleware: Middleware for this conversation, joined to the agent's. Only function middleware runs;
@@ -146,6 +151,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         session_tools = _append_unique_tools(
             [], [*self.tools, *normalize_tools(tools)], duplicate_error_message="Tool names must be unique."
         )
+        self._add_history_when_none_loads(session)
         return RealtimeConversation(
             self,
             initial_messages=normalize_messages(messages),
@@ -158,6 +164,13 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             control_timeout=control_timeout,
             max_queued_updates=max_queued_updates,
         )
+
+    def _add_history_when_none_loads(self, session: AgentSession | None) -> None:
+        """As with a chat agent, passing a session keeps the conversation's history in it by default."""
+        if session is not None and not any(
+            provider.load_messages for provider in self.context_providers if isinstance(provider, HistoryProvider)
+        ):
+            self.context_providers.append(InMemoryHistoryProvider())
 
 
 def _merge_session_options(

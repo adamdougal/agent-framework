@@ -75,6 +75,7 @@ class FakeRealtimeSession:
         self.cancel_response_error: BaseException | None = None
         self.truncate_error: BaseException | None = None
         self.truncate_rejections: dict[str, BaseException] = {}
+        self.delete_rejections: dict[str, BaseException] = {}
         self.create_response_events: list[RealtimeEvent] = []
         self.create_response_error: BaseException | None = None
         self.close_raises_in_receive = False
@@ -179,6 +180,12 @@ class FakeRealtimeSession:
         if self.truncate_error is not None:
             raise self.truncate_error
         if (rejection := self.truncate_rejections.get(item_id)) is not None:
+            raise rejection
+
+    async def delete_item(self, item_id: str) -> None:
+        self.calls.append(("delete_item", item_id))
+        await self._acknowledge("delete_item")
+        if (rejection := self.delete_rejections.get(item_id)) is not None:
             raise rejection
 
     async def close(self) -> None:

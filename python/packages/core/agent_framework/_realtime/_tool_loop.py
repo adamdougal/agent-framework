@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -130,6 +130,9 @@ class ToolLoop:
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
         self._calls_by_response: dict[str, list[_Call]] = {}
+
+    def add_tools(self, tools: Sequence[ToolTypes]) -> None:
+        self._tools.extend(tools)
 
     def on_function_call(self, event: RealtimeEvent) -> None:
         """A call is bound to the tool that existed when the model made it.
@@ -373,18 +376,19 @@ class ToolLoop:
         chain.batch_started()
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
-            batch = await self._run_executor(calls)
+            batch = await self._run_executor(calls, _keep_results_as_they_finish(calls))
         finally:
             _CALLING_CONVERSATION.reset(requested_by_tools)
-        for call, group in zip(calls, batch.result_groups, strict=True):
-            call.result = next((content for content in group if content.type == "function_result"), None)
+        for call in calls:
             if call.result is None:
                 call.result = _settled_with_error(
                     call.content, "the call paused for an answer it can't get", "unsupported"
                 )
         return batch.should_terminate, batch.executed_call_count
 
-    async def _run_executor(self, calls: Sequence[_Call]) -> Any:
+    async def _run_executor(
+        self, calls: Sequence[_Call], on_call_finished: Callable[[Content, list[Content]], None]
+    ) -> Any:
         return await _execute_function_calls(
             custom_args=dict(self._invocation_kwargs),
             function_calls=[call.content for call in calls],
@@ -395,7 +399,19 @@ class ToolLoop:
             invocation_session=self._agent_session,
             middleware_pipeline=self._middleware_pipeline,
             realtime_conversation=self._conversation,
+            on_call_finished=on_call_finished,
         )
+
+
+def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, list[Content]], None]:
+    """Close may cancel the batch, and a call that already finished must keep its real result."""
+    by_content = {id(call.content): call for call in calls}
+
+    def keep(function_call: Content, results: list[Content]) -> None:
+        if (call := by_content.get(id(function_call))) is not None:
+            call.result = next((content for content in results if content.type == "function_result"), call.result)
+
+    return keep
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:

@@ -37,6 +37,7 @@ These need the realtime extra: `pip install "agent-framework-foundry[realtime]" 
 | File | Description |
 |------|-------------|
 | [`voice_live_session.py`](voice_live_session.py) | Drive a Voice Live realtime session directly: send text, stream the agent's transcript and save its spoken reply to a WAV file |
+| [`voice_live_history.py`](voice_live_history.py) | Keep a realtime agent's calls in an agent session: print `conversation.history` at hang-up, and replay it into the next call |
 
 ## FoundryLocalClient Samples
 

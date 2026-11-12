@@ -286,6 +286,18 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             on_sent=mark_sent,
         )
 
+    async def delete_item(self, item_id: str) -> None:
+        """Delete an item from the provider's conversation, and return once the provider confirms it.
+
+        Raises:
+            RealtimeControlException: If the provider rejects the deletion.
+        """
+        await self._control(
+            {"type": "conversation.item.delete", "item_id": item_id},
+            "conversation.item.deleted",
+            concerns=lambda wire: wire.get("item_id") == item_id,
+        )
+
     async def close(self) -> None:
         """Close the connection. Closing again does nothing."""
         if self._closed:
@@ -756,6 +768,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 core = {"item_id": item["id"], "previous_item_id": wire.get("previous_item_id")}
                 if item.get("type") == "message":
                     core.update(_present(item, "role"))
+                    if item.get("role") == "user":
+                        content_parts = cast("list[Mapping[str, Any]]", item.get("content") or [])
+                        core["input_audio"] = any(part.get("type") == "input_audio" for part in content_parts)
                 return [self._event("item_added", wire, core=core)]
             case "conversation.item.truncated":
                 core = {

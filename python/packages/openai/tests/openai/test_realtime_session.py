@@ -1232,6 +1232,23 @@ async def test_a_truncate_cancelled_before_sending_leaves_a_later_truncation_to_
     assert reader.of_kind("item_truncated")[0].additional_properties["core"]["truncated_by"] == "provider"
 
 
+async def test_delete_item_sends_the_delete_and_returns_on_its_deletion() -> None:
+    """delete_item("item_1") sends conversation.item.delete {item_id: "item_1"} and returns once
+    conversation.item.deleted for "item_1" arrives, not before."""
+    session, connection = await started()
+
+    async with reading(session):
+        deleting = asyncio.create_task(session.delete_item("item_1"))
+        request = await connection.wait_sent("conversation.item.delete")
+        await asyncio.sleep(0.01)
+        assert not deleting.done()
+
+        connection.push({"type": "conversation.item.deleted", "event_id": "s1", "item_id": "item_1"})
+        await asyncio.wait_for(deleting, 1)
+
+    assert request["item_id"] == "item_1"
+
+
 # endregion
 
 # region Error claiming
@@ -1628,8 +1645,8 @@ async def test_usage_maps_detail_keys() -> None:
 
 
 async def test_item_added_maps_order_and_role() -> None:
-    """conversation.item.added for a user message with previous_item_id null yields item_added with core
-    {item_id, previous_item_id: None, role: "user"}; a function_call item yields no role."""
+    """conversation.item.added for a user text message with previous_item_id null yields item_added with core
+    {item_id, previous_item_id: None, role: "user", input_audio: False}; a function_call item yields no role."""
     message, call = await mapped(
         {
             "type": "conversation.item.added",
@@ -1646,8 +1663,33 @@ async def test_item_added_maps_order_and_role() -> None:
     )
 
     assert message.kind == "item_added"
-    assert message.additional_properties["core"] == {"item_id": "item_1", "previous_item_id": None, "role": "user"}
+    assert message.additional_properties["core"] == {
+        "item_id": "item_1",
+        "previous_item_id": None,
+        "role": "user",
+        "input_audio": False,
+    }
     assert call.additional_properties["core"] == {"item_id": "item_2", "previous_item_id": "item_1"}
+
+
+async def test_item_added_says_whether_a_user_item_holds_audio() -> None:
+    """A user message item with an input_audio part maps to input_audio True, one with an input_text part to
+    input_audio False, and assistant and function_call items carry no input_audio."""
+
+    def added(item_id: str, item: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "conversation.item.added", "event_id": f"e_{item_id}", "item": {"id": item_id, **item}}
+
+    caller, app_text, agent, call = await mapped(
+        added("item_1", {"type": "message", "role": "user", "content": [{"type": "input_audio", "transcript": None}]}),
+        added("item_2", {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hi"}]}),
+        added("item_3", {"type": "message", "role": "assistant", "content": []}),
+        added("item_4", {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": ""}),
+    )
+
+    assert caller.additional_properties["core"]["input_audio"] is True
+    assert app_text.additional_properties["core"]["input_audio"] is False
+    assert "input_audio" not in agent.additional_properties["core"]
+    assert "input_audio" not in call.additional_properties["core"]
 
 
 async def test_input_transcription_maps_to_text() -> None:
@@ -2047,6 +2089,20 @@ def test_session_module_imports_without_the_realtime_extra() -> None:
 
 
 class TestVerification:
+    async def test_a_rejected_delete_raises_with_the_providers_code(self) -> None:
+        """An error with no event id while delete_item("item_9") waits fails it with RealtimeControlException carrying
+        the provider's code "item_not_found"."""
+        session, connection = await started()
+
+        async with reading(session):
+            deleting = asyncio.create_task(session.delete_item("item_9"))
+            await connection.wait_sent("conversation.item.delete")
+            connection.push(rejection("item_not_found", event_id=None))
+            with pytest.raises(RealtimeControlException) as caught:
+                await asyncio.wait_for(deleting, 1)
+
+        assert caught.value.code == "item_not_found"
+
     async def test_image_token_details_map(self) -> None:
         """input_token_details {image_tokens: 7, cached_tokens_details: {image_tokens: 2}} map to
         image_input_token_count 7 and image_cache_read_input_token_count 2."""
