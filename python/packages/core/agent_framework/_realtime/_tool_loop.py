@@ -313,8 +313,9 @@ class ToolLoop:
     async def _declare_tool_changes(self) -> None:
         """Tools a call added or removed must reach the provider before the results the model acts on."""
         if _differ(self._declared, self._tools):
+            declaring = list(self._tools)
             try:
-                await self._conversation.update_session(tools=list(self._tools))
+                await self._conversation._send_session_update({}, declaring)  # pyright: ignore[reportPrivateUsage]
             except RealtimeControlTimeoutException as timeout:
                 # The provider may still apply it, so the change stays and the next batch that finishes resends it.
                 logger.warning("The tool changes a tool call made may not have reached the provider: %s", timeout)
@@ -325,6 +326,9 @@ class ToolLoop:
                     rejection,
                 )
                 self.on_tools_declared(self._declared)
+            else:
+                # Another batch may have changed the live list while this update waited; that change goes out next.
+                self._declared = declaring
 
     def _follow_up_due(self, chain: _ToolChain) -> None:
         """Follow-ups due together merge into one request."""

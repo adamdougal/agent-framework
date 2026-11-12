@@ -364,6 +364,43 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
     assert updates == [("update_session", {}, [offer_time, offer_weather, get_time, get_weather])]
 
 
+async def test_an_acknowledged_tool_update_keeps_changes_another_batch_made_meanwhile() -> None:
+    client = FakeRealtimeClient()
+    weather_offered = asyncio.Event()
+    release_weather = asyncio.Event()
+
+    @tool
+    def offer_time(ctx: FunctionInvocationContext) -> str:
+        """Start offering the time tool."""
+        ctx.add_tools(get_time)
+        return "time offered"
+
+    @tool
+    async def offer_weather(ctx: FunctionInvocationContext) -> str:
+        """Start offering the weather tool, then finish slowly."""
+        ctx.add_tools(get_weather)
+        weather_offered.set()
+        await release_weather.wait()
+        return "weather offered"
+
+    async with RealtimeAgent(client, tools=[offer_time, offer_weather]).start_conversation():
+        acknowledge = client.session.hold("update_session")
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        await eventually(lambda: bool(client.session.calls))
+        client.session.emit(*_response("resp_2", _call("call_2", "offer_weather", response_id="resp_2")))
+        await weather_offered.wait()
+        acknowledge.set()
+        await eventually(lambda: len(_results(client.session)) == 1)
+        release_weather.set()
+        await eventually(lambda: len(_results(client.session)) == 2)
+
+    updates = [call for call in client.session.calls if call[0] == "update_session"]
+    assert updates == [
+        ("update_session", {}, [offer_time, offer_weather, get_time]),
+        ("update_session", {}, [offer_time, offer_weather, get_time, get_weather]),
+    ]
+
+
 async def test_a_rejected_tool_update_restores_the_tools_and_still_sends_the_result(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

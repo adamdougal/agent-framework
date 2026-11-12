@@ -59,6 +59,8 @@ async def filler_line(context: FunctionInvocationContext, call_next: Callable[[]
 async def read_replies(conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray) -> None:
     """Print each spoken line, and keep the audio, until the agent answers with the tool's result."""
     has_result = False
+    # The filler line can still be finishing when the result arrives, so only a response created after it answers.
+    answers: set[str | None] = set()
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -70,7 +72,9 @@ async def read_replies(conversation: RealtimeConversation[VoiceLiveOptions], rep
             elif content.type == "function_result":
                 print(f"Tool: {content.result}")
                 has_result = True
-        if has_result and update.finish_reason == "stop":
+            elif content.type == "realtime_event" and content.kind == "response_created" and has_result:
+                answers.add(update.response_id)
+        if update.response_id in answers and update.finish_reason is not None:
             return
 
 
