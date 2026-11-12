@@ -143,7 +143,6 @@ class AudioLedger:
         return next((response_id for response_id, cut in self._cut_points.items() if cut == item_id), None)
 
     def cut_point(self, response_id: str) -> str | None:
-        """The message where the caller stopped hearing the response, if it was cut."""
         return self._cut_points.get(response_id)
 
     def has_audio(self, item_id: str) -> bool:

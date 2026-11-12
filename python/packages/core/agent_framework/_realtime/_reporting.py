@@ -48,7 +48,7 @@ class ExchangeReporter:
                 await self._report(self._history.exchanges()[:-1])
 
     async def report_remaining(self) -> list[Exception]:
-        """Returns the failures of providers that still couldn't record every exchange."""
+        """Close raises these after cleanup, so a provider that couldn't record the call doesn't fail silently."""
         async with self._reporting:
             return list((await self._report(self._history.exchanges())).values())
 
@@ -67,6 +67,7 @@ class ExchangeReporter:
                     continue
                 try:
                     await provider.after_run(
+                        # A realtime agent has no run(), which SupportsAgentRun requires; providers read its identity.
                         agent=self._agent,  # type: ignore[arg-type]
                         session=self._session,
                         context=context,
@@ -91,7 +92,8 @@ class ExchangeReporter:
             options=start.options,
             metadata=start.metadata,
         )
-        context._response = AgentResponse(  # type: ignore[assignment]
+        # Providers only read the response, so SessionContext keeps it private and the framework sets it, as chat does.
+        context._response = AgentResponse(  # pyright: ignore[reportPrivateUsage]
             messages=exchange.outputs,
             response_id=exchange.response_id,
             finish_reason=exchange.finish_reason,

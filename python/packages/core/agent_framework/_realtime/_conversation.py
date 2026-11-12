@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from types import TracebackType
@@ -144,7 +145,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         contents and says why in ``additional_properties["core"]["text_less"]``: ``"transcript_pending"``,
         ``"transcription_failed"``, ``"transcription_off"`` or ``"transcript_missing"``.
         """
-        return self._history.messages()
+        # Copies, because context providers may hold these same messages in the agent session.
+        return copy.deepcopy(self._history.messages())
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -213,11 +215,16 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
     async def _load_start_context(self) -> SessionContext:
         """Context providers run once per conversation, as they run once per chat run."""
-        context = SessionContext(session_id=self._provider_session.session_id, input_messages=[])
+        context = SessionContext(
+            session_id=self._provider_session.session_id,
+            input_messages=list(self._initial_messages),
+            options=dict(self._options),
+        )
         for provider in self._agent.context_providers:
             if isinstance(provider, HistoryProvider) and not provider.load_messages:
                 continue
             await provider.before_run(
+                # A realtime agent has no run(), which SupportsAgentRun requires; providers read its identity.
                 agent=self._agent,  # type: ignore[arg-type]
                 session=self._provider_session,
                 context=context,
@@ -299,7 +306,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 finish_reason_of(core, self._responses.made_calls(response_id)),
             )
             self._tool_loop.on_response_done(response_id, status)
-            self._cut_unheard([], unheard_text_of=self._unheard_text_ready(response_id))
+            self._cut_unheard([], self._mark_unheard_text(response_id))
         elif event.kind == "function_call":
             self._responses.called(response_id)
             self._tool_loop.on_function_call(event)
@@ -313,9 +320,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._cut_unheard(self._audio.on_output_audio(event))
         elif event.kind == "item_truncated":
             truncations = self._audio.on_item_truncated(event)
-            self._cut_unheard(
-                truncations, unheard_text_of=self._unheard_text_ready(self._audio.response_cut_at(core["item_id"]))
-            )
+            self._cut_unheard(truncations, self._mark_unheard_text(self._audio.response_cut_at(core["item_id"])))
             self._history.on_item_truncated(event, self._audio.generated_ms(core["item_id"], core["content_index"]))
         elif event.kind == "item_added":
             self._history.on_item_added(event, transcribing=bool(self._session_options().get("transcription")))
@@ -552,35 +557,54 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 for response_id in cancelling:
                     self._responses.finished(response_id)
             if played_ms is not None:
-                await self._send_truncations(session, self._audio.cut(playing, played_ms))
-                if playing is not None:
-                    await self._delete_unheard_text(session, playing)
+                truncations = self._audio.cut(playing, played_ms)
+                unheard = self._mark_unheard_text(playing)
+                cut_failure = await self._send_truncations(session, truncations)
+                delete_failure = await self._delete_items(session, unheard)
+                if (failure := cut_failure or delete_failure) is not None:
+                    raise failure
 
-    def _unheard_text_ready(self, response_id: str | None) -> str | None:
-        """A message without audio is unheard only once its response has a cut and can't produce audio for it."""
-        if response_id is None or self._audio.cut_point(response_id) is None or response_id in self._responses.active:
-            return None
-        return response_id
+    def _mark_unheard_text(self, response_id: str | None) -> list[str]:
+        """A message without audio is unheard once its response has a cut and can't produce audio for it any more.
 
-    def _cut_unheard(self, truncations: Sequence[Truncation], *, unheard_text_of: str | None = None) -> None:
-        if truncations or unheard_text_of is not None:
-            self._spawn(self._truncate_unheard(truncations, unheard_text_of))
+        History drops it as soon as that's known, before the provider is asked to delete it, so an exchange reported
+        meanwhile can't keep it. A failed delete isn't retried: the conversation can't see a late deletion, so a retry
+        could hit "item not found".
+        """
+        if response_id is None or response_id in self._responses.active:
+            return []
+        if (cut_point := self._audio.cut_point(response_id)) is None:
+            return []
+        unheard = [
+            item_id
+            for item_id in self._history.heard_messages_after(response_id, cut_point)
+            if not self._audio.has_audio(item_id)
+        ]
+        for item_id in unheard:
+            self._history.unheard(item_id)
+        return unheard
 
-    async def _truncate_unheard(self, truncations: Sequence[Truncation], unheard_text_of: str | None) -> None:
+    def _cut_unheard(self, truncations: Sequence[Truncation], unheard: Sequence[str] = ()) -> None:
+        if truncations or unheard:
+            self._spawn(self._truncate_unheard(truncations, unheard))
+
+    async def _truncate_unheard(self, truncations: Sequence[Truncation], unheard: Sequence[str]) -> None:
         session = self._require_session()
         try:
             async with self._control_lock:
                 if self._closing.is_set():
                     return
-                await self._send_truncations(session, truncations)
-                if unheard_text_of is not None:
-                    await self._delete_unheard_text(session, unheard_text_of)
+                cut_failure = await self._send_truncations(session, truncations)
+                delete_failure = await self._delete_items(session, unheard)
         except RealtimeException as error:
-            logger.warning("Couldn't cut the audio after a provider truncation: %s", error)
+            cut_failure, delete_failure = error, None
+        if (failure := cut_failure or delete_failure) is not None:
+            logger.warning("Couldn't cut what the caller didn't hear after a provider truncation: %s", failure)
 
     async def _send_truncations(
         self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], truncations: Sequence[Truncation]
-    ) -> None:
+    ) -> RealtimeControlException | None:
+        """A cut the provider rejects mustn't stop the cuts after it, so the first failure is returned at the end."""
         first_failure: RealtimeControlException | None = None
         for truncation in truncations:
             if not self._audio.is_owed(truncation):
@@ -591,24 +615,23 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                     "cut the audio the caller didn't hear",
                 )
             except RealtimeControlException as failure:
-                # The cut stays owed, but one the provider keeps rejecting mustn't stop the cuts after it.
+                # The cut stays owed, so a later interrupt() retries it.
                 first_failure = first_failure or failure
                 continue
             self._audio.acknowledged(truncation)
-        if first_failure is not None:
-            raise first_failure
+        return first_failure
 
-    async def _delete_unheard_text(
-        self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], response_id: str
-    ) -> None:
-        if (cut_point := self._audio.cut_point(response_id)) is None:
-            return
-        for item_id in self._history.heard_messages_after(response_id, cut_point):
-            if not self._audio.has_audio(item_id):
-                # Marked first, so history leaves it out even if the delete fails, and a failed delete isn't retried:
-                # the conversation can't see a late deletion, so a retry could hit "item not found".
-                self._history.unheard(item_id)
+    async def _delete_items(
+        self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], item_ids: Sequence[str]
+    ) -> RealtimeControlException | None:
+        """A delete the provider rejects mustn't stop the deletes after it, so the first failure comes at the end."""
+        first_failure: RealtimeControlException | None = None
+        for item_id in item_ids:
+            try:
                 await self._acknowledged(session.delete_item(item_id), "delete a message the caller didn't hear")
+            except RealtimeControlException as failure:
+                first_failure = first_failure or failure
+        return first_failure
 
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
         return await await_acknowledgement(
@@ -676,6 +699,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 await asyncio.wait({self._receive_task})
             await self._tool_loop.close()
             self._history.stop_waiting_for_caller_transcripts()
+            self._history.end_unfinished_responses()
             if self._reporter is not None:
                 provider_failures = await self._reporter.report_remaining()
             await self._end_background_tasks()

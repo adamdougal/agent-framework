@@ -408,8 +408,8 @@ def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, l
     by_content = {id(call.content): call for call in calls}
 
     def keep(function_call: Content, results: list[Content]) -> None:
-        if (call := by_content.get(id(function_call))) is not None:
-            call.result = next((content for content in results if content.type == "function_result"), call.result)
+        call = by_content[id(function_call)]
+        call.result = next((content for content in results if content.type == "function_result"), call.result)
 
     return keep
 

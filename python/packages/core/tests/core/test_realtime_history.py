@@ -4,13 +4,11 @@
 
 import asyncio
 import logging
-from collections.abc import Sequence
 from typing import Any
 
 import pytest
 
 from agent_framework import (
-    AgentResponseUpdate,
     AgentSession,
     Content,
     ContextProvider,
@@ -27,7 +25,33 @@ from agent_framework import (
 from agent_framework._realtime import _conversation as realtime_conversation
 from agent_framework.exceptions import RealtimeConnectionException
 
-from .realtime_helpers import FakeRealtimeClient, event, eventually, next_update
+from .realtime_helpers import FakeRealtimeClient, event, eventually
+from .realtime_history_helpers import (
+    Failing,
+    Loader,
+    Recorder,
+    Slow,
+    agent_audio,
+    agent_item,
+    agent_text,
+    blocking_tool,
+    call_response,
+    caller_delta,
+    caller_item,
+    caller_transcript,
+    dicts,
+    get_weather,
+    read_all,
+    reply,
+    shapes,
+    spoken_reply,
+    streamed,
+    texts,
+    truncated,
+    until_error,
+    until_tool_result,
+    usage,
+)
 
 _TRANSCRIBED: RealtimeOptions = {"transcription": {"model": "gpt-4o-transcribe"}}
 
@@ -36,205 +60,6 @@ _TRANSCRIBED: RealtimeOptions = {"transcription": {"model": "gpt-4o-transcribe"}
 def _short_transcript_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """Close waits for pending caller transcripts; the tests shouldn't wait the production seconds for them."""
     monkeypatch.setattr(realtime_conversation, "CALLER_TRANSCRIPT_WAIT_SECONDS", 0.2)
-
-
-def _caller_item(item_id: str) -> RealtimeEvent:
-    return event("item_added", item_id=item_id, previous_item_id=None, role="user", input_audio=True)
-
-
-def _caller_transcript(item_id: str, text: str) -> RealtimeEvent:
-    final = Content.from_text(text, merge_mode="replace", status="completed")
-    return event("input_transcription", content=final, item_id=item_id, content_index=0)
-
-
-def _caller_delta(item_id: str, text: str) -> RealtimeEvent:
-    delta = Content.from_text(text, merge_mode="append")
-    return event("input_transcription", content=delta, item_id=item_id, content_index=0)
-
-
-def _agent_item(item_id: str) -> RealtimeEvent:
-    return event("item_added", item_id=item_id, previous_item_id=None, role="assistant")
-
-
-def _agent_text(response_id: str, item_id: str, text: str, *, final: bool = True) -> RealtimeEvent:
-    content = (
-        Content.from_text(text, merge_mode="replace", status="completed")
-        if final
-        else Content.from_text(text, merge_mode="append")
-    )
-    return event("output_text", content=content, response_id=response_id, item_id=item_id, content_index=0)
-
-
-def _agent_audio(response_id: str, item_id: str, milliseconds: int) -> RealtimeEvent:
-    """24 kHz 16-bit mono PCM: 48 bytes per millisecond."""
-    audio = Content.from_data(b"\x00" * 48 * milliseconds, "audio/pcm;rate=24000")
-    return event("output_audio", content=audio, response_id=response_id, item_id=item_id, content_index=0)
-
-
-def _truncated(item_id: str, audio_end_ms: int) -> RealtimeEvent:
-    return event("item_truncated", item_id=item_id, content_index=0, audio_end_ms=audio_end_ms, truncated_by="client")
-
-
-def _spoken_reply(response_id: str, item_id: str, text: str, milliseconds: int) -> list[RealtimeEvent]:
-    """A finished response that speaks ``text`` as ``milliseconds`` of audio in one assistant item."""
-    return [
-        event("response_created", response_id=response_id),
-        _agent_item(item_id),
-        _agent_audio(response_id, item_id, milliseconds),
-        _agent_text(response_id, item_id, text),
-        event("response_done", response_id=response_id, status="completed"),
-    ]
-
-
-def _reply(response_id: str, item_id: str, text: str, *, status: str = "completed") -> list[RealtimeEvent]:
-    """A response that says ``text`` in one assistant item and finishes with ``status``."""
-    return [
-        event("response_created", response_id=response_id),
-        _agent_item(item_id),
-        _agent_text(response_id, item_id, text),
-        event("response_done", response_id=response_id, status=status),
-    ]
-
-
-async def _streamed(conversation: Any, *events: RealtimeEvent) -> None:
-    """Have the provider send ``events``, and wait until the conversation has streamed them."""
-    conversation._session.emit(*events)  # pyright: ignore[reportPrivateUsage]
-    for _ in events:
-        await next_update(conversation)
-
-
-def _dicts(messages: Sequence[Message]) -> list[dict[str, Any]]:
-    return [message.to_dict() for message in messages]
-
-
-def _shapes(messages: Sequence[Message]) -> list[tuple[str, list[str], str | None, str | None]]:
-    """Each message's role, content types, author and id, for messages whose contents carry generated ids."""
-    return [
-        (message.role, [content.type for content in message.contents], message.author_name, message.message_id)
-        for message in messages
-    ]
-
-
-class _Recorder(ContextProvider):
-    """Records every exchange reported to it."""
-
-    def __init__(self, source_id: str = "recorder") -> None:
-        super().__init__(source_id)
-        self.reports: list[SessionContext] = []
-
-    async def after_run(
-        self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
-    ) -> None:
-        self.reports.append(context)
-
-
-class _Loader(_Recorder):
-    """Adds context when the conversation opens, and notes whether the realtime session had started by then."""
-
-    def __init__(self, client: FakeRealtimeClient, source_id: str = "loader") -> None:
-        super().__init__(source_id)
-        self.client = client
-        self.loads: list[bool] = []
-
-    async def before_run(
-        self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
-    ) -> None:
-        self.loads.append(bool(self.client.start_session_calls))
-
-
-class _Failing(_Recorder):
-    """Fails its first ``failures`` reports, then records."""
-
-    def __init__(self, source_id: str = "failing", *, failures: int = 1_000) -> None:
-        super().__init__(source_id)
-        self.failures = failures
-
-    async def after_run(
-        self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
-    ) -> None:
-        if self.failures:
-            self.failures -= 1
-            raise RuntimeError(f"{self.source_id} store down")
-        await super().after_run(agent=agent, session=session, context=context, state=state)
-
-
-class _Slow(_Recorder):
-    """Holds its first report until released, noting whether that report was cancelled."""
-
-    def __init__(self) -> None:
-        super().__init__("slow")
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.cancelled = False
-
-    async def after_run(
-        self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
-    ) -> None:
-        if not self.started.is_set():
-            self.started.set()
-            try:
-                await self.release.wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-        await super().after_run(agent=agent, session=session, context=context, state=state)
-
-
-async def _read_all(conversation: Any) -> list[AgentResponseUpdate]:
-    return [update async for update in conversation]
-
-
-async def _until_error(conversation: Any) -> AgentResponseUpdate:
-    while True:
-        update = await next_update(conversation)
-        if any(content.type == "error" for content in update.contents):
-            return update
-
-
-def _texts(report: SessionContext) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """An exchange's inputs and outputs as (role, text) pairs."""
-    outputs = report.response.messages if report.response is not None else []
-    return (
-        [(message.role, message.text) for message in report.input_messages],
-        [(message.role, message.text) for message in outputs],
-    )
-
-
-@tool
-def get_weather(city: str) -> str:
-    """Get the weather for a city."""
-    return f"Sunny in {city}"
-
-
-def _call_response(response_id: str, item_id: str, call_id: str, name: str, **arguments: Any) -> list[RealtimeEvent]:
-    """A response that makes one call in a role-less item, then finishes."""
-    call = Content.from_function_call(call_id=call_id, name=name, arguments=arguments)
-    return [
-        event("response_created", response_id=response_id),
-        event("item_added", item_id=item_id, previous_item_id=None),
-        event("function_call", content=call, response_id=response_id, item_id=item_id),
-        event("response_done", response_id=response_id, status="completed"),
-    ]
-
-
-def _blocking_tool() -> tuple[Any, asyncio.Event]:
-    """A look_up tool that waits for the returned release."""
-    release = asyncio.Event()
-
-    @tool
-    async def look_up() -> str:
-        """Look something up, slowly."""
-        await release.wait()
-        return "found"
-
-    return look_up, release
-
-
-async def _until_tool_result(conversation: Any) -> AgentResponseUpdate:
-    while True:
-        update = await next_update(conversation)
-        if any(content.type == "function_result" for content in update.contents):
-            return update
 
 
 # region History
@@ -251,20 +76,30 @@ async def test_a_caller_turn_records_its_final_transcript() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(conversation, _caller_item("item_1"), _caller_transcript("item_1", "Hello"))
+        await streamed(conversation, caller_item("item_1"), caller_transcript("item_1", "Hello"))
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message("user", [Content.from_text("Hello", status="completed")], message_id="item_1")
         ])
+
+
+async def test_changing_a_message_read_from_history_does_not_change_the_history() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await conversation.send("Ada's account is 1234", create_response=False)
+        conversation.history[0].contents.append(Content.from_text("redacted"))
+
+        assert [len(message.contents) for message in conversation.history] == [1]
 
 
 async def test_an_agent_turn_records_its_final_transcript_credited_to_the_agent() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client, name="receptionist").start_conversation() as conversation:
-        await _streamed(conversation, *_reply("resp_1", "item_2", "Hi there"))
+        await streamed(conversation, *reply("resp_1", "item_2", "Hi there"))
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message(
                 "assistant",
                 [Content.from_text("Hi there", status="completed")],
@@ -279,18 +114,18 @@ async def test_app_text_is_recorded_as_sent_and_its_echo_is_not_recorded_again()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
         await conversation.send("The caller's account is 1234", create_response=False)
-        await _streamed(
+        await streamed(
             conversation, event("item_added", item_id="item_1", previous_item_id=None, role="user", input_audio=False)
         )
 
-        assert _dicts(conversation.history) == _dicts([Message("user", ["The caller's account is 1234"])])
+        assert dicts(conversation.history) == dicts([Message("user", ["The caller's account is 1234"])])
 
 
 async def test_initial_messages_are_recorded_as_app_input() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation("You're speaking to Ada.") as conversation:
-        assert _dicts(conversation.history) == _dicts([Message("user", ["You're speaking to Ada."])])
+        assert dicts(conversation.history) == dicts([Message("user", ["You're speaking to Ada."])])
 
 
 async def test_app_input_is_recorded_without_its_audio() -> None:
@@ -301,7 +136,7 @@ async def test_app_input_is_recorded_without_its_audio() -> None:
         await conversation.send(Message("user", ["Listen to this", audio]), create_response=False)
         await conversation.send(Message("user", [audio]))
 
-        assert _dicts(conversation.history) == _dicts([Message("user", ["Listen to this"])])
+        assert dicts(conversation.history) == dicts([Message("user", ["Listen to this"])])
 
 
 async def test_a_function_call_is_recorded_with_its_result_straight_after_it() -> None:
@@ -309,11 +144,11 @@ async def test_a_function_call_is_recorded_with_its_result_straight_after_it() -
     agent = RealtimeAgent(client, name="receptionist", tools=[get_weather])
 
     async with agent.start_conversation() as conversation:
-        client.session.emit(*_call_response("resp_a", "item_3", "call_1", "get_weather", city="Paris"))
-        await _until_tool_result(conversation)
+        client.session.emit(*call_response("resp_a", "item_3", "call_1", "get_weather", city="Paris"))
+        await until_tool_result(conversation)
 
         history = conversation.history
-        assert _shapes(history) == [
+        assert shapes(history) == [
             ("assistant", ["function_call"], "receptionist", "item_3"),
             ("tool", ["function_result"], "receptionist", None),
         ]
@@ -325,13 +160,13 @@ async def test_a_failed_transcription_records_a_text_less_caller_turn() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
+            caller_item("item_1"),
             event("input_transcription_failed", item_id="item_1", content_index=0, error_code="audio_unintelligible"),
         )
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message(
                 "user", [], message_id="item_1", additional_properties={"core": {"text_less": "transcription_failed"}}
             )
@@ -342,15 +177,15 @@ async def test_a_failed_transcription_keeps_the_partial_transcript_as_incomplete
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_delta("item_1", "I need"),
-            _caller_delta("item_1", " to"),
+            caller_item("item_1"),
+            caller_delta("item_1", "I need"),
+            caller_delta("item_1", " to"),
             event("input_transcription_failed", item_id="item_1", content_index=0),
         )
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message("user", [Content.from_text("I need to", status="incomplete")], message_id="item_1")
         ])
 
@@ -359,9 +194,9 @@ async def test_a_caller_turn_still_waiting_for_its_transcript_shows_as_pending()
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(conversation, _caller_item("item_1"))
+        await streamed(conversation, caller_item("item_1"))
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message(
                 "user", [], message_id="item_1", additional_properties={"core": {"text_less": "transcript_pending"}}
             )
@@ -372,9 +207,9 @@ async def test_without_transcription_a_caller_turn_is_text_less_at_once() -> Non
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options={"transcription": None}) as conversation:
-        await _streamed(conversation, _caller_item("item_1"))
+        await streamed(conversation, caller_item("item_1"))
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message("user", [], message_id="item_1", additional_properties={"core": {"text_less": "transcription_off"}})
         ])
 
@@ -383,10 +218,30 @@ async def test_a_truncated_agent_turn_keeps_the_heard_words_as_incomplete() -> N
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
-        await _streamed(conversation, *_spoken_reply("resp_1", "item_2", "one two three four", 1000))
-        await _streamed(conversation, _truncated("item_2", 500))
+        await streamed(conversation, *spoken_reply("resp_1", "item_2", "one two three four", 1000))
+        await streamed(conversation, truncated("item_2", 500))
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
+            Message("assistant", [Content.from_text("one two", status="incomplete")], message_id="item_2")
+        ])
+
+
+async def test_a_truncation_before_the_final_transcript_still_cuts_it() -> None:
+    client = FakeRealtimeClient()
+    provider_cut = event("item_truncated", item_id="item_2", content_index=0, audio_end_ms=500, truncated_by="provider")
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await streamed(
+            conversation,
+            event("response_created", response_id="resp_1"),
+            agent_item("item_2"),
+            agent_audio("resp_1", "item_2", 1000),
+            provider_cut,
+            agent_text("resp_1", "item_2", "one two three four"),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+
+        assert dicts(conversation.history) == dicts([
             Message("assistant", [Content.from_text("one two", status="incomplete")], message_id="item_2")
         ])
 
@@ -395,8 +250,8 @@ async def test_an_agent_turn_cut_at_0_ms_is_left_out() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
-        await _streamed(conversation, *_spoken_reply("resp_1", "item_2", "one two three four", 1000))
-        await _streamed(conversation, _truncated("item_2", 0))
+        await streamed(conversation, *spoken_reply("resp_1", "item_2", "one two three four", 1000))
+        await streamed(conversation, truncated("item_2", 0))
 
         assert conversation.history == []
 
@@ -405,16 +260,16 @@ async def test_a_cancelled_response_keeps_the_text_generated_so_far_as_incomplet
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
-        await _streamed(
+        await streamed(
             conversation,
             event("response_created", response_id="resp_1"),
-            _agent_item("item_2"),
-            _agent_text("resp_1", "item_2", "Let me", final=False),
-            _agent_text("resp_1", "item_2", " check", final=False),
+            agent_item("item_2"),
+            agent_text("resp_1", "item_2", "Let me", final=False),
+            agent_text("resp_1", "item_2", " check", final=False),
             event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
         )
 
-        assert _dicts(conversation.history) == _dicts([
+        assert dicts(conversation.history) == dicts([
             Message("assistant", [Content.from_text("Let me check", status="incomplete")], message_id="item_2")
         ])
 
@@ -426,74 +281,72 @@ async def test_a_cancelled_response_keeps_the_text_generated_so_far_as_incomplet
 
 async def test_an_exchange_is_reported_once_the_next_input_starts() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
         )
         await asyncio.sleep(0.01)
         assert recorder.reports == []
 
-        await _streamed(conversation, _caller_item("item_3"))
+        await streamed(conversation, caller_item("item_3"))
         await eventually(lambda: len(recorder.reports) == 1)
 
-    assert _texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
+    assert texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
 
 
 async def test_the_last_exchange_is_reported_at_close() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
         )
 
     assert len(recorder.reports) == 1
-    assert _texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
+    assert texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
 
 
 async def test_an_exchange_waits_for_its_pending_caller_transcript() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
-            conversation, _caller_item("item_1"), *_reply("resp_1", "item_2", "Hello"), _caller_item("item_3")
-        )
+        await streamed(conversation, caller_item("item_1"), *reply("resp_1", "item_2", "Hello"), caller_item("item_3"))
         await asyncio.sleep(0.01)
         assert recorder.reports == []
 
-        await _streamed(conversation, _caller_transcript("item_1", "Hi"))
+        await streamed(conversation, caller_transcript("item_1", "Hi"))
         await eventually(lambda: len(recorder.reports) == 1)
 
-    assert _texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
+    assert texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
 
 
 async def test_an_exchange_waits_for_its_running_tools() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
-    look_up, release = _blocking_tool()
+    recorder = Recorder()
+    look_up, release = blocking_tool()
     agent = RealtimeAgent(client, tools=[look_up], context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Find it"),
-            *_call_response("resp_a", "item_2", "call_1", "look_up"),
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Hello?"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Find it"),
+            *call_response("resp_a", "item_2", "call_1", "look_up"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Hello?"),
         )
         await asyncio.sleep(0.01)
         assert recorder.reports == []
@@ -501,33 +354,33 @@ async def test_an_exchange_waits_for_its_running_tools() -> None:
         release.set()
         await eventually(lambda: len(recorder.reports) == 1)
 
-    inputs, outputs = _texts(recorder.reports[0])
+    inputs, outputs = texts(recorder.reports[0])
     assert inputs == [("user", "Find it")]
     assert [role for role, _ in outputs] == ["assistant", "tool"]
 
 
 async def test_an_exchange_waits_for_its_responses_to_finish() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        unfinished_reply = _reply("resp_1", "item_2", "Hello")[:-1]
-        await _streamed(
+        unfinished_reply = reply("resp_1", "item_2", "Hello")[:-1]
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
             *unfinished_reply,
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Hello?"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Hello?"),
         )
         await asyncio.sleep(0.01)
         assert recorder.reports == []
 
-        await _streamed(conversation, event("response_done", response_id="resp_1", status="completed"))
+        await streamed(conversation, event("response_done", response_id="resp_1", status="completed"))
         await eventually(lambda: len(recorder.reports) == 1)
 
-    assert _texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
+    assert texts(recorder.reports[0]) == ([("user", "Hi")], [("assistant", "Hello")])
 
 
 @pytest.mark.parametrize(
@@ -542,18 +395,18 @@ async def test_a_content_filtered_response_stops_its_caller_turns_waiting(
     deltas: list[str], recorded: dict[str, Any]
 ) -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            *(_caller_delta("item_1", delta) for delta in deltas),
-            *_reply("resp_1", "item_2", "", status="incomplete")[:2],
+            caller_item("item_1"),
+            *(caller_delta("item_1", delta) for delta in deltas),
+            *reply("resp_1", "item_2", "", status="incomplete")[:2],
             event("response_done", response_id="resp_1", status="incomplete", reason="content_filter"),
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Sorry"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Sorry"),
         )
         await eventually(lambda: len(recorder.reports) == 1)
 
@@ -565,26 +418,21 @@ async def test_a_content_filtered_response_stops_its_caller_turns_waiting(
         assert caller_turn.additional_properties == {"core": {"text_less": recorded["text_less"]}}
 
 
-def _usage(response_id: str, input_tokens: int, output_tokens: int) -> RealtimeEvent:
-    usage = Content.from_usage({"input_token_count": input_tokens, "output_token_count": output_tokens})
-    return event("usage", content=usage, response_id=response_id)
-
-
 async def test_an_exchange_report_carries_summed_usage_and_the_last_responses_id_and_finish_reason() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, tools=[get_weather], context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        follow_up = _reply("resp_b", "item_4", "Sunny in Paris")
-        client.session.create_response_events = [*follow_up[:-1], _usage("resp_b", 20, 7), follow_up[-1]]
-        calling = _call_response("resp_a", "item_3", "call_1", "get_weather", city="Paris")
-        await _streamed(
+        follow_up = reply("resp_b", "item_4", "Sunny in Paris")
+        client.session.create_response_events = [*follow_up[:-1], usage("resp_b", 20, 7), follow_up[-1]]
+        calling = call_response("resp_a", "item_3", "call_1", "get_weather", city="Paris")
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Weather in Paris?"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Weather in Paris?"),
             *calling[:-1],
-            _usage("resp_a", 10, 5),
+            usage("resp_a", 10, 5),
             calling[-1],
         )
         await eventually(lambda: any(message.text == "Sunny in Paris" for message in conversation.history))
@@ -598,24 +446,24 @@ async def test_an_exchange_report_carries_summed_usage_and_the_last_responses_id
 
 async def test_a_failing_provider_streams_an_error_and_retries_with_the_next_report() -> None:
     client = FakeRealtimeClient()
-    flaky = _Failing("flaky", failures=1)
+    flaky = Failing("flaky", failures=1)
     agent = RealtimeAgent(client, context_providers=[flaky])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
         client.session.emit(
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Bye"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Bye"),
         )
-        failure = await _until_error(conversation)
+        failure = await until_error(conversation)
         assert "flaky" in (failure.contents[0].message or "")
 
-        await _streamed(conversation, *_reply("resp_2", "item_4", "Goodbye"), _caller_item("item_5"))
+        await streamed(conversation, *reply("resp_2", "item_4", "Goodbye"), caller_item("item_5"))
         await eventually(lambda: len(flaky.reports) == 2)
 
-    assert [_texts(report) for report in flaky.reports[:2]] == [
+    assert [texts(report) for report in flaky.reports[:2]] == [
         ([("user", "Hi")], [("assistant", "Hello")]),
         ([("user", "Bye")], [("assistant", "Goodbye")]),
     ]
@@ -623,15 +471,15 @@ async def test_a_failing_provider_streams_an_error_and_retries_with_the_next_rep
 
 async def test_close_raises_a_provider_failure_that_persists() -> None:
     client = FakeRealtimeClient()
-    agent = RealtimeAgent(client, context_providers=[_Failing()])
+    agent = RealtimeAgent(client, context_providers=[Failing()])
 
     with pytest.raises(RuntimeError, match="failing store down"):
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
 
     assert client.session.close_count == 1
@@ -641,15 +489,15 @@ async def test_close_raises_a_provider_failure_that_persists() -> None:
 
 async def test_close_raises_an_exception_group_when_several_providers_fail() -> None:
     client = FakeRealtimeClient()
-    agent = RealtimeAgent(client, context_providers=[_Failing("memory"), _Failing("history")])
+    agent = RealtimeAgent(client, context_providers=[Failing("memory"), Failing("history")])
 
     with pytest.raises(ExceptionGroup) as raised:
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
 
     assert sorted(str(failure) for failure in raised.value.exceptions) == ["history store down", "memory store down"]
@@ -657,38 +505,38 @@ async def test_close_raises_an_exception_group_when_several_providers_fail() -> 
 
 async def test_a_truncation_after_its_exchange_was_reported_changes_nothing() -> None:
     client = FakeRealtimeClient()
-    recorder = _Recorder()
+    recorder = Recorder()
     agent = RealtimeAgent(client, context_providers=[recorder])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Count"),
-            *_spoken_reply("resp_1", "item_2", "one two three four", 1000),
-            _caller_item("item_3"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Count"),
+            *spoken_reply("resp_1", "item_2", "one two three four", 1000),
+            caller_item("item_3"),
         )
         await eventually(lambda: len(recorder.reports) == 1)
-        await _streamed(conversation, _truncated("item_2", 500))
+        await streamed(conversation, truncated("item_2", 500))
 
-        reply = conversation.history[1]
-        assert (reply.text, reply.contents[0].status) == ("one two three four", "completed")
+        agent_turn = conversation.history[1]
+        assert (agent_turn.text, agent_turn.contents[0].status) == ("one two three four", "completed")
 
 
 async def test_close_waits_for_a_report_in_progress_rather_than_cancelling_it() -> None:
     client = FakeRealtimeClient()
-    slow = _Slow()
+    slow = Slow()
     agent = RealtimeAgent(client, context_providers=[slow])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Bye"),
-            *_reply("resp_2", "item_4", "Goodbye"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Bye"),
+            *reply("resp_2", "item_4", "Goodbye"),
         )
         await slow.started.wait()
         closing = asyncio.create_task(conversation.close())
@@ -697,10 +545,34 @@ async def test_close_waits_for_a_report_in_progress_rather_than_cancelling_it() 
         await closing
 
     assert not slow.cancelled
-    assert [_texts(report) for report in slow.reports] == [
+    assert [texts(report) for report in slow.reports] == [
         ([("user", "Hi")], [("assistant", "Hello")]),
         ([("user", "Bye")], [("assistant", "Goodbye")]),
     ]
+
+
+async def test_a_reply_still_running_at_hang_up_is_reported_with_the_text_so_far() -> None:
+    client = FakeRealtimeClient()
+    recorder = Recorder()
+    agent = RealtimeAgent(client, context_providers=[recorder])
+
+    async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
+        await streamed(
+            conversation,
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            event("response_created", response_id="resp_1"),
+            agent_item("item_2"),
+            agent_text("resp_1", "item_2", "Let me che", final=False),
+        )
+        client.session.end()
+        await read_all(conversation)
+
+    assert len(recorder.reports) == 1
+    report = recorder.reports[0]
+    assert texts(report) == ([("user", "Hi")], [("assistant", "Let me che")])
+    assert report.response is not None
+    assert report.response.messages[0].contents[0].status == "incomplete"
 
 
 # endregion
@@ -710,21 +582,39 @@ async def test_close_waits_for_a_report_in_progress_rather_than_cancelling_it() 
 
 async def test_before_run_runs_once_at_start() -> None:
     client = FakeRealtimeClient()
-    loader = _Loader(client)
+    loader = Loader(client)
     agent = RealtimeAgent(client, context_providers=[loader])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Bye"),
-            *_reply("resp_2", "item_4", "Goodbye"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Bye"),
+            *reply("resp_2", "item_4", "Goodbye"),
         )
 
     assert loader.loads == [False]
+
+
+async def test_before_run_sees_the_initial_messages_and_the_start_options() -> None:
+    seen: list[tuple[list[str], dict[str, Any]]] = []
+
+    class Retriever(ContextProvider):
+        async def before_run(
+            self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+        ) -> None:
+            seen.append(([message.text for message in context.input_messages], dict(context.options)))
+
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, context_providers=[Retriever("retriever")])
+
+    async with agent.start_conversation("The caller asked about refunds.", options=_TRANSCRIBED):
+        pass
+
+    assert seen == [(["The caller asked about refunds."], dict(_TRANSCRIBED))]
 
 
 async def test_a_history_provider_that_does_not_load_messages_is_not_asked_to() -> None:
@@ -745,11 +635,11 @@ async def test_a_history_provider_that_does_not_load_messages_is_not_asked_to() 
     agent = RealtimeAgent(client, context_providers=[storing_only])
 
     async with agent.start_conversation(session=session, options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
         )
 
     assert storing_only.loads == 0
@@ -774,8 +664,8 @@ async def test_before_run_instructions_and_tools_apply_to_the_session() -> None:
     agent = RealtimeAgent(client, instructions="You're a receptionist.", context_providers=[Briefing("briefing")])
 
     async with agent.start_conversation() as conversation:
-        client.session.emit(*_call_response("resp_a", "item_1", "call_1", "look_up"))
-        result = await _until_tool_result(conversation)
+        client.session.emit(*call_response("resp_a", "item_1", "call_1", "look_up"))
+        result = await until_tool_result(conversation)
 
     started = client.start_session_calls[0]
     assert started["options"]["instructions"] == "You're a receptionist.\nBe brief."
@@ -784,7 +674,7 @@ async def test_before_run_instructions_and_tools_apply_to_the_session() -> None:
 
 
 async def test_the_first_exchange_carries_the_start_context() -> None:
-    class Briefing(_Recorder):
+    class Briefing(Recorder):
         async def before_run(
             self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
         ) -> None:
@@ -797,14 +687,14 @@ async def test_the_first_exchange_carries_the_start_context() -> None:
     agent = RealtimeAgent(client, context_providers=[briefing])
 
     async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
-            _caller_item("item_3"),
-            _caller_transcript("item_3", "Bye"),
-            *_reply("resp_2", "item_4", "Goodbye"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Bye"),
+            *reply("resp_2", "item_4", "Goodbye"),
         )
 
     first, second = briefing.reports
@@ -821,11 +711,11 @@ async def test_an_in_memory_history_provider_is_added_when_a_session_is_passed()
     agent = RealtimeAgent(client)
 
     async with agent.start_conversation(session=session, options=_TRANSCRIBED) as conversation:
-        await _streamed(
+        await streamed(
             conversation,
-            _caller_item("item_1"),
-            _caller_transcript("item_1", "Hi"),
-            *_reply("resp_1", "item_2", "Hello"),
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
         )
 
     assert [type(provider) for provider in agent.context_providers] == [InMemoryHistoryProvider]
@@ -862,7 +752,7 @@ async def test_history_providers_without_transcription_log_one_warning(
     history: bool, options: RealtimeOptions, warnings: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     client = FakeRealtimeClient()
-    agent = RealtimeAgent(client, context_providers=[InMemoryHistoryProvider()] if history else [_Recorder()])
+    agent = RealtimeAgent(client, context_providers=[InMemoryHistoryProvider()] if history else [Recorder()])
 
     with caplog.at_level(logging.WARNING):
         async with agent.start_conversation(options=options):
@@ -902,12 +792,12 @@ async def test_close_waits_for_a_pending_caller_transcript() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(conversation, _caller_item("item_1"))
+        await streamed(conversation, caller_item("item_1"))
         closing = asyncio.create_task(conversation.close())
         await asyncio.sleep(0.05)
         assert client.session.close_count == 0
 
-        client.session.emit(_caller_transcript("item_1", "Goodbye"))
+        client.session.emit(caller_transcript("item_1", "Goodbye"))
         await closing
 
     assert client.session.close_count == 1
@@ -918,9 +808,9 @@ async def test_close_stops_waiting_after_the_transcript_wait_and_records_the_tur
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-        await _streamed(conversation, _caller_item("item_1"))
+        await streamed(conversation, caller_item("item_1"))
 
-    assert _dicts(conversation.history) == _dicts([
+    assert dicts(conversation.history) == dicts([
         Message("user", [], message_id="item_1", additional_properties={"core": {"text_less": "transcript_missing"}})
     ])
 
@@ -934,50 +824,50 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(conversation, _caller_item("item_1"))
+            await streamed(conversation, caller_item("item_1"))
             client.session.end()
-            await asyncio.wait_for(_read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 1)
 
         assert conversation.history[0].additional_properties == {"core": {"text_less": "transcript_missing"}}
 
     async def test_reporting_does_not_block_the_receive_loop(self) -> None:
         client = FakeRealtimeClient()
-        slow = _Slow()
+        slow = Slow()
         agent = RealtimeAgent(client, context_providers=[slow])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
-                _caller_item("item_3"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
+                caller_item("item_3"),
             )
             await slow.started.wait()
-            await _streamed(conversation, _caller_transcript("item_3", "Still there?"))
+            await streamed(conversation, caller_transcript("item_3", "Still there?"))
             assert slow.reports == []
             slow.release.set()
 
     async def test_other_providers_keep_recording_while_one_fails(self) -> None:
         client = FakeRealtimeClient()
-        recorder = _Recorder()
-        agent = RealtimeAgent(client, context_providers=[recorder, _Failing()])
+        recorder = Recorder()
+        agent = RealtimeAgent(client, context_providers=[recorder, Failing()])
 
         with pytest.raises(RuntimeError, match="failing store down"):
             async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-                await _streamed(
+                await streamed(
                     conversation,
-                    _caller_item("item_1"),
-                    _caller_transcript("item_1", "Hi"),
-                    *_reply("resp_1", "item_2", "Hello"),
-                    _caller_item("item_3"),
-                    _caller_transcript("item_3", "Bye"),
-                    *_reply("resp_2", "item_4", "Goodbye"),
-                    _caller_item("item_5"),
+                    caller_item("item_1"),
+                    caller_transcript("item_1", "Hi"),
+                    *reply("resp_1", "item_2", "Hello"),
+                    caller_item("item_3"),
+                    caller_transcript("item_3", "Bye"),
+                    *reply("resp_2", "item_4", "Goodbye"),
+                    caller_item("item_5"),
                 )
                 await eventually(lambda: len(recorder.reports) == 2)
 
-        assert [_texts(report) for report in recorder.reports[:2]] == [
+        assert [texts(report) for report in recorder.reports[:2]] == [
             ([("user", "Hi")], [("assistant", "Hello")]),
             ([("user", "Bye")], [("assistant", "Goodbye")]),
         ]
@@ -985,7 +875,7 @@ class TestVerification:
     async def test_providers_record_each_exchange_in_reverse_registration_order(self) -> None:
         recorded_by: list[str] = []
 
-        class Named(_Recorder):
+        class Named(Recorder):
             async def after_run(
                 self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
             ) -> None:
@@ -995,37 +885,37 @@ class TestVerification:
         agent = RealtimeAgent(client, context_providers=[Named("first"), Named("second")])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
 
         assert recorded_by == ["second", "first"]
 
     async def test_consecutive_inputs_share_one_exchange(self) -> None:
         client = FakeRealtimeClient()
-        recorder = _Recorder()
+        recorder = Recorder()
         agent = RealtimeAgent(client, context_providers=[recorder])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
             await conversation.send("The caller is Ada.", create_response=False)
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
 
-        assert [_texts(report) for report in recorder.reports] == [
+        assert [texts(report) for report in recorder.reports] == [
             ([("user", "The caller is Ada."), ("user", "Hi")], [("assistant", "Hello")])
         ]
 
     async def test_providers_without_a_session_record_into_a_fresh_one(self) -> None:
         sessions: list[AgentSession] = []
 
-        class SessionRecorder(_Recorder):
+        class SessionRecorder(Recorder):
             async def after_run(
                 self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
             ) -> None:
@@ -1035,11 +925,11 @@ class TestVerification:
         agent = RealtimeAgent(client, context_providers=[SessionRecorder()])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
 
         assert len(sessions) == 1
@@ -1049,9 +939,9 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation() as conversation:
-            await _streamed(conversation, _caller_item("item_1"), _caller_transcript("item_1", "Hello"))
+            await streamed(conversation, caller_item("item_1"), caller_transcript("item_1", "Hello"))
 
-            assert _dicts(conversation.history) == _dicts([
+            assert dicts(conversation.history) == dicts([
                 Message("user", [Content.from_text("Hello", status="completed")], message_id="item_1")
             ])
 
@@ -1059,11 +949,11 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                *_reply("resp_1", "item_2", "It's noon."),
-                _caller_transcript("item_1", "What time is it?"),
+                caller_item("item_1"),
+                *reply("resp_1", "item_2", "It's noon."),
+                caller_transcript("item_1", "What time is it?"),
             )
 
             assert [(message.role, message.text) for message in conversation.history] == [
@@ -1075,25 +965,25 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(conversation, _caller_item("item_1"), _caller_transcript("item_1", "Hi"))
+            await streamed(conversation, caller_item("item_1"), caller_transcript("item_1", "Hi"))
             await conversation.send("The caller is Ada.", create_response=False)
-            await _streamed(conversation, _caller_item("item_3"), _caller_transcript("item_3", "Are you there?"))
+            await streamed(conversation, caller_item("item_3"), caller_transcript("item_3", "Are you there?"))
 
             assert [message.text for message in conversation.history] == ["Hi", "The caller is Ada.", "Are you there?"]
 
     async def test_a_tool_result_stays_after_its_call_when_the_caller_speaks_while_the_tool_runs(self) -> None:
         client = FakeRealtimeClient()
-        look_up, release = _blocking_tool()
+        look_up, release = blocking_tool()
 
         async with RealtimeAgent(client, tools=[look_up]).start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                *_call_response("resp_a", "item_1", "call_1", "look_up"),
-                _caller_item("item_2"),
-                _caller_transcript("item_2", "Any news?"),
+                *call_response("resp_a", "item_1", "call_1", "look_up"),
+                caller_item("item_2"),
+                caller_transcript("item_2", "Any news?"),
             )
             release.set()
-            await _until_tool_result(conversation)
+            await until_tool_result(conversation)
 
             assert [message.role for message in conversation.history] == ["assistant", "tool", "user"]
 
@@ -1101,8 +991,8 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation() as conversation:
-            await _streamed(
-                conversation, _agent_item("item_1"), event("item_added", item_id="item_2", previous_item_id="item_1")
+            await streamed(
+                conversation, agent_item("item_1"), event("item_added", item_id="item_2", previous_item_id="item_1")
             )
 
             assert conversation.history == []
@@ -1111,7 +1001,7 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation() as conversation:
-            await _streamed(conversation, event("item_added", item_id="item_1", previous_item_id=None, role="system"))
+            await streamed(conversation, event("item_added", item_id="item_1", previous_item_id=None, role="system"))
 
             assert conversation.history == []
 
@@ -1119,11 +1009,11 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation() as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
                 event("response_created", response_id="resp_1"),
-                _agent_item("item_1"),
-                _agent_audio("resp_1", "item_1", 200),
+                agent_item("item_1"),
+                agent_audio("resp_1", "item_1", 200),
                 event("response_done", response_id="resp_1", status="completed"),
             )
 
@@ -1140,39 +1030,39 @@ class TestVerification:
 
     async def test_a_greeting_before_any_input_is_an_exchange_with_no_input(self) -> None:
         client = FakeRealtimeClient()
-        recorder = _Recorder()
+        recorder = Recorder()
         agent = RealtimeAgent(client, context_providers=[recorder])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                *_reply("resp_1", "item_1", "Thanks for calling."),
-                _caller_item("item_2"),
-                _caller_transcript("item_2", "Hi"),
+                *reply("resp_1", "item_1", "Thanks for calling."),
+                caller_item("item_2"),
+                caller_transcript("item_2", "Hi"),
             )
             await eventually(lambda: len(recorder.reports) == 1)
 
-        assert _texts(recorder.reports[0]) == ([], [("assistant", "Thanks for calling.")])
+        assert texts(recorder.reports[0]) == ([], [("assistant", "Thanks for calling.")])
 
     async def test_a_retried_report_records_the_text_first_reported(self) -> None:
         client = FakeRealtimeClient()
-        flaky = _Failing("flaky", failures=1)
+        flaky = Failing("flaky", failures=1)
         agent = RealtimeAgent(client, context_providers=[flaky])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
             client.session.emit(
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Count"),
-                *_spoken_reply("resp_1", "item_2", "one two three four", 1000),
-                _caller_item("item_3"),
-                _caller_transcript("item_3", "Again"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Count"),
+                *spoken_reply("resp_1", "item_2", "one two three four", 1000),
+                caller_item("item_3"),
+                caller_transcript("item_3", "Again"),
             )
-            await _until_error(conversation)
-            await _streamed(conversation, _truncated("item_2", 500))
-            await _streamed(conversation, *_reply("resp_2", "item_4", "five"), _caller_item("item_5"))
+            await until_error(conversation)
+            await streamed(conversation, truncated("item_2", 500))
+            await streamed(conversation, *reply("resp_2", "item_4", "five"), caller_item("item_5"))
             await eventually(lambda: len(flaky.reports) == 2)
 
-        assert _texts(flaky.reports[0]) == ([("user", "Count")], [("assistant", "one two three four")])
+        assert texts(flaky.reports[0]) == ([("user", "Count")], [("assistant", "one two three four")])
 
     async def test_replayed_items_are_not_recorded_again(self) -> None:
         client = FakeRealtimeClient()
@@ -1187,7 +1077,7 @@ class TestVerification:
         async with RealtimeAgent(client, context_providers=[history]).start_conversation(
             session=session
         ) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
                 event("item_added", item_id="item_1", previous_item_id=None, role="user", input_audio=False),
                 event("item_added", item_id="item_2", previous_item_id="item_1", role="assistant"),
@@ -1201,11 +1091,11 @@ class TestVerification:
         agent = RealtimeAgent(client)
 
         async with agent.start_conversation(session=session, options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
         async with agent.start_conversation(session=session, options=_TRANSCRIBED):
             replayed = [
@@ -1221,9 +1111,9 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
+                caller_item("item_1"),
                 event("response_created", response_id="resp_1"),
                 event("response_done", response_id="resp_1", status="incomplete", reason="content_filter"),
             )
@@ -1231,31 +1121,31 @@ class TestVerification:
 
     async def test_a_receive_failure_still_reports_the_remaining_exchanges(self) -> None:
         client = FakeRealtimeClient()
-        recorder = _Recorder()
+        recorder = Recorder()
         agent = RealtimeAgent(client, context_providers=[recorder])
 
         async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                _caller_transcript("item_1", "Hi"),
-                *_reply("resp_1", "item_2", "Hello"),
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
             )
             client.session.fail(RealtimeConnectionException("The connection dropped."))
             with pytest.raises(RealtimeConnectionException):
-                await _read_all(conversation)
+                await read_all(conversation)
 
-        assert [_texts(report) for report in recorder.reports] == [([("user", "Hi")], [("assistant", "Hello")])]
+        assert [texts(report) for report in recorder.reports] == [([("user", "Hi")], [("assistant", "Hello")])]
 
     async def test_a_content_filtered_response_leaves_an_earlier_exchanges_caller_turn_waiting(self) -> None:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
-            await _streamed(
+            await streamed(
                 conversation,
-                _caller_item("item_1"),
-                *_reply("resp_1", "item_2", "Hello"),
-                _caller_item("item_3"),
+                caller_item("item_1"),
+                *reply("resp_1", "item_2", "Hello"),
+                caller_item("item_3"),
                 event("response_created", response_id="resp_2"),
                 event("response_done", response_id="resp_2", status="incomplete", reason="content_filter"),
             )

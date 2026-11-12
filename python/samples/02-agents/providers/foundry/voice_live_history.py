@@ -1,15 +1,5 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-import asyncio
-import os
-
-from agent_framework import AgentSession, RealtimeAgent, RealtimeConversation
-from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
-from azure.identity.aio import AzureCliCredential
-from dotenv import load_dotenv
-
-load_dotenv()
-
 """
 Voice Live History Example
 
@@ -28,6 +18,16 @@ Prerequisites:
 
 Realtime agents are experimental.
 """
+
+import asyncio
+import os
+
+from agent_framework import AgentSession, RealtimeAgent, RealtimeConversation
+from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
+from azure.identity.aio import AzureCliCredential
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 async def ask(conversation: RealtimeConversation[VoiceLiveOptions], text: str) -> None:
