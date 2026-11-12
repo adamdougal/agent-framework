@@ -266,9 +266,12 @@ class CallHistory:
             call.author_name = author.name
 
     def on_tool_result(self, result: Content) -> None:
+        """Only its text, which is all the session sends."""
+        recorded = copy.copy(result)
+        recorded.items = [part for part in result.items or [] if part.type == "text"]
         for item in self._items.values():
             if isinstance(item, _CallItem) and item.call is not None and item.call.id == result.id:
-                item.result = result
+                item.result = recorded
 
     def messages(self) -> list[Message]:
         return [message for exchange in self.exchanges() for message in (*exchange.inputs, *exchange.outputs)]
@@ -296,7 +299,11 @@ class CallHistory:
             if isinstance(entry, _Response):
                 exchanges[-1].include(entry)
             exchanges[-1].end = position + 1
-        return [*self._frozen, *exchanges]
+        # Echoes of replayed history render nothing, and on their own they're no exchange of this call.
+        return [
+            *self._frozen,
+            *(exchange for exchange in exchanges if exchange.inputs or exchange.outputs or exchange.response_id),
+        ]
 
     def _item(self, event: RealtimeEvent, item_type: type[_ItemT]) -> _ItemT | None:
         item = self._items.get(core_attributes(event)["item_id"])

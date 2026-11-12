@@ -114,6 +114,7 @@ class ToolLoop:
         self._tools = tools
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
+        self._function_middleware = list(function_middleware)
         self._middleware_pipeline = FunctionMiddlewarePipeline(*function_middleware)
         self._agent_session = (
             agent_session if agent_session is not None else _session_for_stateful_middleware(function_middleware)
@@ -133,6 +134,10 @@ class ToolLoop:
 
     def add_tools(self, tools: Sequence[ToolTypes]) -> None:
         self._tools.extend(tools)
+
+    def add_function_middleware(self, middleware: Sequence[FunctionMiddlewareTypes]) -> None:
+        self._function_middleware.extend(middleware)
+        self._middleware_pipeline = FunctionMiddlewarePipeline(*self._function_middleware)
 
     def on_function_call(self, event: RealtimeEvent) -> None:
         """A call is bound to the tool that existed when the model made it.

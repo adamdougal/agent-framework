@@ -4,6 +4,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from agent_framework import (
     Content,
     ContextProvider,
     FunctionInvocationContext,
+    FunctionMiddleware,
     InMemoryHistoryProvider,
     Message,
     RealtimeAgent,
@@ -159,6 +161,27 @@ async def test_changing_a_message_after_sending_it_does_not_change_the_history()
         sent.contents[0].text = "something else"
 
         assert [message.text for message in conversation.history] == ["Ada's account is 1234"]
+
+
+async def test_a_tool_result_is_recorded_with_its_text_only() -> None:
+    @tool
+    def receipt() -> list[Content]:
+        """Find the caller's receipt."""
+        return [
+            Content.from_text("Receipt 42, paid"),
+            Content.from_uri("https://example.com/receipt.png?sig=secret", media_type="image/png"),
+        ]
+
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[receipt]).start_conversation() as conversation:
+        client.session.emit(*call_response("resp_a", "item_1", "call_1", "receipt"))
+        streamed_result = (await until_tool_result(conversation)).contents[0]
+        recorded_result = conversation.history[-1].contents[0]
+
+    assert [item.type for item in recorded_result.items or []] == ["text"]
+    assert recorded_result.result == "Receipt 42, paid"
+    assert [item.type for item in streamed_result.items or []] == ["text", "uri"]
 
 
 async def test_a_function_call_is_recorded_with_its_result_straight_after_it() -> None:
@@ -573,6 +596,22 @@ async def test_an_out_of_band_response_is_not_part_of_any_exchange() -> None:
     assert (response.usage_details["input_token_count"], response.usage_details["output_token_count"]) == (10, 5)
 
 
+async def test_a_resumed_call_that_ends_before_anyone_speaks_reports_nothing() -> None:
+    client = FakeRealtimeClient()
+    session = AgentSession()
+    recorder = Recorder()
+    agent = RealtimeAgent(client, context_providers=[recorder])
+    async with agent.start_conversation(session=session, options=_TRANSCRIBED) as conversation:
+        await streamed(
+            conversation, caller_item("item_1"), caller_transcript("item_1", "Hi"), *reply("resp_1", "item_2", "Hello")
+        )
+
+    async with agent.start_conversation(session=session, options=_TRANSCRIBED) as conversation:
+        await streamed(conversation, agent_item("replayed_2"))
+
+    assert [texts(report) for report in recorder.reports] == [([("user", "Hi")], [("assistant", "Hello")])]
+
+
 async def test_close_raises_a_provider_failure_that_persists() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, context_providers=[Failing()])
@@ -872,6 +911,30 @@ async def test_tools_share_the_session_context_providers_use() -> None:
         result = await until_tool_result(conversation)
 
     assert result.contents[0].result == "T-1"
+
+
+async def test_function_middleware_a_context_provider_adds_wraps_the_tools() -> None:
+    audited: list[str] = []
+
+    class Audit(FunctionMiddleware):
+        async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            audited.append(context.function.name)
+            await call_next()
+
+    class Auditor(ContextProvider):
+        async def before_run(
+            self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+        ) -> None:
+            context.extend_middleware(self.source_id, Audit())
+
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[get_weather], context_providers=[Auditor("audit")])
+
+    async with agent.start_conversation() as conversation:
+        client.session.emit(*call_response("resp_a", "item_1", "call_1", "get_weather", city="Paris"))
+        await until_tool_result(conversation)
+
+    assert audited == ["get_weather"]
 
 
 @pytest.mark.parametrize("case", ["no session", "a loading history provider"])

@@ -150,9 +150,9 @@ class RealtimeOptions(TypedDict, total=False):
   their own items, with the result as a string, and a hosted `function_approval_response` becomes the provider's
   approval response. Anything else is dropped with a warning. Sending never requests a response.
 - `__aenter__` runs the conversation middleware chain, which opens the provider session. Opening runs `before_run`,
-  applies the options and tools with what `before_run` added, replays history, sends initial `messages` as context and
-  starts the single receive loop. It never requests a response. `close()` is idempotent and runs the
-  [close sequence](#close).
+  applies the options, tools and function middleware with what `before_run` added, replays history, sends initial
+  `messages` as context and starts the single receive loop. It never requests a response. `close()` is idempotent and
+  runs the [close sequence](#close).
 - The update queue is bounded, with a capacity set at start by `max_queued_updates`. On overflow the conversation
   fails with `RealtimeBackpressureException` and closes; it never drops or overwrites events. Terminal state lives
   outside the queue, so close and failure always wake iterators.
@@ -385,11 +385,11 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 
 - **Contents.** History holds the provider conversation's authored turns as text: each caller audio item as its final
   caller transcript with `role="user"`, each assistant message item as its final agent transcript, the text of app input
-  as sent, `create_response=False` context included, function calls with their settled results, and approval requests
-  and responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It holds no
-  realtime-event content, `error` content, usage, session updates, out-of-band responses or hosted-tool events. Each
-  conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only when
-  `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
+  as sent, `create_response=False` context included, function calls with the text of their settled results, and approval
+  requests and responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It
+  holds no realtime-event content, `error` content, usage, session updates, out-of-band responses or hosted-tool events.
+  Each conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only
+  when `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
 - **Text-less caller turns.** A caller turn whose transcription failed, wasn't configured, or was still pending after
   close's wait is a `role="user"` message with no contents, marked in `additional_properties["core"]["text_less"]` as
   `"transcription_failed"`, `"transcription_off"` or `"transcript_missing"`; read during the call, a turn still
@@ -421,7 +421,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   seeing an exchange twice.
 - **Replay.** Opening a realtime session with an agent session replays the loaded history as conversation items: user
   and system text, agent turns as assistant text, typed `output_text` on GA-protocol services and `text` on Voice Live,
-  each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay.
+  each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay. The
+  replayed items' echoes aren't recorded, and on their own they make no exchange.
 - **`run(...)`.** Each run is one exchange. Text input is stored as given, and audio input as its caller transcript.
   The run's session closes through the close sequence before `after_run`. Context providers get the response without
   audio. A failed run reports nothing.

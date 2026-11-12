@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
 from .._feature_stage import ExperimentalFeature, experimental
+from .._middleware import categorize_middleware
 from .._sessions import AgentSession, ContextProvider, HistoryProvider, SessionContext
 from .._tools import _append_unique_tools, normalize_tools  # pyright: ignore[reportPrivateUsage]
 from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
@@ -236,7 +237,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         return context
 
     def _apply_start_context(self, context: SessionContext) -> None:
-        """As in chat, providers' instructions follow the agent's, and their tools join the call's."""
+        """As in chat, providers add their instructions, tools and function middleware after the agent's.
+
+        Chat middleware has no model call to wrap here, as with the agent's own.
+        """
         if context.instructions:
             self._options = {
                 **self._options,
@@ -250,6 +254,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 list(self._tools), provider_tools, duplicate_error_message="Tool names must be unique."
             )
             self._tool_loop.add_tools(provider_tools)
+        if provider_middleware := context.get_middleware():
+            self._tool_loop.add_function_middleware(
+                categorize_middleware(provider_middleware, supported_categories=("function",))["function"]
+            )
 
     def _raise_if_closed_while_starting(self) -> None:
         if self._closing.is_set():
