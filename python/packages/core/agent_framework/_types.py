@@ -330,9 +330,12 @@ def _get_data_bytes(content: Content) -> bytes | None:  # pyright: ignore[report
     data_str = _get_data_bytes_as_str(content)
     if data_str is None:
         return None
+    return _decode_data_payload(data_str)
 
+
+def _decode_data_payload(payload: str) -> bytes:
     try:
-        return base64.b64decode(data_str)
+        return base64.b64decode(payload)
     except Exception as e:
         raise ContentError(f"Failed to decode base64 data: {e}") from e
 
@@ -1082,7 +1085,7 @@ class Content:
         r"""Create data content from raw binary data.
 
         Use this to create content from binary data (images, audio, documents, etc.).
-        The data will be automatically base64-encoded into a data URI.
+        The data will be automatically base64-encoded into a data URI. Read it back with ``get_data_bytes()``.
 
         Args:
             data: Raw binary data as bytes. This should be the actual binary data,
@@ -2331,6 +2334,53 @@ class Content:
         span = self.media_type[:slash_index] if slash_index >= 0 else self.media_type
         span = span.strip()
         return span.lower() == top_level_media_type.lower()
+
+    def get_data_bytes(self) -> bytes:
+        r"""Get the bytes that data content carries.
+
+        Works with any content whose URI is a base64 data URI, such as content from ``Content.from_data()``.
+        Each call decodes the data again.
+
+        Returns:
+            The decoded bytes.
+
+        Raises:
+            ContentError: If the content has no data URI, its data URI isn't base64, or its data isn't valid base64.
+
+        Examples:
+            .. code-block:: python
+
+                from agent_framework import Content
+
+                audio = Content.from_data(b"\x00\x01", "audio/pcm")
+                print(audio.get_data_bytes())  # b'\x00\x01'
+        """
+        return _decode_data_payload(self.get_data_base64())
+
+    def get_data_base64(self) -> str:
+        r"""Get the base64 data that data content carries, without decoding it.
+
+        Use this to forward data to a protocol that carries it as base64, such as audio over a JSON WebSocket,
+        without decoding and re-encoding it.
+
+        Returns:
+            The base64 data from the content's data URI, as stored.
+
+        Raises:
+            ContentError: If the content has no data URI, or its data URI isn't base64.
+
+        Examples:
+            .. code-block:: python
+
+                from agent_framework import Content
+
+                audio = Content.from_data(b"\x00\x01", "audio/pcm")
+                print(audio.get_data_base64())  # AAE=
+        """
+        payload = _get_data_bytes_as_str(self)
+        if payload is None:
+            raise ContentError(f"Only data content carries data, not {self.type} content.")
+        return payload
 
     def parse_arguments(self) -> dict[str, Any | None] | None:
         """Parse arguments from function_call, mcp_server_tool_call, or search_tool_call content.

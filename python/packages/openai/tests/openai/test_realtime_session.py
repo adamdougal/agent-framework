@@ -231,11 +231,6 @@ async def mapped(*events: Mapping[str, Any], options: RealtimeOptions | None = N
 AGENT_PART = {"response_id": "resp_1", "item_id": "item_1", "content_index": 0}
 
 
-def data_bytes(content: Any) -> bytes:
-    """The bytes a data content's base64 data URI carries."""
-    return base64.b64decode(content.uri.split(",", 1)[1])
-
-
 def assert_agent_text(event: Any, text: str, merge_mode: str, status: str | None) -> None:
     """Assert ``event`` is agent transcript text for AGENT_PART."""
     assert event.kind == "output_text"
@@ -1768,7 +1763,7 @@ async def test_output_audio_maps_to_data_with_the_output_format(
     assert audio.kind == "output_audio"
     assert audio.content.type == "data"
     assert audio.content.media_type == media_type
-    assert data_bytes(audio.content) == b"\x01\x02"
+    assert audio.content.get_data_bytes() == b"\x01\x02"
     assert audio.additional_properties["core"] == AGENT_PART
 
 

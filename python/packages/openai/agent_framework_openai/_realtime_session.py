@@ -19,7 +19,6 @@ from agent_framework import Content, FunctionTool, Message, RealtimeEvent
 from agent_framework._feature_stage import ExperimentalFeature, experimental
 from agent_framework._realtime._kinds import RealtimeKindLiteral
 from agent_framework._realtime._options import RealtimeOptionsT
-from agent_framework._types import _get_data_bytes_as_str  # pyright: ignore[reportPrivateUsage]
 from agent_framework.exceptions import (
     RealtimeActiveResponseException,
     RealtimeConnectionException,
@@ -686,8 +685,8 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                     })
                 )
             elif content.type in ("data", "uri") and content.has_top_level_media_type("audio"):
-                if (audio := _get_data_bytes_as_str(content)) is not None:
-                    wire_events.append({"type": "input_audio_buffer.append", "audio": audio})
+                if content.type == "data":
+                    wire_events.append({"type": "input_audio_buffer.append", "audio": content.get_data_base64()})
                 else:
                     # The URI isn't logged: it can carry credentials, such as a SAS signature.
                     logger.warning(
