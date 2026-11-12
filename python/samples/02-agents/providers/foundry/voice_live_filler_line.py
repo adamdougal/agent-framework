@@ -72,10 +72,12 @@ async def read_replies(conversation: RealtimeConversation[VoiceLiveOptions], rep
             elif content.type == "function_result":
                 print(f"Tool: {content.result}")
                 has_result = True
+            elif content.type == "error":
+                print(f"Error: {content.message}")
             elif content.type == "realtime_event" and content.kind == "response_created" and has_result:
                 answers.add(update.response_id)
-        if update.response_id in answers and update.finish_reason is not None:
-            return
+            elif content.type == "realtime_event" and content.kind == "response_done" and update.response_id in answers:
+                return
 
 
 async def main() -> None:

@@ -48,9 +48,11 @@ async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions], reply
             elif content.type == "data" and content.uri and content.has_top_level_media_type("audio"):
                 # The WAV writer needs the decoded 24 kHz, 16-bit mono PCM, not the content's base64 URI.
                 reply_audio.extend(base64.b64decode(content.uri.split(";base64,", 1)[1]))
-        if update.finish_reason is not None:
-            print()
-            return
+            elif content.type == "error":
+                print(f"[the reply failed: {content.message}]", end="")
+            elif content.type == "realtime_event" and content.kind == "response_done":
+                print()
+                return
 
 
 async def main() -> None:
