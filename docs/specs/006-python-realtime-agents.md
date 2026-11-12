@@ -337,7 +337,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
-  when the caller speaks or the app sends input. A batch counts toward the chain that was current when its response
+  when the caller speaks, when the app sends input, or when a user item enters the provider's conversation, such as a
+  caller turn the app commits itself. A batch counts toward the chain that was current when its response
   finished, even if new input starts another before or while it runs. `max_iterations` counts follow-ups: the responses
   created after the chain's first results, whoever requested them, apart from filler. The other limits count across the
   chain's batches. When a limit trips, the loop still sends the results and requests the follow-up with

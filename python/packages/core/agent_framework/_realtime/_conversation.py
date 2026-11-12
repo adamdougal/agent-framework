@@ -215,6 +215,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._tool_loop.on_new_input()
         elif event.kind == "speech_stopped":
             self._caller_quiet.set()
+        elif event.kind == "item_added" and core_attributes(event).get("role") == "user":
+            # A caller turn the app commits itself brings no speech_started, only the user item it adds.
+            self._tool_loop.on_new_input()
         elif event.kind == "output_audio":
             self._cut_unheard(self._audio.on_output_audio(event))
         elif event.kind == "item_truncated":
@@ -262,9 +265,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
         A ``RealtimeEvent`` is a raw command: the session sends its ``raw_representation`` verbatim, and the
         conversation doesn't track it. Other input is added to the provider's conversation in order. Audio-only input
-        leaves the response to turn detection. Any other input starts a new tool chain, so the tool loop's limits
-        count afresh, and then requests a response unless ``create_response`` is ``False``. Adding the input never
-        waits behind a control call.
+        leaves the response to turn detection or the app, and starts a new tool chain once the caller's turn is
+        committed. Any other input starts a new tool chain, so the tool loop's limits count afresh, and then requests a
+        response unless ``create_response`` is ``False``. Adding the input never waits behind a control call.
 
         Args:
             value: The input, or a raw provider command.
@@ -293,7 +296,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 # Close may have started while this send waited its turn, or while an earlier message went out.
                 await self._require_open_session().send(message)
         if _is_audio_only(messages):
-            return  # the caller's audio: turn detection starts the chain and requests the response
+            return  # committing the caller's turn starts its chain; turn detection or the app asks for the response
         self._tool_loop.on_new_input()
         if create_response:
             await self.create_response()
