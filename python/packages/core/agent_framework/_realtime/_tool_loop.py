@@ -382,6 +382,11 @@ class ToolLoop:
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
             batch = await self._run_executor(calls, _keep_results_as_they_finish(calls))
+        except Exception:
+            # The executor discards a batch that fails closed, so calls that finished first mustn't keep their results.
+            for call in calls:
+                call.result = None
+            raise
         finally:
             _CALLING_CONVERSATION.reset(requested_by_tools)
         for call in calls:

@@ -512,6 +512,44 @@ async def test_a_middleware_failure_settles_its_batchs_calls() -> None:
     assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
 
 
+async def test_a_middleware_failure_discards_the_results_its_batch_already_has() -> None:
+    client = FakeRealtimeClient()
+    updates: list[AgentResponseUpdate] = []
+    weather_finished = asyncio.Event()
+
+    @tool
+    def book(city: str) -> str:
+        """Book a trip to a city."""
+        return f"Booked {city}"
+
+    @function_middleware
+    async def guardrail(context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        if context.function.name == "book":
+            await weather_finished.wait()
+            await asyncio.sleep(0.01)
+            raise MiddlewareFailure("Blocked by policy.")
+        await call_next()
+        weather_finished.set()
+
+    async def read_all(conversation: Any) -> None:
+        async for update in conversation:
+            updates.append(update)
+
+    agent = RealtimeAgent(client, tools=[get_weather, book], middleware=[guardrail])
+    async with agent.start_conversation() as conversation:
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "get_weather", city="Paris"), _call("call_2", "book", city="Rome"))
+        )
+        with pytest.raises(MiddlewareFailure):
+            await asyncio.wait_for(read_all(conversation), 1)
+
+    settled = [content for update in updates for content in update.contents if content.type == "function_result"]
+    assert sorted((content.call_id, content.exception) for content in settled) == [
+        ("call_1", "conversation_closed"),
+        ("call_2", "conversation_closed"),
+    ]
+
+
 async def test_a_tool_that_cancels_itself_ends_the_conversation_and_its_call_is_settled() -> None:
     client = FakeRealtimeClient()
     updates: list[AgentResponseUpdate] = []

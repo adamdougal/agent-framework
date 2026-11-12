@@ -39,7 +39,8 @@ async def ask(conversation: RealtimeConversation[VoiceLiveOptions], text: str) -
             for content in update.contents:
                 if content.type == "text" and content.merge_mode == "append":
                     print(content.text, end="", flush=True)
-        if update.finish_reason is not None:
+        # Every response ends with response_done, even one that failed or was cancelled and has no finish reason.
+        if any(content.type == "realtime_event" and content.kind == "response_done" for content in update.contents):
             print()
             return
 
