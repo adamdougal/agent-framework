@@ -170,7 +170,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         if session is not None and not any(
             provider.load_messages for provider in self.context_providers if isinstance(provider, HistoryProvider)
         ):
-            self.context_providers.append(InMemoryHistoryProvider())
+            # First, so the agent's own providers see the loaded history in before_run.
+            self.context_providers.insert(0, InMemoryHistoryProvider())
 
 
 def _merge_session_options(

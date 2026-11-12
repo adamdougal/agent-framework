@@ -26,7 +26,7 @@ from ..exceptions import (
 from ._acknowledgements import AcknowledgedT, await_acknowledgement
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
-from ._history import CallHistory, is_audio
+from ._history import CallHistory
 from ._options import RealtimeOptionsT
 from ._reporting import ExchangeReporter
 from ._responses import ResponseLedger
@@ -110,6 +110,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._responses = ResponseLedger()
         self._caller_quiet = asyncio.Event()
         self._caller_quiet.set()
+        if agent_session is None and agent.context_providers:
+            # As in chat: state a provider sets up in before_run must reach the tools through the same session.
+            agent_session = AgentSession()
         self._tool_loop = ToolLoop(
             tools=list(tools),
             configuration=invocation_configuration,
@@ -295,7 +298,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         response_id = core.get("response_id", "")
         if event.kind == "response_created":
             self._responses.created(response_id, self._agent)
-            self._history.on_response_created(response_id)
+            self._history.on_response_created(event)
         elif event.kind == "response_done":
             status = core.get("status", "")
             self._responses.finished(response_id)
@@ -745,7 +748,11 @@ def _reject_app_input_for_calls(messages: Sequence[Message]) -> None:
 
 def _is_audio_only(messages: Sequence[Message]) -> bool:
     contents = [content for message in messages for content in message.contents]
-    return bool(contents) and all(is_audio(content) for content in contents)
+    return bool(contents) and all(_is_audio(content) for content in contents)
+
+
+def _is_audio(content: Content) -> bool:
+    return content.type in ("data", "uri") and content.has_top_level_media_type("audio")
 
 
 def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> bool:

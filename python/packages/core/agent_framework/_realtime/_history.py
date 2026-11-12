@@ -183,12 +183,14 @@ class CallHistory:
         return [item for item in self._items.values() if isinstance(item, _CallerTurn) and not item.settled]
 
     def on_app_input(self, message: Message) -> None:
-        text_only = [content for content in message.contents if not is_audio(content)]
-        if not text_only:
-            return
+        """Only its text: the session drops attachments, and audio becomes the caller's turn.
+
+        A copy, so the app changing its message after sending it doesn't rewrite what was said.
+        """
         recorded = copy.copy(message)
-        recorded.contents = text_only
-        self._entries.append(recorded)
+        recorded.contents = [content for content in message.contents if content.type == "text"]
+        if recorded.contents:
+            self._entries.append(copy.deepcopy(recorded))
 
     def on_input_transcription(self, event: RealtimeEvent) -> None:
         if (turn := self._item(event, _CallerTurn)) is not None:
@@ -205,7 +207,11 @@ class CallHistory:
         turn.response_id = core_attributes(event)["response_id"]
         _take_transcript(turn, event)
 
-    def on_response_created(self, response_id: str) -> None:
+    def on_response_created(self, event: RealtimeEvent) -> None:
+        core = core_attributes(event)
+        if core.get("out_of_band"):
+            return  # its output joins no conversation item, so it belongs to no exchange
+        response_id = core["response_id"]
         response = _Response(response_id)
         self._responses[response_id] = response
         self._entries.append(response)
@@ -325,10 +331,6 @@ def _take_transcript(turn: _CallerTurn | _AgentTurn, transcript: RealtimeEvent) 
         turn.text = transcript.content.text
     else:
         turn.partial += transcript.content.text or ""
-
-
-def is_audio(content: Content) -> bool:
-    return content.type in ("data", "uri") and content.has_top_level_media_type("audio")
 
 
 def _heard_words(text: str, heard_fraction: float) -> str:

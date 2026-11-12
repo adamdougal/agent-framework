@@ -760,7 +760,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             case "input_audio_buffer.speech_stopped":
                 return [self._event("speech_stopped", wire, core=_present(wire, "item_id", "audio_end_ms"))]
             case "response.created":
-                return [self._event("response_created", wire, core={"response_id": wire["response"]["id"]})]
+                core: dict[str, Any] = {"response_id": wire["response"]["id"]}
+                if _is_out_of_band(wire):
+                    core["out_of_band"] = True
+                return [self._event("response_created", wire, core=core)]
             case "response.done":
                 return self._response_done_events(wire)
             case "conversation.item.added":

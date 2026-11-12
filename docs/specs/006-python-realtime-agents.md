@@ -117,7 +117,8 @@ class RealtimeOptions(TypedDict, total=False):
 ```
 
 - `RawRealtimeAgent` runs no middleware and emits no telemetry; its tool loop still runs tools. It adds an
-  `InMemoryHistoryProvider` when a session is passed and no context provider loads history, as `Agent` does.
+  `InMemoryHistoryProvider` ahead of its other context providers when a session is passed and no context provider loads
+  history, as `Agent` does.
 - `run(...)` has no `**kwargs`, `compaction_strategy` or `tokenizer`. Per-run `options` merge over `default_options`,
   and per-run `tools` merge into the run's realtime session. `start_conversation(...)` applies `options` and `tools` to
   the initial session. `middleware=` joins the agent's own list, sorted by category. `AgentRunInputs` passed to
@@ -267,7 +268,7 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 | `session_created` | realtime-event content | **`session_id`**, `model`, `expires_at` (Unix seconds). The only place the session id appears. |
 | `session_updated` | realtime-event content | None. Acknowledges a session update. |
 | `speech_started`, `speech_stopped` | realtime-event content, `role="user"` | **`item_id`** and **`audio_start_ms`** or **`audio_end_ms`**. The barge-in cue; there's no `barge_in` kind. |
-| `response_created` | realtime-event content, `role="assistant"` | **`response_id`**. |
+| `response_created` | realtime-event content, `role="assistant"` | **`response_id`**, `out_of_band` (`True` for a response outside the conversation, such as `conversation: "none"`). |
 | `response_done` | realtime-event content, `role="assistant"` | **`response_id`**, **`status`**, `reason`, `error_code`, `error_message`, the provider's verbatim. The update sets `finish_reason`. |
 | `item_added` | realtime-event content | **`item_id`**, **`previous_item_id`** (`None` when first), `role` (message items only), `input_audio` (user message items only: whether the item holds the caller's audio). The provider's conversation order. |
 | `item_truncated` | realtime-event content, `role="assistant"` | **`item_id`**, **`content_index`**, **`audio_end_ms`**, **`truncated_by`** (`"client"` or `"provider"`). |
@@ -339,9 +340,10 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
   claimed-error rules, and the results and follow-up still go out.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
-  `None`. It isn't in the tools' runtime keyword arguments. As in chat, function middleware that keeps per-session
-  state gets a conversation-local session when the app passes none, and the context's
-  `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't replace.
+  `None`. It isn't in the tools' runtime keyword arguments. As in chat, when the app passes no session, tools and
+  function middleware that keep per-session state get a conversation-local session, the same one context providers get,
+  and the context's `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't
+  replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
   when the caller speaks or the app sends input. A batch counts toward the chain that was current when its response
@@ -382,12 +384,12 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 ## History
 
 - **Contents.** History holds the provider conversation's authored turns as text: each caller audio item as its final
-  caller transcript with `role="user"`, each assistant message item as its final agent transcript, app input as sent,
-  `create_response=False` context included, function calls with their settled results, and approval requests and
-  responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It holds no
+  caller transcript with `role="user"`, each assistant message item as its final agent transcript, the text of app input
+  as sent, `create_response=False` context included, function calls with their settled results, and approval requests
+  and responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It holds no
   realtime-event content, `error` content, usage, session updates, out-of-band responses or hosted-tool events. Each
-  conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only
-  when `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
+  conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only when
+  `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
 - **Text-less caller turns.** A caller turn whose transcription failed, wasn't configured, or was still pending after
   close's wait is a `role="user"` message with no contents, marked in `additional_properties["core"]["text_less"]` as
   `"transcription_failed"`, `"transcription_off"` or `"transcript_missing"`; read during the call, a turn still
@@ -401,8 +403,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   kept, and a truncation that arrives after its exchange was reported changes nothing.
 - **Order.** History follows the order of `item_added` events, which providers send in conversation order; app input
   takes its place when it's sent. A caller turn keeps its place before the reply even when its transcript arrives
-  later; text fills in by item id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
-  reported.
+  later; text fills in by item id. Each tool result goes directly after its call, and an exchange waits for its running
+  tools before it's reported.
 - **Attribution.** A live conversation writes to the session passed to `start_conversation(session=...)`, through the
   starting agent's context providers. Assistant and tool messages carry the `author_name` of the agent that was active
   when their response was created; the response holding a handoff call belongs to the old agent.

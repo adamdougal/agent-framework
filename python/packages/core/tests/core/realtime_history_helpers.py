@@ -124,10 +124,12 @@ class Failing(Recorder):
     def __init__(self, source_id: str = "failing", *, failures: int = 1_000) -> None:
         super().__init__(source_id)
         self.failures = failures
+        self.attempts = 0
 
     async def after_run(
         self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
     ) -> None:
+        self.attempts += 1
         if self.failures:
             self.failures -= 1
             raise RuntimeError(f"{self.source_id} store down")

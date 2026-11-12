@@ -1672,6 +1672,18 @@ async def test_item_added_maps_order_and_role() -> None:
     assert call.additional_properties["core"] == {"item_id": "item_2", "previous_item_id": "item_1"}
 
 
+async def test_response_created_marks_an_out_of_band_response() -> None:
+    """response.created for a response with conversation_id null yields response_created with core
+    {response_id, out_of_band: True}; one in the conversation carries no out_of_band."""
+    out_of_band, in_conversation = await mapped(
+        response_created("resp_oob", conversation_id=None),
+        response_created("resp_1"),
+    )
+
+    assert out_of_band.additional_properties["core"] == {"response_id": "resp_oob", "out_of_band": True}
+    assert in_conversation.additional_properties["core"] == {"response_id": "resp_1"}
+
+
 async def test_item_added_says_whether_a_user_item_holds_audio() -> None:
     """A user message item with an input_audio part maps to input_audio True, one with an input_text part to
     input_audio False, and assistant and function_call items carry no input_audio."""

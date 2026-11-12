@@ -97,9 +97,12 @@ class RealtimeResponseCreatedAttributes(TypedDict, total=False):
 
     Keys:
         response_id: The provider's response id. Required.
+        out_of_band: ``True`` for a response outside the conversation, whose output joins no conversation item.
+            Absent otherwise.
     """
 
     response_id: Required[str]
+    out_of_band: bool
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)

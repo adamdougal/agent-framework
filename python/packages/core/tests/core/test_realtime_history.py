@@ -12,6 +12,7 @@ from agent_framework import (
     AgentSession,
     Content,
     ContextProvider,
+    FunctionInvocationContext,
     InMemoryHistoryProvider,
     Message,
     RealtimeAgent,
@@ -137,6 +138,27 @@ async def test_app_input_is_recorded_without_its_audio() -> None:
         await conversation.send(Message("user", [audio]))
 
         assert dicts(conversation.history) == dicts([Message("user", ["Listen to this"])])
+
+
+async def test_app_input_is_recorded_as_its_text_only() -> None:
+    client = FakeRealtimeClient()
+    picture = Content.from_uri("https://example.com/receipt.png?sig=secret", media_type="image/png")
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await conversation.send(Message("user", ["Here's my receipt", picture]), create_response=False)
+
+        assert dicts(conversation.history) == dicts([Message("user", ["Here's my receipt"])])
+
+
+async def test_changing_a_message_after_sending_it_does_not_change_the_history() -> None:
+    client = FakeRealtimeClient()
+    sent = Message("user", ["Ada's account is 1234"])
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await conversation.send(sent, create_response=False)
+        sent.contents[0].text = "something else"
+
+        assert [message.text for message in conversation.history] == ["Ada's account is 1234"]
 
 
 async def test_a_function_call_is_recorded_with_its_result_straight_after_it() -> None:
@@ -469,6 +491,88 @@ async def test_a_failing_provider_streams_an_error_and_retries_with_the_next_rep
     ]
 
 
+async def test_a_failing_provider_is_retried_only_when_another_exchange_is_ready() -> None:
+    client = FakeRealtimeClient()
+    failing = Failing()
+    agent = RealtimeAgent(client, context_providers=[failing])
+
+    with pytest.raises(RuntimeError):
+        async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
+            client.session.emit(
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
+                caller_item("item_3"),
+                caller_transcript("item_3", "Tell me more"),
+            )
+            await until_error(conversation)
+            await streamed(
+                conversation,
+                event("response_created", response_id="resp_2"),
+                agent_item("item_4"),
+                *(agent_text("resp_2", "item_4", word, final=False) for word in ("Sure,", " here", " it", " is")),
+            )
+            await asyncio.sleep(0.01)
+            attempts_during_the_call = failing.attempts
+
+    assert attempts_during_the_call == 1
+
+
+async def test_every_report_shares_one_metadata_even_when_start_left_it_empty() -> None:
+    class Counter(Recorder):
+        async def after_run(
+            self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+        ) -> None:
+            context.metadata["reports"] = context.metadata.get("reports", 0) + 1
+            await super().after_run(agent=agent, session=session, context=context, state=state)
+
+    client = FakeRealtimeClient()
+    counter = Counter("counter")
+    agent = RealtimeAgent(client, context_providers=[counter])
+
+    async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
+        await streamed(
+            conversation,
+            caller_item("item_1"),
+            caller_transcript("item_1", "Hi"),
+            *reply("resp_1", "item_2", "Hello"),
+            caller_item("item_3"),
+            caller_transcript("item_3", "Bye"),
+            *reply("resp_2", "item_4", "Goodbye"),
+        )
+
+    assert [report.metadata["reports"] for report in counter.reports] == [2, 2]
+
+
+async def test_an_out_of_band_response_is_not_part_of_any_exchange() -> None:
+    client = FakeRealtimeClient()
+    recorder = Recorder()
+    agent = RealtimeAgent(client, context_providers=[recorder])
+
+    async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
+        await streamed(
+            conversation,
+            caller_item("item_1"),
+            caller_transcript("item_1", "I want to cancel"),
+            event("response_created", response_id="resp_oob", out_of_band=True),
+            usage("resp_oob", 50, 3),
+            event("response_done", response_id="resp_oob", status="completed"),
+            caller_item("item_2"),
+            caller_transcript("item_2", "my subscription"),
+            *reply("resp_1", "item_3", "I can help with that."),
+            usage("resp_1", 10, 5),
+        )
+
+    assert [texts(report) for report in recorder.reports] == [
+        ([("user", "I want to cancel"), ("user", "my subscription")], [("assistant", "I can help with that.")])
+    ]
+    response = recorder.reports[0].response
+    assert response is not None
+    assert response.response_id == "resp_1"
+    assert response.usage_details is not None
+    assert (response.usage_details["input_token_count"], response.usage_details["output_token_count"]) == (10, 5)
+
+
 async def test_close_raises_a_provider_failure_that_persists() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, context_providers=[Failing()])
@@ -723,6 +827,51 @@ async def test_an_in_memory_history_provider_is_added_when_a_session_is_passed()
     assert isinstance(history, InMemoryHistoryProvider)
     stored = await history.get_messages(session.session_id, state=session.state[history.source_id])
     assert [(message.role, message.text) for message in stored] == [("user", "Hi"), ("assistant", "Hello")]
+
+
+async def test_the_automatic_history_loads_before_the_agents_own_providers() -> None:
+    seen: list[list[str]] = []
+
+    class Inspector(ContextProvider):
+        async def before_run(
+            self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+        ) -> None:
+            seen.append([message.text for message in context.get_messages()])
+
+    client = FakeRealtimeClient()
+    session = AgentSession()
+    agent = RealtimeAgent(client, context_providers=[Inspector("inspector")])
+    async with agent.start_conversation(session=session, options=_TRANSCRIBED) as conversation:
+        await streamed(
+            conversation, caller_item("item_1"), caller_transcript("item_1", "Hi"), *reply("resp_1", "item_2", "Hello")
+        )
+
+    async with agent.start_conversation(session=session, options=_TRANSCRIBED):
+        pass
+
+    assert seen[1] == ["Hi", "Hello"]
+
+
+async def test_tools_share_the_session_context_providers_use() -> None:
+    @tool
+    def ticket(ctx: FunctionInvocationContext) -> str:
+        """Read the ticket the caller is calling about."""
+        return str(ctx.session.state["ticket"]) if ctx.session is not None else "no session"
+
+    class TicketLoader(ContextProvider):
+        async def before_run(
+            self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+        ) -> None:
+            session.state["ticket"] = "T-1"
+
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[ticket], context_providers=[TicketLoader("tickets")])
+
+    async with agent.start_conversation() as conversation:
+        client.session.emit(*call_response("resp_a", "item_1", "call_1", "ticket"))
+        result = await until_tool_result(conversation)
+
+    assert result.contents[0].result == "T-1"
 
 
 @pytest.mark.parametrize("case", ["no session", "a loading history provider"])

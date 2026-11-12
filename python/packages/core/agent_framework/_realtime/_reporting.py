@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from itertools import takewhile
 from typing import TYPE_CHECKING
 
 from .._sessions import SessionContext
@@ -41,16 +42,21 @@ class ExchangeReporter:
         self._wake.set()
 
     async def run(self) -> None:
+        """A failed provider retries only when another exchange is ready, so an outage can't retry on every event."""
+        reported = 0
         while True:
             await self._wake.wait()
             self._wake.clear()
             async with self._reporting:
-                await self._report(self._history.exchanges()[:-1])
+                ready = _settled(self._history.exchanges()[:-1])
+                if len(ready) > reported:
+                    reported = len(ready)
+                    await self._report(ready)
 
     async def report_remaining(self) -> list[Exception]:
         """Close raises these after cleanup, so a provider that couldn't record the call doesn't fail silently."""
         async with self._reporting:
-            return list((await self._report(self._history.exchanges())).values())
+            return list((await self._report(_settled(self._history.exchanges()))).values())
 
     async def _report(self, ready: list[Exchange]) -> dict[ContextProvider, Exception]:
         """A failing provider keeps its place and retries next time; the others carry on."""
@@ -58,8 +64,6 @@ class ExchangeReporter:
         failed: dict[ContextProvider, Exception] = {}
         start = min(self._next.get(provider, 0) for provider in providers)
         for index, exchange in enumerate(ready[start:], start):
-            if not exchange.settled:
-                break
             self._history.freeze(exchange)
             context = self._context_for(exchange, first=index == 0)
             for provider in providers:
@@ -90,8 +94,9 @@ class ExchangeReporter:
             instructions=list(start.instructions) if first else None,
             tools=list(start.tools) if first else None,
             options=start.options,
-            metadata=start.metadata,
         )
+        # SessionContext swaps an empty dict for a new one, which would stop providers sharing metadata across reports.
+        context.metadata = start.metadata
         # Providers only read the response, so SessionContext keeps it private and the framework sets it, as chat does.
         context._response = AgentResponse(  # pyright: ignore[reportPrivateUsage]
             messages=exchange.outputs,
@@ -100,3 +105,8 @@ class ExchangeReporter:
             usage_details=exchange.usage,
         )
         return context
+
+
+def _settled(exchanges: list[Exchange]) -> list[Exchange]:
+    """Exchanges are reported in order, so one still running holds back those after it."""
+    return list(takewhile(lambda exchange: exchange.settled, exchanges))
