@@ -47,7 +47,7 @@ class TestVerification:
         with pytest.raises(ContentError, match="base64 encoding"):
             read(Content.from_uri("data:text/plain,hi"))
 
-    def test_get_data_bytes_raises_for_a_payload_that_is_not_valid_base64(self):
+    def test_get_data_bytes_raises_for_a_payload_that_cannot_be_decoded(self):
         content = Content.from_uri("data:audio/pcm;base64,!!invalid!!")
 
         with pytest.raises(ContentError, match="Failed to decode"):

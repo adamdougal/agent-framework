@@ -2345,7 +2345,7 @@ class Content:
             The decoded bytes.
 
         Raises:
-            ContentError: If the content has no data URI, its data URI isn't base64, or its data isn't valid base64.
+            ContentError: If the content has no data URI, its data URI isn't base64, or its data can't be decoded.
 
         Examples:
             .. code-block:: python
