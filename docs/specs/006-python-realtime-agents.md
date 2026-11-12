@@ -399,9 +399,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `audio_end_ms / generated audio length`, as `status="incomplete"`, and leaves out a turn cut at 0 ms. A response cut
   short without a truncation keeps the text generated so far, as `status="incomplete"`. The full generated text isn't
   kept, and a truncation that arrives after its exchange was reported changes nothing.
-- **Order.** History follows `item_added` order, linked by `previous_item_id`; app input takes its place when it's
-  sent. A caller turn keeps its place before the reply even when its transcript arrives later; text fills in by item
-  id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
+- **Order.** History follows the order of `item_added` events, which providers send in conversation order; app input
+  takes its place when it's sent. A caller turn keeps its place before the reply even when its transcript arrives
+  later; text fills in by item id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
   reported.
 - **Attribution.** A live conversation writes to the session passed to `start_conversation(session=...)`, through the
   starting agent's context providers. Assistant and tool messages carry the `author_name` of the agent that was active
