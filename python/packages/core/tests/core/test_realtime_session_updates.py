@@ -401,6 +401,29 @@ async def test_an_acknowledged_tool_update_keeps_changes_another_batch_made_mean
     ]
 
 
+async def test_a_tool_update_queued_behind_an_app_update_declares_the_tools_as_they_are_then() -> None:
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_time(ctx: FunctionInvocationContext) -> str:
+        """Start offering the time tool."""
+        ctx.add_tools(get_time)
+        return "offered"
+
+    async with RealtimeAgent(client, tools=[get_weather, offer_time]).start_conversation() as conversation:
+        acknowledge = client.session.hold("update_session")
+        clearing = asyncio.create_task(conversation.update_session(tools=[]))
+        await eventually(lambda: bool(client.session.calls))
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        await asyncio.sleep(0.01)  # the batch's own update now waits behind the app's
+        acknowledge.set()
+        await clearing
+        await eventually(lambda: bool(_results(client.session)))
+
+    updates = [call for call in client.session.calls if call[0] == "update_session"]
+    assert updates == [("update_session", {}, [])]
+
+
 async def test_a_rejected_tool_update_restores_the_tools_and_still_sends_the_result(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

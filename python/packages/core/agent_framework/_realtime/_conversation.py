@@ -372,17 +372,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             RealtimeControlException: If the provider rejects the update; nothing changes.
         """
         declared = None if tools is None else unique_tools(normalize_tools(tools))
-        await self._send_session_update(options or {}, declared)
+        async with self._control_lock:
+            await self._update_session_locked(options or {}, declared)
         if declared is not None:
             self._tool_loop.on_tools_declared(declared)
 
-    async def _send_session_update(self, options: Mapping[str, Any], tools: list[ToolTypes] | None) -> None:
-        async with self._control_lock:
-            session = self._require_open_session()  # close may have started while this call waited its turn
-            await self._acknowledged(
-                session.update_session(options, tools),  # type: ignore[arg-type]
-                "update the session",
-            )
+    async def _update_session_locked(self, options: Mapping[str, Any], tools: list[ToolTypes] | None) -> None:
+        session = self._require_open_session()  # close may have started while this call waited its turn
+        await self._acknowledged(
+            session.update_session(options, tools),  # type: ignore[arg-type]
+            "update the session",
+        )
 
     async def create_response(self, *, options: RealtimeOptionsT | None = None) -> str:
         """Request a response, and return its id once the provider reports it created.

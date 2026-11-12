@@ -311,11 +311,19 @@ class ToolLoop:
             self._follow_up_due(chain)
 
     async def _declare_tool_changes(self) -> None:
-        """Tools a call added or removed must reach the provider before the results the model acts on."""
-        if _differ(self._declared, self._tools):
+        """Tools a call added or removed must reach the provider before the results the model acts on.
+
+        Results never wait behind another control call unless there's a change to declare. The change is compared again
+        once its turn comes, so an app's update queued ahead of it is never undone by a stale copy.
+        """
+        if not _differ(self._declared, self._tools):
+            return
+        async with self._conversation._control_lock:  # pyright: ignore[reportPrivateUsage]
+            if not _differ(self._declared, self._tools):
+                return
             declaring = list(self._tools)
             try:
-                await self._conversation._send_session_update({}, declaring)  # pyright: ignore[reportPrivateUsage]
+                await self._conversation._update_session_locked({}, declaring)  # pyright: ignore[reportPrivateUsage]
             except RealtimeControlTimeoutException as timeout:
                 # The provider may still apply it, so the change stays and the next batch that finishes resends it.
                 logger.warning("The tool changes a tool call made may not have reached the provider: %s", timeout)

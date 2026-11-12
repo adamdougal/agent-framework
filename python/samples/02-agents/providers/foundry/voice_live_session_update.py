@@ -38,10 +38,8 @@ OUTPUT_SAMPLE_RATE = 24_000
 RECEPTIONIST = "You are the receptionist at Contoso Dental, open 9 AM to 5 PM on weekdays. Answer in one sentence."
 
 
-async def read_replies(
-    conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray, replies_done: asyncio.Queue[None]
-) -> None:
-    """Print the agent's transcript, keep its audio, and signal each finished reply."""
+async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray) -> None:
+    """Print the agent's transcript and keep its audio until the reply finishes, or the conversation ends."""
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -50,9 +48,9 @@ async def read_replies(
             elif content.type == "data" and content.uri and content.has_top_level_media_type("audio"):
                 # The WAV writer needs the decoded 24 kHz, 16-bit mono PCM, not the content's base64 URI.
                 reply_audio.extend(base64.b64decode(content.uri.split(";base64,", 1)[1]))
-            elif content.type == "realtime_event" and content.kind == "response_done":
-                print()
-                replies_done.put_nowait(None)
+        if update.finish_reason is not None:
+            print()
+            return
 
 
 async def main() -> None:
@@ -66,16 +64,12 @@ async def main() -> None:
     }
     agent = RealtimeAgent(VoiceLiveClient(credential=credential), instructions=RECEPTIONIST, default_options=options)
     reply_audio = bytearray()
-    replies_done: asyncio.Queue[None] = asyncio.Queue()
 
     try:
         async with agent.start_conversation() as conversation:
-            # The updates are read in their own task, so they keep flowing while the app awaits control calls.
-            reader = asyncio.create_task(read_replies(conversation, reply_audio, replies_done))
-
             print("Caller: What are your opening hours?\nAgent: ", end="")
             await conversation.send("What are your opening hours?")
-            await replies_done.get()
+            await read_reply(conversation, reply_audio)
 
             print("Caller: ¿Podemos seguir en español?")
             await conversation.update_session(
@@ -87,9 +81,7 @@ async def main() -> None:
 
             print("Caller: ¿Abren los sábados?\nAgent: ", end="")
             await conversation.send("¿Abren los sábados?")
-            await replies_done.get()
-        # Closing the conversation ends its updates, so the reader finishes.
-        await reader
+            await read_reply(conversation, reply_audio)
     finally:
         if credential is not None:
             await credential.close()
