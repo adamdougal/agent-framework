@@ -83,7 +83,9 @@ calls and word timestamps. For your own deployment, pass `profile="byom-azure-op
 - Audio, both ways, may be 8, 16 or 24 kHz PCM, or G.711. Voice Live rejects a change to the caller audio's
   sampling rate once the session has started.
 
-See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py).
+See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py), and, for a realtime
+agent's live conversation, the [session update](../../samples/02-agents/providers/foundry/voice_live_session_update.py)
+and [filler line](../../samples/02-agents/providers/foundry/voice_live_filler_line.py) samples.
 
 ## Embeddings
 

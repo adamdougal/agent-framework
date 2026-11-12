@@ -11,6 +11,10 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
 from .._feature_stage import ExperimentalFeature, experimental
+from .._tools import (
+    _append_unique_tools,  # pyright: ignore[reportPrivateUsage]
+    normalize_tools,
+)
 from .._types import AgentResponseUpdate, Content, normalize_messages
 from ..exceptions import (
     RealtimeActiveResponseException,
@@ -137,6 +141,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         # The conversation owns the session from here, so a close that starts while the initial messages go out
         # closes it.
         self._session = session
+        self._tool_loop.on_tools_declared(self._tools)
         try:
             async with self._write_lock:
                 for message in self._initial_messages:
@@ -341,6 +346,41 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         async with self._write_lock:
             await self._require_open_session().send(results)
 
+    async def update_session(
+        self,
+        *,
+        options: RealtimeOptionsT | None = None,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,
+    ) -> None:
+        """Change the live realtime session's settings or tools mid-call, without reconnecting.
+
+        ``options`` merge over the session's current settings. ``tools``, when given, replace both the tools the
+        provider declares and the tools the conversation runs, ``[]`` clearing them; calls that already arrived keep
+        the tools they resolved to. The call returns once the provider acknowledges the update, so any response
+        requested afterwards uses it, or at once when the provider client drops every option it can't honor. Neither
+        the agent's defaults nor the agent session change.
+
+        Keyword Args:
+            options: The settings to change.
+            tools: The tools to use instead of the current ones, or ``None`` to keep them.
+
+        Raises:
+            ValueError: If two tools share a name; nothing is sent.
+            RealtimeConversationClosedException: If the conversation has started closing.
+            RealtimeControlTimeoutException: If the provider doesn't acknowledge the update in time; it may still apply
+                it, and the conversation keeps running its current tools.
+            RealtimeControlException: If the provider rejects the update; nothing changes.
+        """
+        declared = None if tools is None else unique_tools(normalize_tools(tools))
+        async with self._control_lock:
+            session = self._require_open_session()  # close may have started while this call waited its turn
+            await self._acknowledged(
+                session.update_session(options or {}, declared),  # type: ignore[arg-type]
+                "update the session",
+            )
+            if declared is not None:
+                self._tool_loop.on_tools_declared(declared)
+
     async def create_response(self, *, options: RealtimeOptionsT | None = None) -> str:
         """Request a response, and return its id once the provider reports it created.
 
@@ -369,22 +409,55 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _create_response_locked(
         self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], options: Mapping[str, Any] | None
     ) -> str:
+        return await self._request_response(
+            lambda: session.create_response(options),  # type: ignore[arg-type]
+            "create a response",
+        )
+
+    async def _request_response(self, request: Callable[[], Awaitable[str]], action: str) -> str:
+        """Called under the control lock. Generated and verbatim responses follow the same rules."""
         if self._responses.any_active:
             raise RealtimeActiveResponseException(
                 "A response is active. Call interrupt() first to talk over it; nothing is queued."
             )
         self._responses.request_started()
         try:
-            response_id = await self._acknowledged(
-                session.create_response(options),  # type: ignore[arg-type]
-                "create a response",
-            )
+            response_id = await self._acknowledged(request(), action)
             self._responses.requested(response_id)
             if requested_by_a_tool(self):
                 self._responses.filler(response_id)
             return response_id
         finally:
             self._responses.request_settled()
+
+    async def say(self, text: str) -> str:
+        """Have the agent speak ``text`` word for word, and return the response id once it's created.
+
+        With an Azure text-to-speech voice, Voice Live and Foundry voice agents speak the text as a pre-generated
+        response. Other providers and voices ask the model to repeat it, which is best effort. Like
+        ``create_response(...)``, nothing is queued while a response is active, and a line that a tool or function
+        middleware of this conversation says, such as filler while a tool runs, doesn't count as the tool batch's
+        follow-up.
+
+        Args:
+            text: The words to speak.
+
+        Returns:
+            The provider's id for the response that speaks the text.
+
+        Raises:
+            RealtimeActiveResponseException: If a response is active, or another response started instead.
+            RealtimeUnsupportedException: If the provider can't speak text verbatim with the session's voice, such as
+                Voice Live with an OpenAI voice.
+            RealtimeConversationClosedException: If the conversation has started closing.
+            RealtimeControlTimeoutException: If the provider doesn't acknowledge the request in time; it may still
+                speak the text.
+            RealtimeControlException: If the provider rejects the request.
+        """
+        self._require_open_session()
+        async with self._control_lock:
+            session = self._require_open_session()  # close may have started while this call waited its turn
+            return await self._request_response(lambda: session.say(text), "say the text")
 
     async def interrupt(self, *, played_ms: int | None = None) -> None:
         """Cancel the active response, and cut the audio the caller didn't hear.
@@ -524,6 +597,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             task.cancel()
         if remaining:
             await asyncio.wait(remaining)
+
+
+def unique_tools(tools: Sequence[ToolTypes]) -> list[ToolTypes]:
+    """A realtime session declares its tools by name, so two tools can't share one."""
+    return _append_unique_tools([], tools, duplicate_error_message="Tool names must be unique.")
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
