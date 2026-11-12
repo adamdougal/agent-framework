@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import logging
 import re
 import threading
 import time
@@ -28,6 +29,7 @@ from agent_framework.exceptions import (
     SettingNotFoundError,
 )
 from aiohttp import WSMsgType, web
+from azure.ai.voicelive.aio import connect
 from azure.core.credentials import AccessToken, AzureKeyCredential
 from azure.core.exceptions import AzureError
 
@@ -141,6 +143,23 @@ class VoiceLiveServer:
 async def read_all(session: Any) -> list[Any]:
     """Every realtime event the session yields until its connection ends."""
     return [event async for event in session.receive()]
+
+
+async def close_while_reading(server: VoiceLiveServer) -> list[Any]:
+    client = VoiceLiveClient(endpoint=server.endpoint, model=MODEL, api_key="k")
+    session = await asyncio.wait_for(client.start_session(), 5)
+    reading_everything = asyncio.create_task(read_all(session))
+    await asyncio.sleep(0.05)
+    await session.close()
+    return await asyncio.wait_for(reading_everything, 5)
+
+
+def sdk_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("azure.ai.voicelive") and record.levelno >= logging.WARNING
+    ]
 
 
 class FakeConnection:
@@ -539,14 +558,49 @@ async def test_normal_server_close_ends_receive() -> None:
 async def test_closing_the_session_ends_a_blocked_receive() -> None:
     """While receive() waits for the next event, session.close() ends iteration without an exception."""
     async with VoiceLiveServer() as server:
-        client = VoiceLiveClient(endpoint=server.endpoint, model=MODEL, api_key="k")
-        session = await asyncio.wait_for(client.start_session(), 5)
-        reading_everything = asyncio.create_task(read_all(session))
-        await asyncio.sleep(0.05)
-        await session.close()
-        events = await asyncio.wait_for(reading_everything, 5)
+        events = await close_while_reading(server)
 
     assert [event.kind for event in events] == ["session_created", "session_updated"]
+
+
+async def test_closing_the_session_while_a_read_waits_logs_no_sdk_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """While receive() waits for the next event, session.close() logs no WARNING from azure.ai.voicelive."""
+    async with VoiceLiveServer() as server:
+        await close_while_reading(server)
+
+    assert sdk_warnings(caplog) == []
+
+
+async def test_an_sdk_warning_during_the_close_still_gets_through(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When aiohttp's close fails after it wakes the waiting read, the SDK's "Error closing connection" WARNING from
+    azure.ai.voicelive is still logged, and nothing about the woken read is."""
+    real_close = aiohttp.ClientWebSocketResponse.close
+
+    async def failing_close(self: aiohttp.ClientWebSocketResponse, **kwargs: Any) -> bool:
+        await real_close(self, **kwargs)
+        raise RuntimeError("Close failed.")
+
+    monkeypatch.setattr(aiohttp.ClientWebSocketResponse, "close", failing_close)
+    async with VoiceLiveServer() as server:
+        await close_while_reading(server)
+
+    assert sdk_warnings(caplog) == ["Error closing connection: Close failed."]
+
+
+async def test_the_sdk_logs_as_before_once_the_session_has_closed(caplog: pytest.LogCaptureFixture) -> None:
+    """Once a session has closed, an app's own SDK connection closed with a read pending still logs the SDK's
+    "Unexpected WebSocket message type" WARNING: the client changes the SDK's logging only while it closes."""
+    async with VoiceLiveServer() as server:
+        await close_while_reading(server)
+        async with connect(endpoint=server.endpoint, credential=AzureKeyCredential("k"), model=MODEL) as connection:
+            await connection.recv_bytes()
+            waiting = asyncio.create_task(connection.recv_bytes())
+            await asyncio.sleep(0.05)
+        await waiting
+
+    assert sdk_warnings(caplog) == ["Unexpected WebSocket message type: 256"]
 
 
 class FailingSdkConnection:

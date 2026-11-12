@@ -13,7 +13,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from datetime import date
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypedDict, cast
@@ -478,7 +478,29 @@ class _VoiceLiveConnection:
 
     async def close(self) -> None:
         self._closing = True
-        await self._manager.__aexit__(None, None, None)
+        with _without_closing_wake_warning():
+            await self._manager.__aexit__(None, None, None)
+
+
+@contextlib.contextmanager
+def _without_closing_wake_warning() -> Generator[None]:
+    """The SDK logs a WARNING for the CLOSING message a local close wakes its pending read with, though it's expected.
+
+    The record is dropped only while the connection closes, and by a filter of each close's own, so the SDK's logging is
+    otherwise untouched and overlapping closes can't lift each other's filter.
+    """
+    from aiohttp import WSMsgType
+
+    sdk_logger = logging.getLogger("azure.ai.voicelive.aio._patch")
+
+    def is_not_closing_wake(record: logging.LogRecord) -> bool:
+        return not (record.msg == "Unexpected WebSocket message type: %s" and record.args == (WSMsgType.CLOSING,))
+
+    sdk_logger.addFilter(is_not_closing_wake)
+    try:
+        yield
+    finally:
+        sdk_logger.removeFilter(is_not_closing_wake)
 
 
 _CLOSINGS_AFTER_HANDSHAKE: set[asyncio.Task[None]] = set()
