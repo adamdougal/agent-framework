@@ -25,7 +25,19 @@ if TYPE_CHECKING:
         evaluate_traces,
     )
     from ._memory_provider import FoundryMemoryProvider
+    from ._realtime_options import (
+        AzureAnimation,
+        AzureEchoCancellation,
+        AzureEndOfUtteranceDetection,
+        AzureInterimResponse,
+        AzureNoiseReduction,
+        AzureTranscription,
+        AzureTurnDetection,
+        AzureVoice,
+        VoiceLiveOptions,
+    )
     from ._to_prompt_agent import to_prompt_agent
+    from ._voice_live import VoiceLiveClient
 
 try:
     __version__ = importlib.metadata.version(__name__)
@@ -33,6 +45,14 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "0.0.0"
 
 _LAZY_EXPORTS: Final[dict[str, str]] = {
+    "AzureAnimation": "._realtime_options",
+    "AzureEchoCancellation": "._realtime_options",
+    "AzureEndOfUtteranceDetection": "._realtime_options",
+    "AzureInterimResponse": "._realtime_options",
+    "AzureNoiseReduction": "._realtime_options",
+    "AzureTranscription": "._realtime_options",
+    "AzureTurnDetection": "._realtime_options",
+    "AzureVoice": "._realtime_options",
     "FOUNDRY_HOSTED_AGENT_SESSION_ID_KEY": "._constants",
     "FoundryAgent": "._agent",
     "FoundryAgentOptions": "._agent",
@@ -48,6 +68,8 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "RawFoundryAgentChatClient": "._agent",
     "RawFoundryChatClient": "._chat_client",
     "RawFoundryEmbeddingClient": "._embedding_client",
+    "VoiceLiveClient": "._voice_live",
+    "VoiceLiveOptions": "._realtime_options",
     "evaluate_foundry_target": "._foundry_evals",
     "evaluate_traces": "._foundry_evals",
     "to_prompt_agent": "._to_prompt_agent",
@@ -55,6 +77,14 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
 
 __all__ = [
     "FOUNDRY_HOSTED_AGENT_SESSION_ID_KEY",
+    "AzureAnimation",
+    "AzureEchoCancellation",
+    "AzureEndOfUtteranceDetection",
+    "AzureInterimResponse",
+    "AzureNoiseReduction",
+    "AzureTranscription",
+    "AzureTurnDetection",
+    "AzureVoice",
     "FoundryAgent",
     "FoundryAgentOptions",
     "FoundryChatClient",
@@ -69,6 +99,8 @@ __all__ = [
     "RawFoundryAgentChatClient",
     "RawFoundryChatClient",
     "RawFoundryEmbeddingClient",
+    "VoiceLiveClient",
+    "VoiceLiveOptions",
     "__version__",
     "evaluate_foundry_target",
     "evaluate_traces",

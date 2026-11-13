@@ -7,6 +7,7 @@ This package provides:
 - `OpenAIChatClient` for the OpenAI Responses API
 - `OpenAIChatCompletionClient` for the Chat Completions API
 - `OpenAIEmbeddingClient` for embeddings
+- `OpenAIRealtimeSession`, an experimental realtime session for services that speak the OpenAI Realtime protocol
 
 ## Installation
 
@@ -145,6 +146,14 @@ from agent_framework.openai import OpenAIChatCompletionClient
 
 client = OpenAIChatCompletionClient(model="gpt-4o-mini")
 ```
+
+## Realtime sessions (experimental)
+
+`OpenAIRealtimeSession` implements the realtime session protocol for any service that speaks the OpenAI Realtime
+protocol. It translates the neutral realtime options, maps server events to realtime event kinds, and runs the control
+calls: updating the session, creating and cancelling responses, `say(...)` and truncating. Provider clients build it on
+an `OpenAIRealtimeConnection`, a transport with `send`, `receive` and `close`, and subclass it for a service's
+differences. `VoiceLiveClient` in `agent-framework-foundry` does this for Azure Voice Live.
 
 ## Concurrent reuse
 

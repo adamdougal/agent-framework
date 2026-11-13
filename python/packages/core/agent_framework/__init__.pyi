@@ -159,7 +159,9 @@ from ._middleware import (
     chat_middleware,
     function_middleware,
 )
+from ._realtime._agent import RawRealtimeAgent, RealtimeAgent
 from ._realtime._clients import RealtimeClientProtocol, RealtimeClientSessionProtocol
+from ._realtime._conversation import RealtimeConversation
 from ._realtime._events import RealtimeEvent
 from ._realtime._kinds import (
     RealtimeErrorAttributes,
@@ -570,8 +572,11 @@ __all__ = [
     "OuterUpdateT",
     "Param",
     "RawAgent",
+    "RawRealtimeAgent",
+    "RealtimeAgent",
     "RealtimeClientProtocol",
     "RealtimeClientSessionProtocol",
+    "RealtimeConversation",
     "RealtimeErrorAttributes",
     "RealtimeEvent",
     "RealtimeFunctionCallAttributes",

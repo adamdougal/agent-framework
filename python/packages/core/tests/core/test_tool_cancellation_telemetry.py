@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Telemetry for tool calls cancelled while running (spec 006, Telemetry, "Cancelled tools")."""
+"""Telemetry for tool calls cancelled while running."""
 
 import asyncio
 import logging

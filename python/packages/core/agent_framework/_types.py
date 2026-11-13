@@ -330,9 +330,12 @@ def _get_data_bytes(content: Content) -> bytes | None:  # pyright: ignore[report
     data_str = _get_data_bytes_as_str(content)
     if data_str is None:
         return None
+    return _decode_data_payload(data_str)
 
+
+def _decode_data_payload(payload: str) -> bytes:
     try:
-        return base64.b64decode(data_str)
+        return base64.b64decode(payload)
     except Exception as e:
         raise ContentError(f"Failed to decode base64 data: {e}") from e
 
@@ -1082,7 +1085,7 @@ class Content:
         r"""Create data content from raw binary data.
 
         Use this to create content from binary data (images, audio, documents, etc.).
-        The data will be automatically base64-encoded into a data URI.
+        The data will be automatically base64-encoded into a data URI. Read it back with ``get_data_bytes()``.
 
         Args:
             data: Raw binary data as bytes. This should be the actual binary data,
@@ -2332,6 +2335,53 @@ class Content:
         span = span.strip()
         return span.lower() == top_level_media_type.lower()
 
+    def get_data_bytes(self) -> bytes:
+        r"""Get the bytes that data content carries.
+
+        Works with any content whose URI is a base64 data URI, such as content from ``Content.from_data()``.
+        Each call decodes the data again.
+
+        Returns:
+            The decoded bytes.
+
+        Raises:
+            ContentError: If the content has no data URI, its data URI isn't base64, or its data can't be decoded.
+
+        Examples:
+            .. code-block:: python
+
+                from agent_framework import Content
+
+                audio = Content.from_data(b"\x00\x01", "audio/pcm")
+                print(audio.get_data_bytes())  # b'\x00\x01'
+        """
+        return _decode_data_payload(self.get_data_base64())
+
+    def get_data_base64(self) -> str:
+        r"""Get the base64 data that data content carries, without decoding it.
+
+        Use this to forward data to a protocol that carries it as base64, such as audio over a JSON WebSocket,
+        without decoding and re-encoding it.
+
+        Returns:
+            The base64 data from the content's data URI, as stored.
+
+        Raises:
+            ContentError: If the content has no data URI, or its data URI isn't base64.
+
+        Examples:
+            .. code-block:: python
+
+                from agent_framework import Content
+
+                audio = Content.from_data(b"\x00\x01", "audio/pcm")
+                print(audio.get_data_base64())  # AAE=
+        """
+        payload = _get_data_bytes_as_str(self)
+        if payload is None:
+            raise ContentError(f"Only data content carries data, not {self.type} content.")
+        return payload
+
     def parse_arguments(self) -> dict[str, Any | None] | None:
         """Parse arguments from function_call, mcp_server_tool_call, or search_tool_call content.
 
@@ -3209,6 +3259,21 @@ class ContinuationToken(TypedDict):
 # endregion
 
 
+def _validate_structured_json(model: Any, text: str) -> Any:
+    """Validate JSON against ``model`` with alias validation enabled.
+
+    Providers are asked for alias-keyed output (the model's JSON schema uses aliases), so aliases are
+    always accepted, even for a model configured with ``validate_by_alias=False``. The model's own
+    ``validate_by_name`` / ``populate_by_name`` setting is preserved. Overriding ``by_alias`` needs
+    pydantic 2.11; earlier versions use the model's own settings.
+    """
+    from pydantic import VERSION
+
+    if tuple(int(part) for part in VERSION.split(".")[:2]) >= (2, 11):
+        return model.model_validate_json(text, by_alias=True)
+    return model.model_validate_json(text)
+
+
 def _parse_structured_response_value(text: str, response_format: Any | None) -> Any | None:
     if response_format is None:
         return None
@@ -3218,7 +3283,7 @@ def _parse_structured_response_value(text: str, response_format: Any | None) -> 
         from pydantic import BaseModel
 
         if issubclass(response_format, BaseModel):
-            return response_format.model_validate_json(text)
+            return _validate_structured_json(response_format, text)
     if isinstance(response_format, Mapping):
         try:
             return json.loads(text)

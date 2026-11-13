@@ -48,7 +48,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         self, messages: AgentRunInputs | None = None, *, session: AgentSession | None = None,
         options: RealtimeOptionsT | None = None, tools: ToolsInput | None = None,
         middleware: Sequence[MiddlewareTypes] | None = None,
-        function_invocation_kwargs: Mapping[str, Any] | None = None,
+        function_invocation_kwargs: Mapping[str, Any] | None = None, control_timeout: float = 10.0,
+        max_queued_updates: int = 10_000,
     ) -> RealtimeConversation[RealtimeOptionsT]: ...
 
 
@@ -131,7 +132,8 @@ class RealtimeOptions(TypedDict, total=False):
 - `RealtimeOptions` replaces ADR 0035's `RealtimeSessionOptions`, and its `create_response` lives in turn detection.
   `None` turns a feature off. `OpenAIRealtimeOptions`, `VoiceLiveOptions` and `FoundryVoiceAgentOptions` extend it.
   `AzureVoice`, `AzureTurnDetection`, `AzureTranscription` and `AzureNoiseReduction` add Azure's types and fields, and
-  Azure-only settings such as echo cancellation, animation, avatar and interim response exist only on the Azure types.
+  Azure-only settings such as echo cancellation, animation and interim response exist only on the Azure types. Avatar
+  isn't typed, because avatar video needs WebRTC; a raw `session.update` still reaches it.
   The Azure types widen `voice` to `str | AzureVoice`, as `AnthropicChatOptions` widens `instructions`. The agent, the
   conversation and the client protocols are generic over the options type, as `RawAgent` is, so a
   `RealtimeAgent[VoiceLiveOptions]` accepts an `AzureVoice`.
@@ -149,9 +151,9 @@ class RealtimeOptions(TypedDict, total=False):
   applies the options and tools with what `before_run` added, replays history, sends initial `messages` as context and
   starts the single receive loop. It never requests a response. `close()` is idempotent and runs the
   [close sequence](#close).
-- The update queue is bounded, with a capacity set at start. On overflow the conversation fails with
-  `RealtimeBackpressureException` and closes; it never drops or overwrites events. Terminal state lives outside the
-  queue, so close and failure always wake iterators.
+- The update queue is bounded, with a capacity set at start by `max_queued_updates`. On overflow the conversation
+  fails with `RealtimeBackpressureException` and closes; it never drops or overwrites events. Terminal state lives
+  outside the queue, so close and failure always wake iterators.
 
 ```text
 AgentFrameworkException
@@ -172,54 +174,69 @@ outside the topology, and app input for a call id the conversation isn't trackin
 
 | Control | Contract |
 | --- | --- |
-| `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
+| `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. The executable tools change when the provider acknowledges the update. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
 | `create_response(*, options=None) -> str` | Per-response options. Returns the response id when the response's own `response.created` arrives. |
 | `say(text) -> str` | Verbatim speech. With an Azure voice, Voice Live and Foundry send `pre_generated_assistant_message`. OpenAI, Azure OpenAI, and Foundry with an OpenAI voice request a response with the instruction "Say exactly the following, word for word, and nothing else: ...", which is best effort. Voice Live with an OpenAI voice raises `RealtimeUnsupportedException`. |
 | `interrupt(*, played_ms=None)` | Idempotent. Cancels the active response, waits for its `response.done`, and treats the provider's "no active response" error as done. With no active response it returns at once. With `played_ms`, also cuts the unheard audio ([barge-in](#barge-in)). |
 | `handoff(agent, *, tools=None)` | See [Handoffs](#handoffs). |
-| `send(..., create_response=True)` | Text and message input requests a response unless `create_response=False`. Audio leaves responses to turn detection. App tool results and approvals go to their [batch](#tool-loop). |
+| `send(..., create_response=True)` | Text and message input requests a response unless `create_response=False`. During an active response, the input is added and the request then raises `RealtimeActiveResponseException`. Audio leaves responses to turn detection. App tool results and approvals go to their [batch](#tool-loop). |
 
 - **Ordering.** Control calls are serialized in call order, and each waits for its acknowledgement before the next
   starts. The acknowledgements are `session.updated`, the call's own `response.created`, `conversation.item.truncated`
   and a cancelled response's `response.done`. `send(...)` never waits behind an acknowledgement, and writes never
   interleave. A response requested after `update_session(...)` returns uses the new session, whatever requested it. A
   response in flight doesn't change, and a turn-detection response racing the update has no guarantee.
-- **Timeout.** One acknowledgement timeout per conversation, set at start, defaults to about 10 seconds. An update with
-  nothing left to send after dropped keys returns at once. The conversation enforces it, wrapping each session control
-  call and `start_session(...)` in `asyncio.timeout()`, and raises `RealtimeControlTimeoutException`. Session control
-  methods have no timeout of their own and are cancellation-safe: a cancelled call leaves nothing pending and stops
-  claiming errors.
+- **Timeout.** One acknowledgement timeout per conversation, set at start by `control_timeout`, defaults to 10
+  seconds. An update with nothing left to send after dropped keys returns at once. The conversation enforces it,
+  wrapping each session control call and `start_session(...)` in `asyncio.timeout()`, and raises
+  `RealtimeControlTimeoutException`. Session control methods have no timeout of their own and are cancellation-safe: a
+  cancelled call leaves nothing pending and stops claiming errors. A control call or `send(...)` still waiting when
+  close starts, for an acknowledgement or its turn, raises `RealtimeConversationClosedException`.
 - **Active response.** `create_response(...)` and `say(...)` raise `RealtimeActiveResponseException` while a response
-  is active. Nothing is queued or cancelled implicitly.
+  is active. Nothing is queued or cancelled implicitly. A response `interrupt(...)` cancelled stops counting as active
+  once the cancel is acknowledged, even before its `response.done` is read.
 - **Error claiming.** Requests carry a client `event_id`, and responses an id in `response.metadata`. While a control
   call waits, an error that carries its id, `null` or a server id fails it. An error that echoes another request's id
-  doesn't. Claiming runs before deduplication, and only unclaimed back-to-back identical errors count once. Every other
-  error becomes `error` content.
+  doesn't. Claiming runs before deduplication, and only unclaimed back-to-back identical errors count once. The
+  conversation deduplicates: back-to-back means consecutive session events, and identical means the same message, code
+  and provider metadata, on the content and on the event, apart from neutral attributes. Every other error becomes
+  `error` content.
 - **Lost races.** While `create_response(...)` or `say(...)` waits, a `response.created` without its `metadata` id
   fails the call with `RealtimeActiveResponseException`. A pre-generated `say(...)` takes the first `response.created`
   after its send instead, because Voice Live returns `metadata: null` for those responses.
 - **Voice.** Where the provider refuses a voice change, the client drops `voice` before sending, with a warning. Where
   the provider ignores one, the client warns when `session.updated` echoes the old voice.
 - **Tools.** A call resolves against the executable set when its `function_call` arrives. Replacing tools doesn't cancel
-  running calls, and a call for a tool missing from the current set gets an error result.
+  running calls, and a call for a tool missing from the current set gets an error result. If a tool is replaced
+  mid-response by another with the same name, that response's calls of that name all run the tool the first of them
+  resolved to.
 - **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked, with the wire event as a JSON-serializable
   mapping in its `raw_representation`. Out-of-band responses with `conversation: "none"`, input-buffer commit and
   clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. A raw `session.update` that
   changes tools or instructions leaves the executable tool set out of step with the provider's, so those changes go
-  through `update_session(...)`.
+  through `update_session(...)`. Nothing ties a raw `session.update` to its `session.updated`, so the app waits for
+  that acknowledgement before starting a control call, or the call can take it for its own.
 - **Samples** start control calls from the update loop as tasks, so the loop keeps reading updates.
 
 ### Barge-in
 
 - The app stops its playback on `speech_started` and calls `interrupt(played_ms=...)`. Turn detection has already
   cancelled the response, through `interrupt_response`.
-- `played_ms` counts the response's audio across its assistant messages in order. The conversation truncates the
-  message where playback stopped, clamped below its generated length, and doesn't cut a message heard to within 40 ms of
-  its end.
+- `played_ms` counts the audio of the latest response that had produced audio when `interrupt(...)` was called, across
+  its assistant messages' audio content parts in order. The conversation truncates the part where playback stopped,
+  clamped below its generated length, and doesn't cut a part heard to within 40 ms of its end. Each part is measured and
+  cut on its own, by item id and content index, and its generated length comes from the audio bytes and the output
+  format. If the app is still playing an earlier response's tail when a later response produces audio, that tail isn't
+  cut.
+- The first `interrupt(played_ms=...)` or provider truncation fixes a response's cuts, and any audio part of that
+  response that arrives later is cut at 0 ms. Each cut stays owed until the provider acknowledges it, even after its
+  control call timed out, so a later `interrupt(...)` retries the cuts that failed or weren't sent, and never repeats an
+  acknowledged one.
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.
-- `interrupt(...)` waits for each truncate's acknowledgement.
+- `interrupt(...)` waits for each truncate's acknowledgement. A cut the provider rejects or doesn't acknowledge stays
+  owed without stopping the cuts after it, and `interrupt(...)` then raises the first failure.
 
 ## Event kinds
 
@@ -250,7 +267,7 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 | `input_transcription` | `text`, `role="user"` | **`item_id`**, **`content_index`**. Caller transcript. |
 | `input_transcription_failed` | realtime-event content, `role="user"` | **`item_id`**, **`content_index`**, `error_code`, `error_message`. Not `error` content. |
 | `output_text` | `text`, `role="assistant"` | **`response_id`**, **`item_id`**, **`content_index`**. Agent transcript, spoken or written. |
-| `output_audio` | `data` | **`response_id`**, **`item_id`**, **`content_index`**. Media type from the session's output format. |
+| `output_audio` | `data` | **`response_id`**, **`item_id`**, **`content_index`**. Media type from the session's output format when the response started, since a response in flight doesn't change. |
 | `function_call` | `function_call` | **`response_id`**, **`item_id`**. The assembled call, once its arguments finish. Not `informational_only`. |
 | `function_result` | `function_result`, `role="tool"` | None. One for every settled call. |
 | `function_approval_request` | `function_approval_request` | None. Local approvals, and hosted ones with `hosted=True`. |
@@ -298,30 +315,50 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   concurrently, or in model order with `allow_concurrent_invocation=False`, and function middleware and error shaping
   apply.
 - **Results.** Clients send `function_result.result` as the `function_call_output` item's `output` string, never as
-  `items` or a raw value. They drop images, audio and files with a warning.
+  `items` or a raw value. They drop images, audio and files with a warning. As in chat, each call gets an occurrence
+  `id` before it streams, unless it has one, and its result carries the same `id`.
 - **Follow-ups.** Once every call in a batch has a result, the loop sends the results in model order and requests one
-  follow-up response, after any active response finishes. Follow-ups due together merge. Batches from different
-  responses run concurrently. `MiddlewareTermination` sends the results without a follow-up. `run(...)` ends at the
-  first response that finishes without tool calls, or when `MiddlewareTermination` stops the loop. Responses that tools
-  or middleware request through `say(...)` or `create_response(...)`, such as a filler line, don't end it.
+  follow-up response, after any active response finishes and while the caller isn't speaking. Any response created after
+  the results counts as the follow-up, except responses that tools or middleware request through `say(...)` or
+  `create_response(...)`. A follow-up relaxes a required `tool_choice` to `"auto"`. Follow-ups due together merge, and a
+  merged follow-up uses `tool_choice: "none"` if any of the chains it answers needs that. A follow-up the provider
+  rejects or doesn't acknowledge streams as `error` content and is dropped, unless results went out after it was
+  requested. Batches from different responses run concurrently. `MiddlewareTermination` sends the results without a
+  follow-up. `run(...)` ends at the first response that finishes without tool calls, or when `MiddlewareTermination`
+  stops the loop. Responses that tools or middleware request through `say(...)` or `create_response(...)`, such as a
+  filler line, don't end it.
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
   `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
-  claimed-error rules, and the results and follow-up still go out.
+  claimed-error rules, the live tool list goes back to the tools the provider declares, with a warning, and the results
+  and follow-up still go out. An update that isn't acknowledged keeps the change, with a warning, and the next batch
+  sends it again.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
-  `None`. It isn't in the tools' runtime keyword arguments.
+  `None`. It isn't in the tools' runtime keyword arguments. As in chat, function middleware that keeps per-session
+  state gets a conversation-local session when the app passes none, and the context's
+  `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
-  when the caller speaks or the app sends input. `max_iterations` counts follow-ups; the other limits count across the
-  chain. When a limit trips, the loop still sends the results and requests the follow-up with `tool_choice: "none"`.
-  Unknown calls always get an error result. `run(...)` keeps chat's per-run limits.
+  when the caller speaks, when the app sends input, or when a user item enters the provider's conversation, such as a
+  caller turn the app commits itself. A batch counts toward the chain that was current when its response
+  finished, even if new input starts another before or while it runs. `max_iterations` counts follow-ups: the responses
+  created after the chain's first results, whoever requested them, apart from filler. The other limits count across the
+  chain's batches. When a limit trips, the loop still sends the results and requests the follow-up with
+  `tool_choice: "none"`, as do the chain's follow-ups from the `max_iterations`-th on. Calls that arrive later in a
+  tripped chain, or in a response once the chain's follow-ups reach `max_iterations`, don't run: each gets an error
+  result, sent without a follow-up. With `enabled=False`, no call runs and the follow-up uses `tool_choice: "none"`.
+  Unknown calls always get an error result, so `terminate_on_unknown_calls` doesn't apply. `run(...)` keeps chat's
+  per-run limits.
 - **Slow tools.** There are no timeout or filler settings. Function middleware covers both, by wrapping `call_next()` in
   `asyncio.timeout()` or by saying a filler line and catching `RealtimeActiveResponseException`.
 - **Settlement.** Calls from a response that ended `cancelled`, `incomplete` or `failed` don't run; each gets an error
   result, sent on a best-effort basis, and no follow-up. Barge-in never cancels running tools. Close stops new batches,
   cancels running tools and waits for them, settles every unfinished call with an error result that isn't sent, and
   clears pending approvals from the agent session. A settled error's `exception` says why, such as `cancelled` or
-  `conversation_closed`. `MiddlewareFailure` ends the conversation the same way, and iteration raises it.
+  `conversation_closed`. `MiddlewareFailure` ends the conversation the same way, and iteration raises it. A tool or
+  middleware that raises `CancelledError` while the conversation is open ends it too, and iteration raises
+  `ToolExecutionException`. So does an unexpected failure in the conversation's background work, such as a follow-up
+  request, and iteration raises that failure.
 - **Paused runs.** A `run(...)` that ends because its batch paused for an approval, an app-run tool or a user-input
   request leaves those calls pending. It returns them in its `AgentResponse` and keeps the approvals in the agent
   session, so the next run resumes them by replaying the call into its new realtime session. Close settles calls only
@@ -385,7 +422,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 ### Close
 
 These close paths all run the sequence below: `close()`, context exit, hang-up, a provider or receive-loop failure,
-`MiddlewareFailure` and task cancellation.
+`MiddlewareFailure` and task cancellation. A receive-loop or provider error after close starts doesn't fail the
+conversation. Entering a conversation after close starts raises `RealtimeConversationClosedException`, and a session
+that starts as close begins is closed rather than adopted. Close also ends any results still waiting to be sent.
 
 1. Stop accepting input.
 2. If the socket is open, wait for pending caller transcripts, up to about 3 seconds. Skip caller turns whose response
@@ -548,10 +587,14 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 | Foundry voice agents | `FoundryVoiceAgent`, `FoundryVoiceAgentClient`, `FoundryVoiceAgentOptions` | `agent-framework-foundry[realtime]` | `azure-ai-projects` (`.beta.voice_agents.realtime`) |
 
 - **Shared base session.** `OpenAIRealtimeSession`, public in `agent-framework-openai`, implements the typed control
-  methods, kinds, string tool outputs, replay, error claiming and the barge-in cut for services that speak the OpenAI
-  Realtime protocol. It maps wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each
-  client opens through its service's SDK, with no other SDK models and compression off. The connection maps transport
-  errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions subclass it privately.
+  methods, kinds, string tool outputs, replay and error claiming for services that speak the OpenAI Realtime protocol.
+  Its public `start(...)` applies the initial settings. It tracks the active response itself on every provider, so
+  `create_response(...)`, `say(...)` and `cancel_response()` answer from that tracking. It sends `truncate(...)` on the
+  wire, while the conversation computes the barge-in cut from `played_ms` and deduplicates unclaimed errors. It maps
+  wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each client opens through its
+  service's SDK, with no other SDK models and compression off. `receive` returns one event, or `None` on a normal close.
+  The connection maps transport errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions
+  subclass it privately.
 - **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint`, `api_key` or a `credential` for the
   `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks. It connects through
   `AsyncOpenAI(websocket_base_url=".../openai/v1")` without an `api_version`, and raises when given an
@@ -562,9 +605,9 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   names to the kinds. A managed model needs `model=`; BYOM takes `profile=`, `model=<deployment>` and optionally
   `foundry_resource_override`, sent through the SDK's `query`. It authenticates with `api_key` or `credential`, adapting
   token-provider callables and sync credentials, with `https://ai.azure.com/.default` as the default scope. It sends its
-  first `session.update` before any other event, drops per-response `instructions` with a warning, tracks the active
-  response itself, and offers `get_mcp_tool()` and `get_foundry_agent_tool()`. It reads `AZURE_VOICELIVE_ENDPOINT`,
-  `AZURE_VOICELIVE_API_KEY`, `AZURE_VOICELIVE_MODEL` and `AZURE_VOICELIVE_API_VERSION`.
+  first `session.update` before any other event, drops per-response `instructions` with a warning, and offers
+  `get_mcp_tool()` and `get_foundry_agent_tool()`. Its audio, both ways, may also be 8 or 16 kHz PCM. It reads
+  `AZURE_VOICELIVE_ENDPOINT`, `AZURE_VOICELIVE_API_KEY`, `AZURE_VOICELIVE_MODEL` and `AZURE_VOICELIVE_API_VERSION`.
 - **Foundry voice agents.** `FoundryVoiceAgent` takes `project_client`, or `project_endpoint`, `agent_name`,
   `agent_version` and a `credential` for the `https://ai.azure.com/.default` scope. It reads the same `FOUNDRY_*`
   variables as `FoundryAgent`, and other participants use `foundry_agent.client`. The client sends `agent_version` only
@@ -577,7 +620,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   no `tools` key is sent. Both `conversation.item.created` and `.added` map to `item_added`.
 - **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]`, with `websockets>=13,<16`.
   `agent-framework-foundry[realtime]` adds `azure-ai-voicelive[aiohttp]>=1.3.1,<2` and raises `azure-ai-projects` to
-  `>=2.7,<2.8`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
+  `>=2.7,<2.10`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
   `agent_framework.foundry` re-export the classes. Fields the base session writes go in the `openai` metadata namespace,
   and Voice Live's and Foundry's extras in `foundry`, because
   [spec 005](005-python-content-identity-and-protocol-metadata.md#metadata-namespaces) names a namespace after its
@@ -590,7 +633,7 @@ speaks the same GA protocol, until live tests verify it.
 
 | Capability | OpenAI (inferred) | Azure OpenAI | Voice Live `2026-07-15` | Foundry voice agent (preview) |
 | --- | --- | --- | --- | --- |
-| Voice change after the first audio | No | No (`cannot_update_voice`); dropped with a warning | Azure voices: yes. From an OpenAI voice: ignored silently; the client warns | Azure to Azure: yes. Azure to OpenAI: rejected; dropped before sending |
+| Voice change after the first audio | No | No (`cannot_update_voice`); dropped with a warning | Azure to Azure: yes. OpenAI to OpenAI: ignored silently; the client warns and keeps the old voice. Between Azure and OpenAI voices: rejected | Azure to Azure: yes. Azure to OpenAI: rejected; dropped before sending |
 | Verbatim speech (`say(...)`) | Best-effort prompt | Best-effort prompt | Azure voice: `pre_generated_assistant_message`. OpenAI voice: raises | Azure voice: `pre_generated_assistant_message`. OpenAI voice: best-effort prompt (not probed) |
 | Per-response overrides | Yes | Yes | `instructions` ignored; dropped with a warning | Yes |
 | `metadata` echo on `response.created` | Yes | Yes | Yes, except `null` for pre-generated responses | Yes (pre-generated not probed) |
@@ -626,8 +669,10 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   `FOUNDRY_VOICE_AGENTS`.
 
 On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content
-serializes; `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
-text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
+serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
+and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
+`ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys and their
+telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.

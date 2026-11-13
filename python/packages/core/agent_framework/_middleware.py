@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
     from ._agents import SupportsAgentRun
     from ._compaction import CompactionStrategy, TokenizerProtocol
+    from ._realtime._conversation import RealtimeConversation
     from ._sessions import AgentSession, _RunPersistenceGate  # pyright: ignore[reportPrivateUsage]
     from ._tools import FunctionTool, ToolTypes
     from ._types import ChatOptions
@@ -479,6 +480,10 @@ class FunctionInvocationContext:
                 Tools can add or remove tools during execution using :meth:`add_tools`
                 and :meth:`remove_tools` (progressive tool exposure). Mutations take
                 effect on the **next** model iteration, not the in-flight batch.
+        realtime_conversation: The live realtime conversation whose tool loop made the call, or ``None`` outside a
+                realtime agent's tool loop. The framework doesn't read it: it's for tools and function middleware
+                that steer the conversation, for example to request a filler line while a slow tool runs. It isn't
+                passed in ``kwargs``. Experimental under ``ExperimentalFeature.REALTIME``.
 
     Examples:
         .. code-block:: python
@@ -509,6 +514,23 @@ class FunctionInvocationContext:
             def load_math_tools(ctx: FunctionInvocationContext) -> str:
                 ctx.add_tools([factorial, fibonacci])
                 return "Math tools are now available."
+
+        A filler line from a slow tool in a realtime conversation, which doesn't count as the follow-up to its result:
+
+        .. code-block:: python
+
+            from agent_framework import FunctionInvocationContext, tool
+            from agent_framework.exceptions import RealtimeActiveResponseException
+
+
+            @tool
+            async def look_up_order(order_id: str, ctx: FunctionInvocationContext) -> str:
+                if ctx.realtime_conversation is not None:
+                    try:
+                        await ctx.realtime_conversation.say("One moment while I check your order.")
+                    except RealtimeActiveResponseException:
+                        pass  # the agent is already speaking
+                return await fetch_order(order_id)
     """
 
     def __init__(
@@ -521,6 +543,7 @@ class FunctionInvocationContext:
         kwargs: Mapping[str, Any] | None = None,
         tools: list[ToolTypes] | None = None,
         parent_service_session_state_keys: Collection[str] | None = None,
+        realtime_conversation: RealtimeConversation[Any] | None = None,
     ) -> None:
         """Initialize the FunctionInvocationContext.
 
@@ -539,6 +562,8 @@ class FunctionInvocationContext:
                 appending or removing tools changes the model's available tools.
             parent_service_session_state_keys: Provider-owned keys declared by the invoking parent agent and client,
                 or ``None`` when the invocation path cannot establish that ownership.
+            realtime_conversation: The live realtime conversation whose tool loop made the call, or ``None``.
+                Experimental under ``ExperimentalFeature.REALTIME``.
         """
         self.function = function
         self.arguments = arguments
@@ -550,6 +575,7 @@ class FunctionInvocationContext:
             frozenset(parent_service_session_state_keys) if parent_service_session_state_keys is not None else None
         )
         self.tools = tools
+        self.realtime_conversation = realtime_conversation
 
     @experimental(feature_id=ExperimentalFeature.PROGRESSIVE_TOOLS)
     def add_tools(

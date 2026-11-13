@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         FunctionMiddlewareTypes,
         MiddlewareTypes,
     )
+    from ._realtime._conversation import RealtimeConversation
     from ._sessions import AgentSession
     from ._types import (
         ChatOptions,
@@ -513,6 +514,8 @@ _ToolParameterFormat: TypeAlias = Literal["compact", "json"]
 _ToolDescriptionFormat: TypeAlias = _ToolParameterFormat | Mapping[str, _ToolParameterFormat]
 _NormalizedToolDescriptionFormat: TypeAlias = _ToolParameterFormat | dict[str, _ToolParameterFormat]
 _TOOL_DESCRIPTION_FORMAT_ERROR = "tool_description_format must be 'compact', 'json', or a tool-name mapping."
+# model_dump's fallback (str for values JSON mode doesn't know) only exists on newer Pydantic 2 versions.
+_MODEL_DUMP_HAS_FALLBACK = "fallback" in inspect.signature(BaseModel.model_dump).parameters
 
 
 def _normalize_tool_description_format(  # pyright: ignore[reportUnusedFunction]
@@ -616,17 +619,17 @@ def _format_tool_parameters(  # pyright: ignore[reportUnusedFunction]
     return "compact", compact
 
 
-_CONVERSATION_CLOSED_REASON: Final[str] = "conversation_closed"
 # Other cancel messages record "cancelled": error.type is a metric dimension, and some messages, like anyio's,
 # name a per-scope id.
-_RECORDED_CANCELLATION_REASONS: Final[frozenset[str]] = frozenset({_CONVERSATION_CLOSED_REASON})
+_CONVERSATION_CLOSED_REASON: Final[str] = "conversation_closed"
 
 
 def _cancellation_error_type(cancellation: asyncio.CancelledError) -> str:
-    """Return the ``error.type`` recorded for a tool call cancelled while running."""
     reason = cancellation.args[0] if cancellation.args else None
-    # An exact str: a subclass's own __hash__ or __eq__ could raise here and replace the cancellation.
-    return reason if type(reason) is str and reason in _RECORDED_CANCELLATION_REASONS else "cancelled"
+    # An exact str, so a subclass's own __eq__ can't run, raise, and replace the original cancellation.
+    if type(reason) is str and reason == _CONVERSATION_CLOSED_REASON:
+        return _CONVERSATION_CLOSED_REASON
+    return "cancelled"
 
 
 ClassT = TypeVar("ClassT", bound="SerializationMixin")
@@ -1456,12 +1459,34 @@ class FunctionTool(SerializationMixin):
         if isinstance(value, Content):
             return value.to_dict(exclude={"raw_representation", "additional_properties"})
         if isinstance(value, BaseModel):
-            return value.model_dump()
+            return FunctionTool._dump_model(value)
         if hasattr(value, "to_dict"):
             return value.to_dict()
         if hasattr(value, "text") and isinstance(value.text, str):
             return value.text
         return value
+
+    @staticmethod
+    def _dump_model(model: BaseModel) -> Any:
+        """Dump a Pydantic model in JSON mode.
+
+        JSON mode applies enum, datetime and UUID encoding and JSON-only serializers, and values it
+        doesn't know become their str() form. Pydantic versions without ``model_dump(..., fallback=...)``
+        get the same output from ``to_jsonable_python(..., serialize_unknown=True)``. If Pydantic still
+        can't dump the model (bytes that aren't valid UTF-8, a reference cycle), a placeholder is returned,
+        so no part of the model is sent without its serializers and exclusions.
+        """
+        try:
+            if _MODEL_DUMP_HAS_FALLBACK:
+                return model.model_dump(mode="json", fallback=str)
+            return to_jsonable_python(model, by_alias=False, serialize_unknown=True)
+        except Exception as exception:
+            logger.warning(
+                "Replacing %s in the tool result with a placeholder: it can't be serialized as JSON (%s).",
+                type(model).__name__,
+                type(exception).__name__,
+            )
+            return f"[{type(model).__name__} could not be serialized as JSON]"
 
     @staticmethod
     def parse_result(result: Any) -> list[Content]:
@@ -2287,6 +2312,7 @@ async def _auto_invoke_function(
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     live_tools: list[ToolTypes] | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
 ) -> Content:
     """Invoke a function call requested by the agent, applying middleware that is defined.
 
@@ -2302,6 +2328,8 @@ async def _auto_invoke_function(
         live_tools: The live, mutable tools list for the current agent run, exposed on
             the FunctionInvocationContext so tools can add/remove tools at runtime.
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
+        realtime_conversation: The realtime conversation whose tool loop made the call, set on the
+            FunctionInvocationContext.
 
     Returns:
         The function result content.
@@ -2399,6 +2427,7 @@ async def _auto_invoke_function(
                     kwargs=runtime_kwargs.copy(),
                     parent_service_session_state_keys=parent_service_session_state_keys,
                     tools=live_tools,
+                    realtime_conversation=realtime_conversation,
                 )
                 direct_context.metadata[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = parent_approval_source_ids
                 if host_payload_budget is not None:
@@ -2440,6 +2469,7 @@ async def _auto_invoke_function(
         kwargs=runtime_kwargs.copy(),
         parent_service_session_state_keys=parent_service_session_state_keys,
         tools=live_tools,
+        realtime_conversation=realtime_conversation,
     )
     middleware_context.metadata[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = parent_approval_source_ids
     if host_payload_budget is not None:
@@ -2603,6 +2633,7 @@ async def _execute_single_function_call(
     middleware_pipeline: FunctionMiddlewarePipeline | None,
     live_tools: list[ToolTypes] | None,
     host_payload_budget: _FunctionResultPayloadBudget | None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
 ) -> tuple[list[Content], bool]:
     from ._middleware import MiddlewareTermination
     from ._sessions import _suspend_run_persistence_gate  # pyright: ignore[reportPrivateUsage]
@@ -2631,6 +2662,7 @@ async def _execute_single_function_call(
                 config=config,
                 live_tools=live_tools,
                 host_payload_budget=host_payload_budget,
+                realtime_conversation=realtime_conversation,
             )
         return [result], False
     except MiddlewareTermination as exc:
@@ -2673,6 +2705,8 @@ async def _try_execute_function_call_groups(
     approval_session_is_authoritative: bool = True,
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
+    live_tools: list[ToolTypes] | None = None,
 ) -> tuple[list[list[Content]], bool]:
     """Execute multiple function calls concurrently while preserving per-call result groups.
 
@@ -2685,6 +2719,8 @@ async def _try_execute_function_call_groups(
         approval_session_is_authoritative: Whether the invocation session owns persistent approval state.
         middleware_pipeline: Optional middleware pipeline to apply during execution.
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
+        realtime_conversation: The realtime conversation whose tool loop made the calls, for their contexts.
+        live_tools: The live tools list to expose on each call's context, when it isn't ``tools`` itself.
 
     Returns:
         A tuple of:
@@ -2707,7 +2743,8 @@ async def _try_execute_function_call_groups(
     tool_map = _get_tool_map(tools)
     # The live tools list (when tools is the run-local list) is exposed on the
     # FunctionInvocationContext so tools can add/remove tools during the run.
-    live_tools: list[ToolTypes] | None = cast("list[ToolTypes]", tools) if isinstance(tools, list) else None
+    if live_tools is None and isinstance(tools, list):
+        live_tools = cast("list[ToolTypes]", tools)
     additional_tools = tuple(config.get("additional_tools") or ())
     approval_tool_names = {
         tool_name for tool_name, tool in tool_map.items() if tool.approval_mode == "always_require"
@@ -2764,6 +2801,7 @@ async def _try_execute_function_call_groups(
                 middleware_pipeline=middleware_pipeline,
                 live_tools=live_tools,
                 host_payload_budget=host_payload_budget,
+                realtime_conversation=realtime_conversation,
             ),
         )
 
@@ -2780,9 +2818,12 @@ async def _try_execute_function_call_groups(
                 # is cooperative — a synchronous tool body already running in a worker thread
                 # (asyncio.to_thread) cannot be interrupted and may complete its side effects,
                 # but its result is discarded with the batch and never reaches the transcript,
-                # the model, or history.
+                # the model, or history. A sibling already being cancelled, as when the batch
+                # itself is cancelled and gather forwards that cancellation with its reason, is
+                # left to finish: cancelling it again would cut short its cleanup and drop the reason.
                 for task in execution_tasks:
-                    task.cancel()
+                    if not task.done() and task.cancelling() == 0:
+                        task.cancel()
                 await asyncio.gather(*execution_tasks, return_exceptions=True)
                 raise
         for function_call in function_calls_to_execute:
@@ -2943,6 +2984,8 @@ async def _execute_function_calls(
     approval_session_is_authoritative: bool = True,
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
+    live_tools: list[ToolTypes] | None = None,
 ) -> _FunctionExecutionBatch:
     tools = _extract_tools(options)
     if not tools:
@@ -2956,6 +2999,8 @@ async def _execute_function_calls(
         middleware_pipeline=middleware_pipeline,
         config=config,
         host_payload_budget=host_payload_budget,
+        realtime_conversation=realtime_conversation,
+        live_tools=live_tools,
     )
     return _FunctionExecutionBatch(
         result_groups=result_groups,

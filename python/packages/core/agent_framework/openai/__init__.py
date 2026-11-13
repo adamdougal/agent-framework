@@ -29,6 +29,8 @@ _IMPORTS: dict[str, tuple[str, str]] = {
     "OpenAISettings": ("agent_framework_openai", "agent-framework-openai"),
     "ContentFilterResultSeverity": ("agent_framework_openai", "agent-framework-openai"),
     "OpenAIContentFilterException": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeConnection": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeSession": ("agent_framework_openai", "agent-framework-openai"),
 }
 
 

@@ -61,6 +61,16 @@ _IMPORTS: dict[str, tuple[str, str]] = {
     "evaluate_foundry_target": ("agent_framework_foundry", "agent-framework-foundry"),
     "evaluate_traces": ("agent_framework_foundry", "agent-framework-foundry"),
     "to_prompt_agent": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureAnimation": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureEchoCancellation": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureEndOfUtteranceDetection": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureInterimResponse": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureNoiseReduction": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureTranscription": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureTurnDetection": ("agent_framework_foundry", "agent-framework-foundry"),
+    "AzureVoice": ("agent_framework_foundry", "agent-framework-foundry"),
+    "VoiceLiveClient": ("agent_framework_foundry", "agent-framework-foundry"),
+    "VoiceLiveOptions": ("agent_framework_foundry", "agent-framework-foundry"),
 }
 
 
