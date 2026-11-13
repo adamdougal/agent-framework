@@ -402,7 +402,16 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 it, and the conversation keeps running its current tools.
             RealtimeControlException: If the provider rejects the update; nothing changes.
         """
-        declared = None if tools is None else await self._resolve_tools(normalize_tools(tools))
+        self._require_open_session()
+        declared = None
+        if tools is not None:
+            # A tool still connecting when close starts is abandoned, so it never joins an agent that has exited.
+            declared = await await_acknowledgement(
+                self._resolve_tools(normalize_tools(tools)),
+                action="connect the update's MCP tools",
+                timeout=None,
+                closing=self._closing,
+            )
         async with self._control_lock:
             await self._update_session_locked(options or {}, declared)
         if declared is not None:

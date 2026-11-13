@@ -11,7 +11,7 @@ from mcp.server.mcpserver import MCPServer
 
 from agent_framework import Content, FunctionTool, Message, RealtimeAgent, RealtimeEvent, tool
 from agent_framework._mcp import MCPTool
-from agent_framework.exceptions import ToolException
+from agent_framework.exceptions import RealtimeConversationClosedException, ToolException
 
 from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually
 
@@ -283,6 +283,36 @@ async def test_update_session_connects_an_mcp_tool_and_declares_its_functions() 
         assert orders.is_connected
         assert client.session.calls[-1][0] == "update_session"
         assert _names(client.session.calls[-1][2]) == ["get_delivery_slots", "book_delivery_slot"]
+
+
+async def test_an_update_still_connecting_its_mcp_tool_stops_when_the_conversation_closes() -> None:
+    """Close starting while an update's MCP tool connects raises the conversation-closed error and connects nothing."""
+    orders = _SlowToConnectMCPTool(_orders_server())
+    agent = RealtimeAgent(FakeRealtimeClient())
+
+    async with agent, agent.start_conversation() as conversation:
+        updating = asyncio.create_task(conversation.update_session(tools=[orders]))
+        await orders.connecting.wait()
+    orders.release.set()
+
+    with pytest.raises(RealtimeConversationClosedException):
+        await asyncio.wait_for(updating, 1)
+    assert not orders.is_connected
+
+
+async def test_an_update_after_close_connects_no_mcp_tool() -> None:
+    """update_session(tools=[orders]) after the conversation closed raises the conversation-closed error unconnected."""
+    orders = _InProcessMCPTool(_orders_server())
+    agent = RealtimeAgent(FakeRealtimeClient())
+
+    async with agent:
+        async with agent.start_conversation() as conversation:
+            pass
+
+        with pytest.raises(RealtimeConversationClosedException):
+            await conversation.update_session(tools=[orders])
+
+    assert orders.connections_opened == 0
 
 
 # endregion

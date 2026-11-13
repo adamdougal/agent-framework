@@ -14,11 +14,12 @@ AcknowledgedT = TypeVar("AcknowledgedT")
 
 
 async def await_acknowledgement(
-    acknowledgement: Awaitable[AcknowledgedT], *, action: str, timeout: float, closing: asyncio.Event
+    acknowledgement: Awaitable[AcknowledgedT], *, action: str, timeout: float | None, closing: asyncio.Event
 ) -> AcknowledgedT:
     """Cancel the session's call if the wait ends without it, which the session protocol makes safe.
 
-    The cancelled call finishes unwinding before this returns, so it never overlaps the next control call.
+    The cancelled call finishes unwinding before this returns, so it never overlaps the next control call. A ``None``
+    timeout waits only until close starts, for work that isn't the provider's to acknowledge.
 
     Raises:
         RealtimeControlTimeoutException: If the acknowledgement doesn't arrive in time; the provider may still apply
