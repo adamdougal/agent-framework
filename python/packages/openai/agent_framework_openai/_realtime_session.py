@@ -78,7 +78,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             it dropped.
     """
 
-    _SESSION_OPTION_KEYS: ClassVar[frozenset[str]] = frozenset({
+    _NEUTRAL_OPTION_KEYS: ClassVar[frozenset[str]] = frozenset({
         "instructions",
         "voice",
         "tool_choice",
@@ -90,6 +90,15 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         "transcription",
         "noise_reduction",
     })
+    """The neutral realtime options a session translates. A subclass builds its ``_SESSION_OPTION_KEYS`` from these
+    and its service's own settings, so it doesn't inherit settings its service doesn't document."""
+
+    _SESSION_OPTION_KEYS: ClassVar[frozenset[str]] = _NEUTRAL_OPTION_KEYS | {
+        "speed",
+        "reasoning_effort",
+        "truncation",
+        "parallel_tool_calls",
+    }
 
     _ASSISTANT_TEXT_PART: ClassVar[str] = "output_text"
 
@@ -98,6 +107,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
     event first."""
 
     _VOICE_OBJECTS_ACCEPTED: ClassVar[bool] = False
+
+    _CANCEL_NAMES_RESPONSE: ClassVar[bool] = True
+    """Whether ``response.cancel`` carries the response's id, so it can't cancel a response that started since."""
 
     _EVENT_ALIASES: ClassVar[Mapping[str, str]] = {}
 
@@ -251,12 +263,15 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         if self._active_response_id is None:
             raise RealtimeControlException("No response is active.", code="response_cancel_not_active")
         cancelled_id = self._active_response_id
+        cancel: dict[str, Any] = {"type": "response.cancel"}
+        if self._CANCEL_NAMES_RESPONSE:
+            cancel["response_id"] = cancelled_id
         await self._control(
-            {"type": "response.cancel"},
+            cancel,
             "response.done",
             concerns=lambda wire: _mapping(wire.get("response")).get("id") == cancelled_id,
-            # A response that finished while the cancel waited to send needs no cancel, and the provider would apply
-            # this untargeted one to whichever response is active by then.
+            # A response that finished while the cancel waited to send needs no cancel. Where the cancel can't name
+            # its response, the provider would apply it to whichever response is active by then.
             still_needed=lambda: self._active_response_id == cancelled_id,
         )
 
@@ -332,14 +347,16 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         audio_output: dict[str, Any] = {}
         for key, value in options.items():
             match key:
-                case "instructions" | "output_modalities":
+                case "instructions" | "output_modalities" | "truncation" | "parallel_tool_calls":
                     session[key] = value
-                case "voice":
-                    audio_output["voice"] = value
+                case "voice" | "speed":
+                    audio_output[key] = value
                 case "tool_choice":
                     session["tool_choice"] = self._translate_tool_choice(value)
                 case "max_tokens":
                     session["max_output_tokens"] = value
+                case "reasoning_effort":
+                    session["reasoning"] = {"effort": value}
                 case "input_audio_format":
                     audio_input["format"] = _audio_format(value)
                 case "output_audio_format":

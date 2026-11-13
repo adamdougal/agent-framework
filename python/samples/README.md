@@ -202,6 +202,7 @@ variable.
 | `agent-framework-openai` | `OpenAIChatClient` | `OPENAI_CHAT_MODEL` | `gpt-4.1-mini` |
 | `agent-framework-openai` | `OpenAIChatCompletionClient` | `OPENAI_CHAT_COMPLETION_MODEL` | `gpt-4o` |
 | `agent-framework-openai` | `OpenAIEmbeddingClient` | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` |
+| `agent-framework-openai` | `OpenAIRealtimeClient` | `OPENAI_REALTIME_MODEL` | `gpt-realtime-mini` |
 | `agent-framework-openai` | `OpenAIChatClient / OpenAIChatCompletionClient / OpenAIEmbeddingClient` | `OPENAI_BASE_URL` | `https://api.openai.com/v1/` |
 | `agent-framework-openai` | `OpenAIChatClient / OpenAIChatCompletionClient / OpenAIEmbeddingClient` | `OPENAI_ORG_ID` | `org_123456789` |
 | `agent-framework-openai` | `OpenAIChatClient / OpenAIChatCompletionClient / OpenAIEmbeddingClient` | `AZURE_OPENAI_ENDPOINT` | `https://my-resource.openai.azure.com/` |
@@ -212,6 +213,7 @@ variable.
 | `agent-framework-openai` | `OpenAIChatClient` | `AZURE_OPENAI_CHAT_MODEL` | `gpt-4.1` |
 | `agent-framework-openai` | `OpenAIChatCompletionClient` | `AZURE_OPENAI_CHAT_COMPLETION_MODEL` | `gpt-4o-mini` |
 | `agent-framework-openai` | `OpenAIEmbeddingClient` | `AZURE_OPENAI_EMBEDDING_MODEL` | `text-embedding-3-large` |
+| `agent-framework-openai` | `OpenAIRealtimeClient` | `AZURE_OPENAI_REALTIME_MODEL` | `gpt-realtime` |
 | `agent-framework-openai` | `OpenAIChatClient / OpenAIChatCompletionClient / OpenAIEmbeddingClient` | `AZURE_OPENAI_RESOURCE_URL` | `https://cognitiveservices.azure.com/` |
 
 `agent-framework-openai` supports the Azure OpenAI client-specific deployment aliases listed above; keep

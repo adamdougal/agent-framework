@@ -342,12 +342,13 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
     """Voice Live's preview-shaped session on the shared OpenAI Realtime session.
 
     Voice Live ``2026-07-15`` keeps the preview shape: a flat session with no ``type``, ``response.audio.*`` events,
-    and ``text`` content parts for assistant text. It rejects every event before the first session.update, so the
-    session always sends one when it opens.
+    ``text`` content parts for assistant text, and a ``response.cancel`` that names no response. It rejects every event
+    before the first session.update, so the session always sends one when it opens.
     """
 
     _INITIAL_UPDATE_REQUIRED: ClassVar[bool] = True
     _VOICE_OBJECTS_ACCEPTED: ClassVar[bool] = True
+    _CANCEL_NAMES_RESPONSE: ClassVar[bool] = False
     _ASSISTANT_TEXT_PART: ClassVar[str] = "text"
     _EVENT_ALIASES: ClassVar[Mapping[str, str]] = {
         "response.audio.delta": "response.output_audio.delta",
@@ -358,7 +359,7 @@ class _VoiceLiveSession(OpenAIRealtimeSession[VoiceLiveOptions]):
         "response.text.done": "response.output_text.done",
         "conversation.item.created": "conversation.item.added",
     }
-    _SESSION_OPTION_KEYS: ClassVar[frozenset[str]] = OpenAIRealtimeSession._SESSION_OPTION_KEYS | {
+    _SESSION_OPTION_KEYS: ClassVar[frozenset[str]] = OpenAIRealtimeSession._NEUTRAL_OPTION_KEYS | {
         "temperature",
         "metadata",
         "echo_cancellation",

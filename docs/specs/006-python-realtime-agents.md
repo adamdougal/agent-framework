@@ -134,6 +134,11 @@ class RealtimeOptions(TypedDict, total=False):
   `AzureVoice`, `AzureTurnDetection`, `AzureTranscription` and `AzureNoiseReduction` add Azure's types and fields, and
   Azure-only settings such as echo cancellation, animation and interim response exist only on the Azure types. Avatar
   isn't typed, because avatar video needs WebRTC; a raw `session.update` still reaches it.
+  `OpenAIRealtimeOptions` adds the GA protocol's session settings a voice app tunes: output `speed`, `truncation`,
+  `reasoning_effort`, `parallel_tool_calls`, and, through `OpenAIRealtimeTurnDetection`,
+  `OpenAIRealtimeTranscription` and `OpenAIRealtimeTruncation`, semantic VAD `eagerness`, `idle_timeout_ms`, a
+  transcription `prompt` and retention-ratio truncation. They're session settings only; tracing, stored prompts and
+  logprobs stay raw.
   The Azure types widen `voice` to `str | AzureVoice`, as `AnthropicChatOptions` widens `instructions`. The agent, the
   conversation and the client protocols are generic over the options type, as `RawAgent` is, so a
   `RealtimeAgent[VoiceLiveOptions]` accepts an `AzureVoice`.
@@ -594,10 +599,13 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each client opens through its
   service's SDK, with no other SDK models and compression off. `receive` returns one event, or `None` on a normal close.
   The connection maps transport errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions
-  subclass it privately.
-- **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint`, `api_key` or a `credential` for the
-  `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks. It connects through
-  `AsyncOpenAI(websocket_base_url=".../openai/v1")` without an `api_version`, and raises when given an
+  subclass it privately. Where the protocol's `response.cancel` takes a `response_id`, as GA's does,
+  `cancel_response()` names the response it found active, so the cancel can't reach a response that started since;
+  Voice Live's preview cancel takes none.
+- **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint` or `base_url`, `api_key` or a `credential`
+  for the `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks, resolved as the
+  chat clients resolve them. It connects through an `AsyncOpenAI` on the resource's `.../openai/v1` route without an
+  `api_version`, sending a key as a bearer token as Learn's GA realtime sample does, and raises when given an
   `AsyncAzureOpenAI` client. Model variables are `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`, falling back
   to `*_MODEL`.
 - **Voice Live.** `VoiceLiveClient` pins `api-version=2026-07-15`, whose session is flat, with `response.audio.*` events
@@ -662,8 +670,9 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   realtime exceptions; the `realtime.*` span names and the `agent_framework.realtime.error` and
   `agent_framework.realtime.item_truncated` events.
 - `agent-framework-orchestrations`: `RealtimeHandoffBuilder` and its built agent.
-- `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeSession`,
-  `OpenAIRealtimeConnection` and the `[realtime]` extra.
+- `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeTurnDetection`,
+  `OpenAIRealtimeTranscription`, `OpenAIRealtimeTruncation`, `OpenAIRealtimeSession`, `OpenAIRealtimeConnection` and
+  the `[realtime]` extra.
 - `agent-framework-foundry`: `VoiceLiveClient`, `VoiceLiveOptions`, the `Azure*` option types and the `[realtime]`
   extra; `FoundryVoiceAgent`, `RawFoundryVoiceAgent`, `FoundryVoiceAgentClient` and `FoundryVoiceAgentOptions` under
   `FOUNDRY_VOICE_AGENTS`.
@@ -672,7 +681,8 @@ On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields
 serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
 and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
 `ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys and their
-telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
+telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR; `OpenAISettings` and `AzureOpenAISettings`'
+`realtime_model`, read from `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.

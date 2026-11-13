@@ -21,6 +21,14 @@ This folder contains Azure-backed samples for the generic OpenAI clients in
 | [`openai_client_with_session.py`](openai_client_with_session.py) | Azure responses sample with session management. |
 | [`openai_client_with_structured_output.py`](openai_client_with_structured_output.py) | Azure responses sample with structured output. |
 
+## Realtime samples (`OpenAIRealtimeClient`)
+
+These need the realtime extra: `pip install "agent-framework-openai[realtime]" --pre`.
+
+| File | Description |
+|------|-------------|
+| [`openai_realtime_client_with_function_tools.py`](openai_realtime_client_with_function_tools.py) | A realtime agent on an Azure OpenAI realtime deployment with a function tool, using `credential=AzureCliCredential()`: send text, stream the agent's transcript and save its spoken reply to a WAV file. |
+
 ## Environment Variables
 
 Set these before running the Azure provider samples:
@@ -33,6 +41,7 @@ Optionally, you can also set:
 - `AZURE_OPENAI_API_KEY`
 - `AZURE_OPENAI_API_VERSION`
 - `AZURE_OPENAI_BASE_URL`
+- `AZURE_OPENAI_REALTIME_MODEL`, for the realtime samples, which read it before `AZURE_OPENAI_MODEL`
 
 These Azure samples are written around explicit Azure inputs such as
 `credential=AzureCliCredential()`, so they stay on Azure even if `OPENAI_API_KEY` is also present.
