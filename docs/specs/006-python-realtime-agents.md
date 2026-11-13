@@ -96,6 +96,7 @@ class RealtimeClientSessionProtocol(Protocol[RealtimeOptionsT]):  # async contex
     async def say(self, text: str) -> str: ...
     async def cancel_response(self) -> None: ...
     async def truncate(self, item_id: str, content_index: int, audio_end_ms: int) -> None: ...
+    async def delete_item(self, item_id: str) -> None: ...
     async def close(self) -> None: ...
 
 
@@ -116,7 +117,8 @@ class RealtimeOptions(TypedDict, total=False):
 ```
 
 - `RawRealtimeAgent` runs no middleware and emits no telemetry; its tool loop still runs tools. It adds an
-  `InMemoryHistoryProvider` when a session is passed and no context provider loads history, as `Agent` does.
+  `InMemoryHistoryProvider` ahead of its other context providers when a session is passed and no context provider loads
+  history, as `Agent` does.
 - `run(...)` has no `**kwargs`, `compaction_strategy` or `tokenizer`. Per-run `options` merge over `default_options`,
   and per-run `tools` merge into the run's realtime session. `start_conversation(...)` applies `options` and `tools` to
   the initial session. `middleware=` joins the agent's own list, sorted by category. `AgentRunInputs` passed to
@@ -148,9 +150,9 @@ class RealtimeOptions(TypedDict, total=False):
   their own items, with the result as a string, and a hosted `function_approval_response` becomes the provider's
   approval response. Anything else is dropped with a warning. Sending never requests a response.
 - `__aenter__` runs the conversation middleware chain, which opens the provider session. Opening runs `before_run`,
-  applies the options and tools with what `before_run` added, replays history, sends initial `messages` as context and
-  starts the single receive loop. It never requests a response. `close()` is idempotent and runs the
-  [close sequence](#close).
+  applies the options, tools and function middleware with what `before_run` added, replays history, sends initial
+  `messages` as context and starts the single receive loop. It never requests a response. `close()` is idempotent and
+  runs the [close sequence](#close).
 - The update queue is bounded, with a capacity set at start by `max_queued_updates`. On overflow the conversation
   fails with `RealtimeBackpressureException` and closes; it never drops or overwrites events. Terminal state lives
   outside the queue, so close and failure always wake iterators.
@@ -212,7 +214,9 @@ outside the topology, and app input for a call id the conversation isn't trackin
   resolved to.
 - **Raw commands.** `send(RealtimeEvent)` goes out verbatim and untracked, with the wire event as a JSON-serializable
   mapping in its `raw_representation`. Out-of-band responses with `conversation: "none"`, input-buffer commit and
-  clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. A raw `session.update` that
+  clear, item delete, `output_audio_buffer.clear` and untyped session fields stay raw. The conversation itself deletes
+  only the unheard text-only messages of a cut response ([barge-in](#barge-in)), through the session's internal
+  `delete_item(...)`, which returns on that item's `conversation.item.deleted`. A raw `session.update` that
   changes tools or instructions leaves the executable tool set out of step with the provider's, so those changes go
   through `update_session(...)`. Nothing ties a raw `session.update` to its `session.updated`, so the app waits for
   that acknowledgement before starting a control call, or the call can take it for its own.
@@ -234,6 +238,10 @@ outside the topology, and app input for a call id the conversation isn't trackin
   acknowledged one.
 - Whenever `interrupt(...)` or Voice Live's `auto_truncate` cuts a message, the conversation truncates the response's
   later assistant messages at 0 ms.
+- A later assistant message that carries text but no audio can't be truncated. Once the cut response has finished,
+  the conversation deletes each such message with `delete_item(...)`, and history leaves it out. `interrupt(...)` waits
+  for each delete and raises the first failure. A delete that fails or times out isn't retried, because the
+  conversation can't see a late `conversation.item.deleted`.
 - `auto_truncate` replaces `played_ms`; the two aren't combined.
 - `interrupt(...)` waits for each truncate's acknowledgement. A cut the provider rejects or doesn't acknowledge stays
   owed without stopping the cuts after it, and `interrupt(...)` then raises the first failure.
@@ -260,9 +268,9 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 | `session_created` | realtime-event content | **`session_id`**, `model`, `expires_at` (Unix seconds). The only place the session id appears. |
 | `session_updated` | realtime-event content | None. Acknowledges a session update. |
 | `speech_started`, `speech_stopped` | realtime-event content, `role="user"` | **`item_id`** and **`audio_start_ms`** or **`audio_end_ms`**. The barge-in cue; there's no `barge_in` kind. |
-| `response_created` | realtime-event content, `role="assistant"` | **`response_id`**. |
+| `response_created` | realtime-event content, `role="assistant"` | **`response_id`**, `out_of_band` (`True` for a response outside the conversation, such as `conversation: "none"`). |
 | `response_done` | realtime-event content, `role="assistant"` | **`response_id`**, **`status`**, `reason`, `error_code`, `error_message`, the provider's verbatim. The update sets `finish_reason`. |
-| `item_added` | realtime-event content | **`item_id`**, **`previous_item_id`** (`None` when first), `role` (message items only). The provider's conversation order. |
+| `item_added` | realtime-event content | **`item_id`**, **`previous_item_id`** (`None` when first), `role` (message items only), `input_audio` (user message items only: whether the item holds the caller's audio). The provider's conversation order. |
 | `item_truncated` | realtime-event content, `role="assistant"` | **`item_id`**, **`content_index`**, **`audio_end_ms`**, **`truncated_by`** (`"client"` or `"provider"`). |
 | `input_transcription` | `text`, `role="user"` | **`item_id`**, **`content_index`**. Caller transcript. |
 | `input_transcription_failed` | realtime-event content, `role="user"` | **`item_id`**, **`content_index`**, `error_code`, `error_message`. Not `error` content. |
@@ -334,9 +342,10 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   and follow-up still go out. An update that isn't acknowledged keeps the change, with a warning, and the next batch
   sends it again.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
-  `None`. It isn't in the tools' runtime keyword arguments. As in chat, function middleware that keeps per-session
-  state gets a conversation-local session when the app passes none, and the context's
-  `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't replace.
+  `None`. It isn't in the tools' runtime keyword arguments. As in chat, when the app passes no session, tools and
+  function middleware that keep per-session state get a conversation-local session, the same one context providers get,
+  and the context's `parent_service_session_state_keys` are the agent's and its client's, which caller kwargs can't
+  replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
   when the caller speaks, when the app sends input, or when a user item enters the provider's conversation, such as a
@@ -378,44 +387,49 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 ## History
 
 - **Contents.** History holds the provider conversation's authored turns as text: each caller audio item as its final
-  caller transcript with `role="user"`, each assistant message item as its final agent transcript, app input as sent,
-  `create_response=False` context included, function calls with their settled results, and approval requests and
-  responses. It holds no realtime-event content, `error` content, usage, session updates, out-of-band responses or
-  hosted-tool events. Each conversation item is one message with the provider's item id as `message_id`.
-- **Text-less caller turns.** A caller turn whose transcription failed, wasn't configured, or was still pending after
-  close's wait is a `role="user"` message with no contents and a namespaced marker saying why. Partial text before a
-  failure is kept as `status="incomplete"`. Replay skips text-less turns. With history providers but no transcription,
-  the conversation logs one warning at start and never switches transcription on.
+  caller transcript with `role="user"`, each assistant message item as its final agent transcript, the text of app input
+  as sent, `create_response=False` context included, function calls with the text of their settled results, and approval
+  requests and responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It
+  holds no realtime-event content, `error` content, usage, session updates, out-of-band responses or hosted-tool events.
+  Each conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only
+  when `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
+- **Text-less caller turns.** A caller turn without text, because its transcription failed, wasn't configured, or hadn't
+  arrived, whether still pending during the call or after close's wait, is a `role="user"` message with no contents and
+  `additional_properties["core"]["text_less"]` set to `True`. Partial text before a failure is kept as
+  `status="incomplete"`. A caller turn whose response ended `content_filter` stops waiting at once, so close doesn't
+  wait for it, because the provider never finishes its transcript. Replay skips text-less turns. With history providers
+  but no transcription, the conversation logs one warning at start and never switches transcription on.
 - **Cut-off turns.** After a truncation, history keeps the final agent transcript cut at the word boundary nearest
   `audio_end_ms / generated audio length`, as `status="incomplete"`, and leaves out a turn cut at 0 ms. A response cut
   short without a truncation keeps the text generated so far, as `status="incomplete"`. The full generated text isn't
-  kept, and a truncation that arrives after its exchange was reported changes nothing.
-- **Order.** History follows `item_added` order, linked by `previous_item_id`, falling back to the order of each item's
-  first event. A caller turn keeps its place before the reply even when its transcript arrives later; text fills in by
-  item id. Each tool result goes directly after its call, and an exchange waits for its running tools before it's
-  reported.
+  kept.
+- **Order.** History follows the order of `item_added` events, which providers send in conversation order; app input
+  takes its place when it's sent. A caller turn keeps its place before the reply even when its transcript arrives later;
+  text fills in by item id. Each tool result goes directly after its call.
 - **Attribution.** A live conversation writes to the session passed to `start_conversation(session=...)`, through the
   starting agent's context providers. Assistant and tool messages carry the `author_name` of the agent that was active
   when their response was created; the response holding a handoff call belongs to the old agent.
 - **Exchanges.** An exchange is input from the caller or the app with the reply and tool chain it drives, up to the next
   input. Consecutive inputs belong to one exchange, and a greeting before any input is an exchange with no input. Each
   gets one `after_run`, where `input_messages` holds its caller turns and app input, and `response.messages` its agent
-  turns and tool messages. An exchange is reported once the next has started and its items are settled, in order, in a
-  background task. Providers run in reverse registration order, as in chat. `before_run` runs once at start, and its
-  context goes with the first report only, while every exchange's context shares the start context's `metadata`. Each
-  exchange's `AgentResponse` carries its summed usage and the last response's id and finish reason.
-- **Context provider failures.** A failing `after_run` streams a non-fatal `error` update naming the provider. That
-  provider's exchanges stay queued and retry with the next report and at close; other providers continue. If it still
-  fails at close, `close()` raises after cleanup, with an exception group when several fail. Providers must tolerate
-  seeing an exchange twice.
+  turns and tool messages. Nothing is reported during the call: the [close sequence](#close) reports every exchange in
+  order, after the transcript wait and tool settlement, with providers in reverse registration order for each, as chat's
+  `after_run` runs when a run ends. `before_run` runs once at start, and its context goes with the first report only,
+  while every exchange's context shares the start context's `metadata`. Each exchange's `AgentResponse` carries its
+  summed usage and the last response's id and finish reason. A call whose process is killed before close reports
+  nothing, so apps that need each exchange stored as it happens record it from the update stream.
+- **Context provider failures.** A provider whose `after_run` fails gets none of the call's later exchanges, and the
+  other providers carry on. `close()` raises after cleanup: that provider's exception, or an exception group when
+  several fail. There's no retry and no `error` update for providers.
 - **Replay.** Opening a realtime session with an agent session replays the loaded history as conversation items: user
   and system text, agent turns as assistant text, typed `output_text` on GA-protocol services and `text` on Voice Live,
-  each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay.
+  each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay. The
+  replayed items' echoes aren't recorded, and on their own they make no exchange.
 - **`run(...)`.** Each run is one exchange. Text input is stored as given, and audio input as its caller transcript.
   The run's session closes through the close sequence before `after_run`. Context providers get the response without
   audio. A failed run reports nothing.
-- **Reading.** `RealtimeConversation.history` is a read-only snapshot of the call so far, including exchanges not yet
-  reported, and holds the final record after close.
+- **Reading.** `RealtimeConversation.history` is a read-only snapshot of the call so far, readable during the call, and
+  holds the final record after close.
 - **Continuation.** `service_session_id` stays unset for every v1 provider. A provider's conversation id travels in
   `session_created` metadata; a Foundry voice agent's `conversation_id` goes in its `foundry` namespace.
 
@@ -431,7 +445,7 @@ that starts as close begins is closed rather than adopted. Close also ends any r
    ended `content_filter`.
 3. Close the socket.
 4. Settle unfinished tool calls ([Tool loop](#tool-loop)).
-5. Report the remaining exchanges.
+5. Report each exchange to the context providers ([History](#history)).
 6. Run conversation middleware's close hooks.
 7. Return, or raise context provider and close-hook failures after cleanup.
 
@@ -691,8 +705,8 @@ the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the interna
   sequence, every kind mapped from GA and Voice Live preview payloads, and `realtime_event` serialization.
 - Tool-loop tests cover batching, follow-ups, ordering against session updates, settlement, paused runs, approvals and
   app-run tools through the shared executor.
-- History tests cover spoken order with late transcripts, cut-off and text-less turns, per-exchange reporting, provider
-  retries and replay. Handoff, middleware and telemetry tests cover the active agent, the builder and the span tree.
+- History tests cover spoken order with late transcripts, cut-off and text-less turns, reporting at close, provider
+  failures and replay. Handoff, middleware and telemetry tests cover the active agent, the builder and the span tree.
 - Regression tests show the MCP helper and the topology base don't change chat behavior.
 - Live integration tests, marked `flaky` and `integration` with environment-based skips, cover each provider and verify
   the inferred OpenAI column. Dependency probes cover both `[realtime]` extras on every supported Python version.

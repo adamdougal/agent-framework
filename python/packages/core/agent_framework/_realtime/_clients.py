@@ -136,6 +136,20 @@ class RealtimeClientSessionProtocol(Protocol[RealtimeOptionsT]):
         """
         ...
 
+    async def delete_item(self, item_id: str) -> None:
+        """Delete an item from the provider's conversation, and return once the provider confirms it.
+
+        The conversation deletes a cut response's later text-only messages this way, because truncation only cuts audio
+        and the caller never heard them.
+
+        Args:
+            item_id: The item to delete.
+
+        Raises:
+            RealtimeControlException: If the provider rejects the deletion.
+        """
+        ...
+
     async def close(self) -> None:
         """Close the connection. Closing again does nothing."""
         ...

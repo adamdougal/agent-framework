@@ -923,7 +923,12 @@ async def test_preview_event_names_map_to_kinds() -> None:
         ("item_added", "conversation.item.created"),
     ]
     assert events[3].content.text == "Hi there"
-    assert events[6].additional_properties["core"] == {"item_id": "item_2", "previous_item_id": None, "role": "user"}
+    assert events[6].additional_properties["core"] == {
+        "item_id": "item_2",
+        "previous_item_id": None,
+        "role": "user",
+        "input_audio": False,
+    }
 
 
 async def test_passthrough_namespace_follows_the_events_owner() -> None:
@@ -962,6 +967,35 @@ async def test_assistant_text_is_sent_as_a_text_part() -> None:
 
 
 class TestVerification:
+    async def test_item_created_says_whether_a_user_item_holds_audio(self) -> None:
+        caller_audio = {"type": "input_audio", "transcript": None}
+        session, connection = await voice_live_session()
+
+        async with reading(session) as events:
+            connection.push(
+                {
+                    "type": "conversation.item.created",
+                    "event_id": "e1",
+                    "previous_item_id": None,
+                    "item": {"id": "item_1", "type": "message", "role": "user", "content": [caller_audio]},
+                },
+                {
+                    "type": "conversation.item.created",
+                    "event_id": "e2",
+                    "previous_item_id": "item_1",
+                    "item": {
+                        "id": "item_2",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Hi"}],
+                    },
+                },
+            )
+            await until(lambda: len([event for event in events if event.kind == "item_added"]) == 2)
+
+        added = [event for event in events if event.kind == "item_added"]
+        assert [event.additional_properties["core"]["input_audio"] for event in added] == [True, False]
+
     async def test_cancelled_start_closes_the_socket(self) -> None:
         """start_session() cancelled while waiting for session.updated raises CancelledError and the server sees the
         socket close."""

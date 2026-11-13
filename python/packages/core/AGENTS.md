@@ -113,10 +113,11 @@ the root package:
 - `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
   `RealtimeEvent` or a `Message`, which it maps by content type.
 - `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
-  options, tools and function middleware over the agent's.
+  options, tools and function middleware over the agent's, and adds an `InMemoryHistoryProvider` for a session as
+  `Agent` does.
 - `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls and the close sequence. It
   owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch` hands each event kind to the
-  concern modules below.
+  concern modules below. Opening runs context providers' `before_run` and replays the history they load.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
   timeout and until close starts, and lets a cancelled session call finish unwinding.
 - `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
@@ -128,10 +129,17 @@ the root package:
   runs in step with the tools the provider declares: tool-list changes a call makes with `ctx.add_tools()` or
   `ctx.remove_tools()` go out as a session update before that batch's results.
 - `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
-  a provider truncation into truncates.
+  a provider truncation into truncates. It remembers where each response was cut, so the conversation can delete the
+  response's later text-only messages, which truncation can't reach.
+- `_history.py` - `CallHistory`, the ordered item registry behind `RealtimeConversation.history`. It records caller
+  turns (`user` items with `input_audio`), app input as it's written, agent turns and calls, and splits them into
+  exchanges. `user` and `system` items without audio are echoes of app input or replay, so it ignores them.
+- `_reporting.py` - `report_exchanges`, which close uses to report each exchange to the context providers'
+  `after_run` in order. A provider that fails skips the later exchanges, and the others carry on.
 
-Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, and the
-live tool list, as private keywords; chat passes neither.
+Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, the
+live tool list, and an `on_call_finished` callback that keeps a cancelled batch's finished results, as private
+keywords; chat passes none of them.
 
 A kind's neutral attributes live under `additional_properties["core"]`, on both the `RealtimeEvent` and the
 `realtime_event` content built with `Content.from_realtime_event(...)`, whose `kind` and `service_event_type` are
