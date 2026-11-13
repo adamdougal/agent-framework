@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
 from .._agents import _append_tools_with_mcp_functions  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
+from .._mcp import MCPTool
 from .._tools import (
     _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
     _append_unique_tools,  # pyright: ignore[reportPrivateUsage]
@@ -173,23 +174,23 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         The tools are prepared with the app's kwargs, as chat prepares them with the run's, without the agent's private
         session-state claim. A tool connected here stays open for the starting agent's lifetime. One still connecting
         when close starts is abandoned, so a hung server can't hold up close, and the connection never joins an agent
-        that has already exited.
+        that has already exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
         """
         connection_kwargs = {
             name: value
             for name, value in self._function_invocation_kwargs.items()
             if name != _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY
         }
+        resolving = _append_tools_with_mcp_functions(
+            [],
+            tools,
+            exit_stack=self._agent._exit_stack,  # pyright: ignore[reportPrivateUsage]
+            connection_kwargs=connection_kwargs,
+        )
+        if not any(isinstance(tool, MCPTool) for tool in tools):
+            return await resolving
         return await await_acknowledgement(
-            _append_tools_with_mcp_functions(
-                [],
-                tools,
-                exit_stack=self._agent._exit_stack,  # pyright: ignore[reportPrivateUsage]
-                connection_kwargs=connection_kwargs,
-            ),
-            action="connect its MCP tools",
-            timeout=None,
-            closing=self._closing,
+            resolving, action="connect its MCP tools", timeout=None, closing=self._closing
         )
 
     def _raise_if_closed_while_starting(self) -> None:

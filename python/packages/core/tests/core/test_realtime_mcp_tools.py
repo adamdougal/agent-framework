@@ -300,6 +300,18 @@ async def test_update_session_connects_an_mcp_tool_and_declares_its_functions() 
         assert _names(client.session.calls[-1][2]) == ["get_delivery_slots", "book_delivery_slot"]
 
 
+async def test_an_update_without_mcp_tools_keeps_its_place_among_control_calls() -> None:
+    """update_session(tools=[get_time]) started before create_response() reaches the session first."""
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        updating = asyncio.create_task(conversation.update_session(tools=[get_time]))
+        responding = asyncio.create_task(conversation.create_response())
+        await asyncio.gather(updating, responding)
+
+    assert [call[0] for call in client.session.calls] == ["update_session", "create_response"]
+
+
 async def test_an_update_still_connecting_its_mcp_tool_stops_when_the_conversation_closes() -> None:
     """Close starting while an update's MCP tool connects raises the conversation-closed error and connects nothing."""
     orders = _SlowToConnectMCPTool(_orders_server())
