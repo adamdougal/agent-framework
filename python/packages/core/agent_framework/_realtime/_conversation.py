@@ -425,6 +425,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         Raises:
             ValueError: If ``agent`` uses another client instance or is outside the owner's handoff topology, or two
                 tools share a name; nothing is sent.
+            MiddlewareException: If ``agent``'s middleware includes a bundle with middleware a realtime conversation
+                can't run, such as agent middleware; nothing is sent.
             RealtimeConversationClosedException: If the conversation has started closing.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the update in time; it may still apply
                 it, and the previous agent stays active.
@@ -435,6 +437,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         # The owner adds the target's tools here, and raises ValueError for an agent outside its topology.
         options, declared = participant_update(agent, self._call, normalize_tools(tools))
         declared = unique_tools(declared)
+        # Sorting the target's middleware now refuses a bundle the conversation can't run before anything changes.
+        self._tool_loop.pipeline_for(agent)
         async with self._control_lock:
             await self._update_session_locked(options, declared)
             self._tool_loop.on_tools_declared(declared)

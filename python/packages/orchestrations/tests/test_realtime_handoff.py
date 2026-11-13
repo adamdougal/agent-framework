@@ -17,6 +17,7 @@ from agent_framework import (
     FunctionTool,
     InMemoryHistoryProvider,
     Message,
+    MiddlewareBundle,
     RealtimeAgent,
     RealtimeEvent,
     RealtimeKind,
@@ -25,7 +26,7 @@ from agent_framework import (
     function_middleware,
     tool,
 )
-from agent_framework.exceptions import RealtimeControlException
+from agent_framework.exceptions import MiddlewareException, RealtimeControlException
 from agent_framework.orchestrations import RealtimeHandoffBuilder
 
 
@@ -472,6 +473,24 @@ def test_build_warns_about_participant_settings_that_wont_apply(caplog: pytest.L
     [warning] = [record.getMessage() for record in caplog.records if "billing" in record.getMessage()]
     for setting in ("context_providers", "function_invocation_configuration", "temperature", "middleware"):
         assert setting in warning
+
+
+def test_build_refuses_a_participant_middleware_bundle_with_agent_middleware() -> None:
+    client = FakeRealtimeClient()
+
+    class AuditMiddleware(AgentMiddleware):
+        async def process(self, context: AgentContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            await call_next()
+
+    receptionist = _receptionist(client)
+    billing = RealtimeAgent(
+        client,  # type: ignore[arg-type]
+        name="billing",
+        middleware=[MiddlewareBundle([AuditMiddleware(), _recorder("billing", [])])],
+    )
+
+    with pytest.raises(MiddlewareException):
+        RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
 
 
 # endregion

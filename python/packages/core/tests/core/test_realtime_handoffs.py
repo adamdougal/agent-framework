@@ -9,11 +9,14 @@ from typing import Any
 import pytest
 
 from agent_framework import (
+    AgentContext,
+    AgentMiddleware,
     AgentSession,
     Content,
     FunctionInvocationContext,
     FunctionMiddleware,
     Message,
+    MiddlewareBundle,
     RealtimeAgent,
     RealtimeEvent,
     RealtimeOptions,
@@ -21,6 +24,7 @@ from agent_framework import (
     tool,
 )
 from agent_framework.exceptions import (
+    MiddlewareException,
     RealtimeControlException,
     RealtimeControlTimeoutException,
     RealtimeConversationClosedException,
@@ -371,6 +375,22 @@ async def test_calls_of_one_response_split_by_a_handoff_run_through_each_agents_
         await eventually(lambda: len(_results(client.session)) == 2)
 
     assert sorted(seen) == [("billing", "get_balance"), ("receptionist", "greet")]
+
+
+async def test_a_target_whose_middleware_bundle_has_agent_middleware_is_refused_before_sending() -> None:
+    client = FakeRealtimeClient()
+
+    class AuditMiddleware(AgentMiddleware):
+        async def process(self, context: AgentContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            await call_next()
+
+    bundle = MiddlewareBundle([AuditMiddleware(), _recorder("billing", [])])
+
+    async with _receptionist(client).start_conversation() as conversation:
+        with pytest.raises(MiddlewareException):
+            await conversation.handoff(_billing(client, middleware=[bundle]))
+
+    assert client.session.calls == []
 
 
 # endregion

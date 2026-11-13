@@ -13,6 +13,7 @@ from agent_framework import (
     FunctionInvocationConfiguration,
     FunctionInvocationContext,
     FunctionTool,
+    MiddlewareBundle,
     MiddlewareTypes,
     RawRealtimeAgent,
     RealtimeAgent,
@@ -119,6 +120,8 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
         Raises:
             ValueError: If there are no participants, no start agent, participants on different client instances, or a
                 participant tool named like one of its handoff tools.
+            MiddlewareException: If a participant's middleware includes a bundle with middleware a realtime
+                conversation can't run, such as agent middleware.
         """
         agents = self._resolve_agents()
         if self._start_id is None:
@@ -138,6 +141,7 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
         }
         for agent, tools in handoff_tools.items():
             _reject_clashing_tool_names(self._resolve_to_id(agent), agent, tools)
+            _reject_unrunnable_bundles(agent)
             _warn_about_settings_that_wont_apply(self._resolve_to_id(agent), agent)
         return _RealtimeHandoffAgent(start, handoff_tools, **self._agent_settings)
 
@@ -151,6 +155,12 @@ def _reject_clashing_tool_names(
             f"Agent '{agent_id}' already has a tool named '{clash}', which its handoff tool needs. Rename the tool or "
             "the target agent."
         )
+
+
+def _reject_unrunnable_bundles(agent: RawRealtimeAgent[Any]) -> None:
+    """A bundle can't be installed in part, so one with members a realtime call can't run fails now, not mid-call."""
+    bundles = [middleware for middleware in agent.middleware or [] if isinstance(middleware, MiddlewareBundle)]
+    categorize_middleware(bundles, supported_categories=("function",))
 
 
 def _warn_about_settings_that_wont_apply(agent_id: str, agent: RawRealtimeAgent[Any]) -> None:

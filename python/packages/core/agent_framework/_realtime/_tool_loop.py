@@ -155,11 +155,16 @@ class ToolLoop:
             event.content.id = _generate_function_call_occurrence_id()
         response_id = core_attributes(event)["response_id"]
         tool = _get_tool_map(self._tools).get(event.content.name or "")
-        pipeline = self._pipeline_for(self._conversation.active_agent)
+        pipeline = self.pipeline_for(self._conversation.active_agent)
         self._calls_by_response.setdefault(response_id, []).append(_Call(event.content, response_id, tool, pipeline))
 
-    def _pipeline_for(self, agent: BaseAgent) -> FunctionMiddlewarePipeline:
-        """The host's function middleware wraps the agent's own, which wraps the conversation's."""
+    def pipeline_for(self, agent: BaseAgent) -> FunctionMiddlewarePipeline:
+        """The host's function middleware wraps the agent's own, which wraps the conversation's.
+
+        Raises:
+            MiddlewareException: If the agent's middleware includes a bundle with middleware a realtime conversation
+                can't run.
+        """
         if (pipeline := self._pipelines.get(agent)) is None:
             own = categorize_middleware(agent.middleware, supported_categories=("function",))["function"]
             pipeline = self._add_pipeline(agent, own)
