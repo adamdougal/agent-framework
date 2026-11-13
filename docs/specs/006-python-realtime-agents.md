@@ -182,10 +182,12 @@ outside the topology, and app input for a call id the conversation isn't trackin
 | `send(..., create_response=True)` | Text and message input requests a response unless `create_response=False`. During an active response, the input is added and the request then raises `RealtimeActiveResponseException`. Audio leaves responses to turn detection. App tool results and approvals go to their [batch](#tool-loop). |
 
 - **Ordering.** Control calls are serialized in call order, and each waits for its acknowledgement before the next
-  starts. The acknowledgements are `session.updated`, the call's own `response.created`, `conversation.item.truncated`
-  and a cancelled response's `response.done`. `send(...)` never waits behind an acknowledgement, and writes never
-  interleave. A response requested after `update_session(...)` returns uses the new session, whatever requested it. A
-  response in flight doesn't change, and a turn-detection response racing the update has no guarantee.
+  starts. An update's MCP tools connect before it takes its place in line, so a slow MCP server never holds up other
+  control calls. The acknowledgements are `session.updated`, the call's own `response.created`,
+  `conversation.item.truncated` and a cancelled response's `response.done`. `send(...)` never waits behind an
+  acknowledgement, and writes never interleave. A response requested after `update_session(...)` returns uses the new
+  session, whatever requested it. A response in flight doesn't change, and a turn-detection response racing the update
+  has no guarantee.
 - **Timeout.** One acknowledgement timeout per conversation, set at start by `control_timeout`, defaults to 10
   seconds. An update with nothing left to send after dropped keys returns at once. The conversation enforces it,
   wrapping each session control call and `start_session(...)` in `asyncio.timeout()`, and raises
@@ -367,10 +369,14 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `Content.from_function_approval_response(...)` or a `Message(role="tool")`, which the conversation routes into its
   batch. In a live conversation an approval request streams as `function_approval_request`, the call stays open while
   the caller talks, and the response matches through the agent session.
-- **MCP tools.** `RawAgent`'s MCP lifecycle moves into a helper shared with `RawRealtimeAgent`. A tool connects through
-  `async with agent` or on first use and stays open for the agent's lifetime; Agent Framework never closes a tool the
-  app connected. The conversation copies MCP tools' functions into its executable set at start and on
-  `update_session(tools=...)`; server-side tool-list changes wait for the next update.
+- **MCP tools.** `RawAgent`'s per-run MCP handling, which prepares a tool with the caller's kwargs, connects it on
+  first use into the agent's exit stack and adds its functions, moves into a helper shared with the realtime
+  conversation. A tool connects through `async with agent` or on first use and stays open for the agent's lifetime.
+  A realtime agent's `async with` connects only tools that aren't connected, so Agent Framework never closes a tool
+  the app connected; chat's still enters every configured MCP tool. The conversation copies MCP tools' functions into
+  its declared and executable sets at start and on `update_session(tools=...)`; server-side tool-list changes wait
+  for the next update. Clashing function names raise `ValueError` when the conversation is entered, or from
+  `update_session(...)`, before anything is sent.
 - **Hosted tools.** Static helpers on the provider clients declare them, and the loop never runs them. Their call events
   pass through. Hosted approval requests become `function_approval_request` content with `hosted=True`; the app's
   response goes to the provider as `mcp_approval_response`, and the loop then requests a follow-up.

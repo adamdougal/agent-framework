@@ -57,7 +57,8 @@ agent_framework/
 - **`Agent`** - Main agent class wrapping a chat client with tools, instructions, and middleware
 - **`RawAgent.open()` / `close()`** (inherited by `Agent`) - Explicitly enter the client's and configured MCP tools'
   async contexts, then release them along with lazily connected MCP tools. `async with agent` delegates to these
-  methods; a partially failed `open()` closes resources already entered.
+  methods; a partially failed `open()` closes resources already entered. Each run resolves its tools, connecting MCP
+  tools on first use, through `_append_tools_with_mcp_functions(...)`, which realtime conversations share.
 - Providers that store service-owned continuation handles in `AgentSession.state` declare their keys through
   `service_session_state_keys`. `as_tool(propagate_session=True)` combines declarations from the parent and child
   agents and their clients to isolate those handles in both directions while ordinary application-owned state
@@ -113,10 +114,14 @@ the root package:
 - `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
   `RealtimeEvent` or a `Message`, which it maps by content type.
 - `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
-  options, tools and function middleware over the agent's.
+  options, tools and function middleware over the agent's. `async with agent` connects the agent's MCP tools that
+  aren't connected yet and closes, on exit, every MCP tool the agent connected; it never closes one the app connected.
 - `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls and the close sequence. It
   owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch` hands each event kind to the
-  concern modules below.
+  concern modules below. At start and on `update_session(tools=...)` it resolves its tools through
+  `_append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is replaced by its
+  current functions in a list the conversation owns, connected on first use into the starting agent's exit stack, so
+  server-side tool-list changes wait for the next update.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
   timeout and until close starts, and lets a cancelled session call finish unwinding.
 - `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.

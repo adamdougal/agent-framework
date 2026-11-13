@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Generic
+from contextlib import AsyncExitStack
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Generic, Self
 
 from .._agents import BaseAgent, _provider_service_session_state_keys  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
+from .._mcp import MCPTool
 from .._middleware import categorize_middleware
 from .._tools import (
     _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
@@ -33,6 +36,11 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
     Function tools still run when middleware and telemetry are bypassed.
 
+    A conversation declares and runs each local MCP tool's functions, copied when it starts and on
+    ``update_session(tools=...)``. ``async with agent`` connects the agent's MCP tools that aren't connected yet;
+    otherwise a conversation connects one when it first needs it. Either way the tool stays open until the agent
+    exits, and a tool the app connected itself is never closed by the agent.
+
     Examples:
         .. code-block:: python
 
@@ -40,6 +48,18 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
             async with agent.start_conversation() as conversation:
                 await conversation.send("What's the weather in Paris?")
+                async for update in conversation:
+                    print(update.text)
+
+        With an MCP tool, enter the agent so its connection closes with it:
+
+        .. code-block:: python
+
+            orders = MCPStdioTool(name="orders", command="python", args=["orders_server.py"])
+            agent = RealtimeAgent(client, instructions="You help callers with their orders.", tools=[orders])
+
+            async with agent, agent.start_conversation() as conversation:
+                await conversation.send("When can order 1234 be delivered?")
                 async for update in conversation:
                     print(update.text)
     """
@@ -65,7 +85,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
         Keyword Args:
             instructions: The agent's instructions. When ``None``, ``default_options["instructions"]`` is used.
-            tools: The tools every conversation declares and runs.
+            tools: The tools every conversation declares and runs. An MCP tool stands for its functions.
             default_options: The session settings every conversation starts with; per-conversation options merge
                 over them.
             function_invocation_configuration: Limits and settings for the tool loop, as for a chat agent.
@@ -85,6 +105,26 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         self.tools = normalize_tools(tools)
         self.default_options: Mapping[str, Any] = defaults
         self.function_invocation_configuration = function_invocation_configuration
+        self._exit_stack = AsyncExitStack()
+
+    async def __aenter__(self) -> Self:
+        # A tool the app connected stays out of the stack, so leaving never closes a connection the app shares.
+        try:
+            for tool in self.tools:
+                if isinstance(tool, MCPTool) and not tool.is_connected:
+                    await self._exit_stack.enter_async_context(tool)
+        except BaseException:
+            await self._exit_stack.aclose()
+            raise
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self._exit_stack.aclose()
 
     def start_conversation(
         self,
@@ -127,7 +167,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
         Raises:
             ValueError: If ``control_timeout`` isn't positive, ``max_queued_updates`` is less than 1, two tools
-                share a name, or the function invocation configuration is invalid.
+                share a name, or the function invocation configuration is invalid. An MCP tool's functions are
+                checked when the conversation is entered, which raises ``ValueError`` for a clash.
         """
         if control_timeout <= 0:
             raise ValueError("control_timeout must be greater than 0.")
@@ -142,7 +183,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         # As in chat, the invoking agent's provider-owned session keys are recomputed here, so caller kwargs can't
         # replace them, and an agent tool with propagate_session=True keeps them out of its child session.
         invocation_kwargs[_PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY] = _provider_service_session_state_keys(self)
-        session_tools = unique_tools([*self.tools, *normalize_tools(tools)])
+        session_tools = [*self.tools, *normalize_tools(tools)]
+        # An MCP tool's own name is never declared; its functions' names are checked once it connects, at entry.
+        unique_tools([tool for tool in session_tools if not isinstance(tool, MCPTool)])
         return RealtimeConversation(
             self,
             initial_messages=normalize_messages(messages),
