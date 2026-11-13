@@ -667,8 +667,10 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   `FOUNDRY_VOICE_AGENTS`.
 
 On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content
-serializes; `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
-text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
+serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
+and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
+`ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys and their
+telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.

@@ -8,7 +8,6 @@ asyncio.timeout(), and checks Voice Live behaviour the unit tests can only assum
 """
 
 import asyncio
-import base64
 import contextlib
 import logging
 import os
@@ -194,7 +193,7 @@ async def test_cancel_and_truncate() -> None:
 
             def audio_bytes() -> int:
                 audio = [event for event in reader.of_response(response_id) if event.kind == "output_audio"]
-                return sum(len(base64.b64decode(event.content.uri.split(",", 1)[1])) for event in audio)
+                return sum(len(event.content.get_data_bytes()) for event in audio)
 
             await reader.until(lambda: audio_bytes() >= PCM_24K_BYTES_PER_SECOND)
             await session.cancel_response()

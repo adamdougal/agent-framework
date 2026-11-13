@@ -1,7 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 import asyncio
-import base64
 import os
 import wave
 
@@ -53,9 +52,8 @@ async def main() -> None:
                 async for event in session.receive():
                     if event.kind == "output_text" and event.content and event.content.merge_mode == "append":
                         print(event.content.text, end="", flush=True)
-                    elif event.kind == "output_audio" and event.content and event.content.uri:
-                        # The WAV writer needs the decoded 24 kHz, 16-bit mono PCM, not the content's base64 URI.
-                        reply_audio.extend(base64.b64decode(event.content.uri.split(";base64,", 1)[1]))
+                    elif event.kind == "output_audio" and event.content:
+                        reply_audio.extend(event.content.get_data_bytes())
                     elif event.kind == "response_done":
                         return
 
