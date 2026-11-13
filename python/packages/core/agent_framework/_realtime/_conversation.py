@@ -171,18 +171,25 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """The conversation keeps its own list of each MCP tool's functions, so server-side changes wait for an update.
 
         The tools are prepared with the app's kwargs, as chat prepares them with the run's, without the agent's private
-        session-state claim. A tool connected here stays open for the starting agent's lifetime.
+        session-state claim. A tool connected here stays open for the starting agent's lifetime. One still connecting
+        when close starts is abandoned, so a hung server can't hold up close, and the connection never joins an agent
+        that has already exited.
         """
         connection_kwargs = {
             name: value
             for name, value in self._function_invocation_kwargs.items()
             if name != _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY
         }
-        return await _append_tools_with_mcp_functions(
-            [],
-            tools,
-            exit_stack=self._agent._exit_stack,  # pyright: ignore[reportPrivateUsage]
-            connection_kwargs=connection_kwargs,
+        return await await_acknowledgement(
+            _append_tools_with_mcp_functions(
+                [],
+                tools,
+                exit_stack=self._agent._exit_stack,  # pyright: ignore[reportPrivateUsage]
+                connection_kwargs=connection_kwargs,
+            ),
+            action="connect its MCP tools",
+            timeout=None,
+            closing=self._closing,
         )
 
     def _raise_if_closed_while_starting(self) -> None:
@@ -403,15 +410,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             RealtimeControlException: If the provider rejects the update; nothing changes.
         """
         self._require_open_session()
-        declared = None
-        if tools is not None:
-            # A tool still connecting when close starts is abandoned, so it never joins an agent that has exited.
-            declared = await await_acknowledgement(
-                self._resolve_tools(normalize_tools(tools)),
-                action="connect the update's MCP tools",
-                timeout=None,
-                closing=self._closing,
-            )
+        declared = None if tools is None else await self._resolve_tools(normalize_tools(tools))
         async with self._control_lock:
             await self._update_session_locked(options or {}, declared)
         if declared is not None:

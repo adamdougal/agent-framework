@@ -211,6 +211,21 @@ async def test_a_conversation_connects_an_mcp_tool_on_first_use() -> None:
         await orders.close()
 
 
+async def test_closing_while_an_mcp_tool_connects_at_start_ends_entry() -> None:
+    """Close starting while entry connects an MCP tool makes entry raise the conversation-closed error, unstarted."""
+    orders = _SlowToConnectMCPTool(_orders_server())
+    client = FakeRealtimeClient()
+    conversation = RealtimeAgent(client, tools=[orders]).start_conversation()
+
+    entering = asyncio.create_task(conversation.__aenter__())
+    await orders.connecting.wait()
+    await conversation.close()
+
+    with pytest.raises(RealtimeConversationClosedException):
+        await asyncio.wait_for(entering, 1)
+    assert client.start_session_calls == []
+
+
 async def test_an_mcp_tool_connected_on_first_use_closes_with_the_agent() -> None:
     """An MCP tool passed to start_conversation stays connected after the conversation and closes with the agent."""
     orders = _InProcessMCPTool(_orders_server())
