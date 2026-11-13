@@ -15,8 +15,9 @@ from .._tools import (
     normalize_function_invocation_configuration,
     normalize_tools,
 )
-from .._types import _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
+from .._types import normalize_messages
 from ._conversation import RealtimeConversation, unique_tools
+from ._handoffs import call_settings, start_settings
 from ._options import RealtimeOptionsT
 
 if TYPE_CHECKING:
@@ -86,6 +87,21 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         self.default_options: Mapping[str, Any] = defaults
         self.function_invocation_configuration = function_invocation_configuration
 
+    def _start_participant(self) -> RawRealtimeAgent[RealtimeOptionsT]:
+        """The agent that speaks first in this agent's conversations.
+
+        An agent that owns a handoff topology starts its calls with one of its participants rather than itself.
+        """
+        return self
+
+    def _participant_tools(self, participant: RawRealtimeAgent[RealtimeOptionsT]) -> list[ToolTypes]:
+        """The tools this agent adds to its conversations while ``participant`` is speaking.
+
+        An agent that owns a handoff topology adds each participant's handoff tools, and raises ``ValueError`` for an
+        agent outside its topology. Any other agent adds none and can hand off to any agent on its client.
+        """
+        return []
+
     def start_conversation(
         self,
         messages: AgentRunInputs | None = None,
@@ -105,6 +121,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
         Options merge over the agent's ``default_options``: ``instructions`` are appended to the agent's instructions,
         ``metadata`` merges, and other keys replace the default, ``None`` included. ``tools`` join the agent's tools.
+        The conversation can hand the call to another agent on the same client with ``handoff(...)``; an agent that
+        owns a handoff topology starts its conversations with its start participant speaking.
 
         Args:
             messages: Context to add to the provider's conversation when it opens.
@@ -134,39 +152,27 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         if max_queued_updates < 1:
             raise ValueError("max_queued_updates must be at least 1.")
         invocation_configuration = normalize_function_invocation_configuration(self.function_invocation_configuration)
-        function_middleware = categorize_middleware(self.middleware, middleware, supported_categories=("function",))[
-            "function"
-        ]
-        session_options = _merge_session_options(self.default_options, self.instructions, options or {})
+        own_middleware = categorize_middleware(self.middleware, supported_categories=("function",))["function"]
+        start_middleware = categorize_middleware(middleware, supported_categories=("function",))["function"]
+        call = call_settings(self, options or {}, normalize_tools(tools), own_middleware, start_middleware)
+        session_options, session_tools = start_settings(self._start_participant(), call)
         invocation_kwargs = dict(function_invocation_kwargs or {})
         # As in chat, the invoking agent's provider-owned session keys are recomputed here, so caller kwargs can't
         # replace them, and an agent tool with propagate_session=True keeps them out of its child session.
         invocation_kwargs[_PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY] = _provider_service_session_state_keys(self)
-        session_tools = unique_tools([*self.tools, *normalize_tools(tools)])
         return RealtimeConversation(
             self,
             initial_messages=normalize_messages(messages),
             agent_session=session,
             options=session_options,
-            tools=session_tools,
+            call=call,
+            tools=unique_tools(session_tools),
             invocation_configuration=invocation_configuration,
-            function_middleware=function_middleware,
+            function_middleware=own_middleware,
             function_invocation_kwargs=invocation_kwargs,
             control_timeout=control_timeout,
             max_queued_updates=max_queued_updates,
         )
-
-
-def _merge_session_options(
-    default_options: Mapping[str, Any], instructions: str | None, start_options: Mapping[str, Any]
-) -> dict[str, Any]:
-    merged: dict[str, Any] = {**default_options, **start_options}
-    if default_options.get("metadata") is not None and start_options.get("metadata") is not None:
-        merged["metadata"] = {**default_options["metadata"], **start_options["metadata"]}
-    merged_instructions = _append_instructions(instructions, start_options.get("instructions"))
-    if merged_instructions is not None:
-        merged["instructions"] = merged_instructions
-    return merged
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)

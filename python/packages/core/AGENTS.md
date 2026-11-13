@@ -113,10 +113,14 @@ the root package:
 - `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
   `RealtimeEvent` or a `Message`, which it maps by content type.
 - `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
-  options, tools and function middleware over the agent's.
-- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls and the close sequence. It
-  owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch` hands each event kind to the
-  concern modules below.
+  options, tools and function middleware over the agent's. Two protected hooks let an agent that owns a handoff
+  topology start its calls with another participant speaking and add each participant's handoff tools.
+- `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice) and
+  `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both compute the session's
+  settings here.
+- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls, including `handoff(...)`,
+  and the close sequence. It owns the acknowledgement timeout and deduplicates unclaimed errors, tracks the active
+  agent, and its `_dispatch` hands each event kind to the concern modules below.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
   timeout and until close starts, and lets a cancelled session call finish unwinding.
 - `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
@@ -126,7 +130,8 @@ the root package:
 - `_tool_loop.py` - `ToolLoop`, which runs each finished response's calls through `_execute_function_calls(...)`,
   sends the results, requests one follow-up per batch, and settles unfinished calls on close. It keeps the tools it
   runs in step with the tools the provider declares: tool-list changes a call makes with `ctx.add_tools()` or
-  `ctx.remove_tools()` go out as a session update before that batch's results.
+  `ctx.remove_tools()` go out as a session update before that batch's results. Each call runs through the function
+  middleware of the agent active when it arrived.
 - `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
   a provider truncation into truncates.
 

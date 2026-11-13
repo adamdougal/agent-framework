@@ -2014,6 +2014,139 @@ def test_handoff_builder_rejects_non_agent_supports_agent_run():
         HandoffBuilder().participants([cast(Any, fake)])
 
 
+def _described_agent(name: str, description: str | None = None) -> Agent[Any]:
+    return Agent(
+        client=MockChatClient(name=name),
+        name=name,
+        id=name,
+        description=description,
+        require_per_service_call_history_persistence=True,
+    )
+
+
+def _offered_handoffs(workflow: Any, agent_id: str) -> dict[str, str]:
+    agent = cast(Agent, workflow.executors[agent_id].agent)
+    return {
+        offered.name: offered.description
+        for offered in agent.default_options["tools"]
+        if offered.name.startswith("handoff_to_")
+    }
+
+
+def test_participants_can_be_assigned_only_once() -> None:
+    builder = HandoffBuilder().participants(_as_handoff_agents(MockHandoffAgent(name="triage")))
+
+    with pytest.raises(ValueError, match="participants have already been assigned"):
+        builder.participants(_as_handoff_agents(MockHandoffAgent(name="billing")))
+
+
+def test_participants_cannot_be_empty() -> None:
+    with pytest.raises(ValueError, match="participants cannot be empty"):
+        HandoffBuilder().participants([])
+
+
+def test_participant_names_must_be_unique() -> None:
+    with pytest.raises(ValueError, match="Duplicate participant name 'triage'"):
+        HandoffBuilder().participants(
+            _as_handoff_agents(MockHandoffAgent(name="triage"), MockHandoffAgent(name="triage"))
+        )
+
+
+def test_add_handoff_needs_participants_first() -> None:
+    triage, billing = _as_handoff_agents(MockHandoffAgent(name="triage"), MockHandoffAgent(name="billing"))
+
+    with pytest.raises(ValueError, match=r"Call participants\(...\) before add_handoff\(...\)"):
+        HandoffBuilder().add_handoff(triage, [billing])
+
+
+def test_add_handoff_rejects_a_source_outside_the_participants() -> None:
+    triage, billing, outsider = _as_handoff_agents(
+        MockHandoffAgent(name="triage"), MockHandoffAgent(name="billing"), MockHandoffAgent(name="outsider")
+    )
+
+    with pytest.raises(ValueError, match="Source agent"):
+        HandoffBuilder(participants=[triage, billing]).add_handoff(outsider, [billing])
+
+
+def test_add_handoff_rejects_a_target_outside_the_participants() -> None:
+    triage, billing, outsider = _as_handoff_agents(
+        MockHandoffAgent(name="triage"), MockHandoffAgent(name="billing"), MockHandoffAgent(name="outsider")
+    )
+
+    with pytest.raises(ValueError, match="Target agent"):
+        HandoffBuilder(participants=[triage, billing]).add_handoff(triage, [outsider])
+
+
+def test_with_start_agent_needs_participants_first() -> None:
+    with pytest.raises(ValueError, match=r"Call participants\(...\) before with_start_agent\(...\)"):
+        HandoffBuilder().with_start_agent(_as_handoff_agent(MockHandoffAgent(name="triage")))
+
+
+def test_with_start_agent_rejects_an_agent_outside_the_participants() -> None:
+    triage, billing, outsider = _as_handoff_agents(
+        MockHandoffAgent(name="triage"), MockHandoffAgent(name="billing"), MockHandoffAgent(name="outsider")
+    )
+
+    with pytest.raises(ValueError, match="Start agent 'outsider' is not in the participants list"):
+        HandoffBuilder(participants=[triage, billing]).with_start_agent(outsider)
+
+
+def test_by_default_every_participant_can_hand_off_to_every_other() -> None:
+    triage, billing, refund = (_described_agent(name) for name in ("triage", "billing", "refund"))
+
+    workflow = HandoffBuilder(participants=[triage, billing, refund]).with_start_agent(triage).build()
+
+    assert set(_offered_handoffs(workflow, "triage")) == {"handoff_to_billing", "handoff_to_refund"}
+    assert set(_offered_handoffs(workflow, "billing")) == {"handoff_to_triage", "handoff_to_refund"}
+    assert set(_offered_handoffs(workflow, "refund")) == {"handoff_to_triage", "handoff_to_billing"}
+
+
+def test_add_handoff_limits_a_participants_handoff_targets() -> None:
+    triage, billing, refund = (_described_agent(name) for name in ("triage", "billing", "refund"))
+
+    workflow = (
+        HandoffBuilder(participants=[triage, billing, refund])
+        .with_start_agent(triage)
+        .add_handoff(triage, [billing])
+        .build()
+    )
+
+    assert set(_offered_handoffs(workflow, "triage")) == {"handoff_to_billing"}
+    assert _offered_handoffs(workflow, "billing") == {}
+
+
+def test_a_handoff_description_falls_back_from_add_handoff_to_the_target_to_a_default() -> None:
+    triage = _described_agent("triage")
+    billing = _described_agent("billing", "Answers billing questions.")
+    refund = _described_agent("refund", "Issues refunds.")
+    support = _described_agent("support")
+
+    workflow = (
+        HandoffBuilder(participants=[triage, billing, refund, support])
+        .with_start_agent(triage)
+        .add_handoff(triage, [billing], description="Bills and invoices.")
+        .add_handoff(triage, [refund, support])
+        .build()
+    )
+
+    assert _offered_handoffs(workflow, "triage") == {
+        "handoff_to_billing": "Bills and invoices.",
+        "handoff_to_refund": "Issues refunds.",
+        "handoff_to_support": "Handoff to the support agent.",
+    }
+
+
+def test_adding_a_handoff_again_warns_and_replaces_its_description(caplog: pytest.LogCaptureFixture) -> None:
+    triage, billing = _described_agent("triage"), _described_agent("billing")
+    builder = HandoffBuilder(participants=[triage, billing]).with_start_agent(triage)
+
+    builder.add_handoff(triage, [billing], description="Bills.")
+    builder.add_handoff(triage, [billing], description="Bills and invoices.")
+
+    assert "Handoff from 'triage' to 'billing' is already configured; overwriting." in caplog.text
+    assert _offered_handoffs(builder.build(), "triage") == {"handoff_to_billing": "Bills and invoices."}
+
+
 # endregion
 
 # region integration tests

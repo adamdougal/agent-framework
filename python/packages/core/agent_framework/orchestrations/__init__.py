@@ -11,6 +11,7 @@ Supported classes include:
 - GroupChatBuilder
 - MagenticBuilder
 - HandoffBuilder
+- RealtimeHandoffBuilder
 """
 
 import importlib
@@ -29,6 +30,7 @@ _IMPORTS = [
     "HandoffBuilder",
     "HandoffConfiguration",
     "HandoffSentEvent",
+    "RealtimeHandoffBuilder",
     # Base orchestrator
     "BaseGroupChatOrchestrator",
     "GroupChatRequestMessage",

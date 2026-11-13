@@ -10,9 +10,11 @@ import time
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+from itertools import groupby
+from operator import attrgetter
 from typing import TYPE_CHECKING, Any, cast
 
-from .._middleware import FunctionMiddlewarePipeline
+from .._middleware import FunctionMiddlewarePipeline, categorize_middleware
 from .._tools import (
     _CONVERSATION_CLOSED_REASON,  # pyright: ignore[reportPrivateUsage]
     DEFAULT_MAX_CONSECUTIVE_ERRORS_PER_REQUEST,
@@ -40,20 +42,24 @@ logger = logging.getLogger("agent_framework")
 _CALLING_CONVERSATION: ContextVar[object | None] = ContextVar("realtime_calling_conversation", default=None)
 
 if TYPE_CHECKING:
+    from .._agents import BaseAgent
     from .._middleware import FunctionMiddlewareTypes
     from .._sessions import AgentSession
     from .._tools import FunctionInvocationConfiguration, ToolTypes
+    from ._agent import RawRealtimeAgent
     from ._conversation import RealtimeConversation
+    from ._handoffs import CallSettings
     from ._responses import ResponseLedger
 
 
 @dataclass
 class _Call:
-    """Each call keeps the tool it resolved to when it arrived, even if the tools change before it runs."""
+    """Each call keeps the tool and middleware it resolved to when it arrived, even if the agent or tools change."""
 
     content: Content
     response_id: str
     tool: FunctionTool | None
+    middleware_pipeline: FunctionMiddlewarePipeline
     result: Content | None = None
     reported: bool = False
 
@@ -108,19 +114,23 @@ class ToolLoop:
         tools: list[ToolTypes],
         configuration: FunctionInvocationConfiguration,
         invocation_kwargs: Mapping[str, Any],
-        function_middleware: Sequence[FunctionMiddlewareTypes],
+        owner_middleware: Sequence[FunctionMiddlewareTypes],
+        call: CallSettings,
         agent_session: AgentSession | None,
         conversation: RealtimeConversation[Any],
+        owner: RawRealtimeAgent[Any],
         responses: ResponseLedger,
     ) -> None:
         self._tools = tools
         self._declared: list[ToolTypes] = []
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
-        self._middleware_pipeline = FunctionMiddlewarePipeline(*function_middleware)
-        self._agent_session = (
-            agent_session if agent_session is not None else _session_for_stateful_middleware(function_middleware)
-        )
+        self._call = call
+        self._agent_session = agent_session
+        self._pipelines: dict[BaseAgent, FunctionMiddlewarePipeline] = {}
+        if owner._start_participant() is owner:  # pyright: ignore[reportPrivateUsage]
+            # The owner's middleware was sorted when the conversation started, warning about any it skips.
+            self._add_pipeline(owner, owner_middleware)
         self._conversation = conversation
         self._responses = responses
         self._results_marker = 0
@@ -145,7 +155,24 @@ class ToolLoop:
             event.content.id = _generate_function_call_occurrence_id()
         response_id = core_attributes(event)["response_id"]
         tool = _get_tool_map(self._tools).get(event.content.name or "")
-        self._calls_by_response.setdefault(response_id, []).append(_Call(event.content, response_id, tool))
+        pipeline = self._pipeline_for(self._conversation.active_agent)
+        self._calls_by_response.setdefault(response_id, []).append(_Call(event.content, response_id, tool, pipeline))
+
+    def _pipeline_for(self, agent: BaseAgent) -> FunctionMiddlewarePipeline:
+        """The host's function middleware wraps the agent's own, which wraps the conversation's."""
+        if (pipeline := self._pipelines.get(agent)) is None:
+            own = categorize_middleware(agent.middleware, supported_categories=("function",))["function"]
+            pipeline = self._add_pipeline(agent, own)
+        return pipeline
+
+    def _add_pipeline(
+        self, agent: BaseAgent, own_middleware: Sequence[FunctionMiddlewareTypes]
+    ) -> FunctionMiddlewarePipeline:
+        middleware = [*self._call.host_middleware, *own_middleware, *self._call.start_middleware]
+        if self._agent_session is None:
+            self._agent_session = _session_for_stateful_middleware(middleware)
+        pipeline = self._pipelines[agent] = FunctionMiddlewarePipeline(*middleware)
+        return pipeline
 
     def _would_pause(self, tool: FunctionTool) -> bool:
         app_answered = {additional.name for additional in self._configuration.get("additional_tools") or ()}
@@ -407,24 +434,28 @@ class ToolLoop:
             self._responses.answers_only_earlier_results(response_id)
 
     async def _execute(self, calls: Sequence[_Call], chain: _ToolChain) -> tuple[bool, int]:
-        """Return whether function middleware ended the loop, and how many calls ran."""
+        """Return whether function middleware ended the loop, and how many calls ran.
+
+        A response's calls only mix agents when the app hands off while they're arriving, so each agent's calls run in
+        turn.
+        """
         if not calls:
             return False, 0
         chain.batch_started()
+        terminated, executed = False, 0
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
-            batch = await self._run_executor(calls)
+            for pipeline, same_agent in groupby(calls, key=attrgetter("middleware_pipeline")):
+                group = list(same_agent)
+                batch = await self._run_executor(group, pipeline)
+                _settle_from(group, batch.result_groups)
+                terminated = terminated or batch.should_terminate
+                executed += batch.executed_call_count
         finally:
             _CALLING_CONVERSATION.reset(requested_by_tools)
-        for call, group in zip(calls, batch.result_groups, strict=True):
-            call.result = next((content for content in group if content.type == "function_result"), None)
-            if call.result is None:
-                call.result = _settled_with_error(
-                    call.content, "the call paused for an answer it can't get", "unsupported"
-                )
-        return batch.should_terminate, batch.executed_call_count
+        return terminated, executed
 
-    async def _run_executor(self, calls: Sequence[_Call]) -> Any:
+    async def _run_executor(self, calls: Sequence[_Call], middleware_pipeline: FunctionMiddlewarePipeline) -> Any:
         return await _execute_function_calls(
             custom_args=dict(self._invocation_kwargs),
             function_calls=[call.content for call in calls],
@@ -433,9 +464,16 @@ class ToolLoop:
             live_tools=self._tools,
             config=self._configuration,
             invocation_session=self._agent_session,
-            middleware_pipeline=self._middleware_pipeline,
+            middleware_pipeline=middleware_pipeline,
             realtime_conversation=self._conversation,
         )
+
+
+def _settle_from(calls: Sequence[_Call], result_groups: Sequence[Sequence[Content]]) -> None:
+    for call, results in zip(calls, result_groups, strict=True):
+        call.result = next((content for content in results if content.type == "function_result"), None)
+        if call.result is None:
+            call.result = _settled_with_error(call.content, "the call paused for an answer it can't get", "unsupported")
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:

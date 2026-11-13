@@ -187,7 +187,8 @@ so a realtime agent inside it would reconnect every turn, while every framework 
 session. Generalizing `HandoffBuilder` was rejected, because it can only give per-turn reconnects and would make
 `build()`'s return type depend on its participants. Agent-declared handoffs were rejected, because they add a topology
 concept chat `Agent` lacks. A handoff lasts for its realtime session, and a voice the provider can't change never fails
-a handoff. See [Handoffs](../specs/006-python-realtime-agents.md#handoffs).
+a handoff, except between an Azure voice and an OpenAI voice on Voice Live, which rejects the change. See
+[Handoffs](../specs/006-python-realtime-agents.md#handoffs).
 
 ### Middleware and telemetry
 
@@ -268,7 +269,8 @@ nobody has verified that the project-scoped route serves realtime.
   acknowledgements.
 - Bad, because tool batches wait for `response_done`, up to 2.5 s after a call with Azure TTS voices.
 - Bad, because a handoff lasts only for its realtime session, so a host calling `run(...)` per turn restarts at the
-  start agent each turn. Some providers keep the old voice, and of two handoffs in one response only the first happens.
+  start agent each turn. Some providers keep the old voice, Voice Live fails a handoff between Azure and OpenAI voices,
+  and of two handoffs in one response only the first happens.
 - Bad, because history estimates the heard part of a cut-off turn proportionally, every `run(...)` replays the whole
   history, and a context provider may see an exchange twice after a retry.
 - Bad, because exporters receive the conversation span only at close, so a crash loses it. History and telemetry don't

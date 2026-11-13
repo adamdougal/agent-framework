@@ -438,7 +438,8 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 ## Handoffs
 
 - **`handoff(agent, *, tools=None)`** has `update_session(...)`'s contract and makes `agent` the active agent.
-  `active_agent` starts as the agent that started the conversation. `tools` adds tools until the next handoff. On a
+  `active_agent` starts as the agent that started the conversation, which is then its first participant: handing back
+  to it restores its own instructions, tools, voice and `tool_choice`. `tools` adds tools until the next handoff. On a
   rejection or timeout it raises, and the previous agent stays active. The target must use the conversation's client
   instance.
 - **`handoff_completed`.** On success, `handoff(...)` emits one update carrying `source` and `target`, named as
@@ -448,10 +449,15 @@ that starts as close begins is closed rather than adopted. Close also ends any r
   - instructions are the target's, with the call-wide instructions appended, meaning those in a built handoff agent's
     `default_options`, in the start options and from context providers;
   - tools are the target's, plus the start tools, context-provider tools and `handoff(tools=...)`;
-  - voice and `tool_choice` are the target's, unless the start options set one, which then holds for the call.
+  - voice and `tool_choice` are the target's, unless the start options set one, which then holds for the call. A
+    target that sets neither gets a built handoff agent's default voice and `tool_choice`. `tool_choice` then falls back
+    to `"auto"`, so a router's `"required"` never carries over, and with no voice anywhere the current voice stays,
+    because the provider's default isn't known.
 
   Nothing else carries over from the previous agent, and every other setting stays as the call started. Where the
-  provider refuses the voice change, the client drops the voice with a warning and the handoff still succeeds.
+  provider refuses the voice change, the client drops the voice with a warning and the handoff still succeeds. Voice
+  Live is the exception between an Azure voice and an OpenAI voice: its client sends the change and Voice Live rejects
+  it, so the handoff fails. On Voice Live, a topology's voices stay in one family.
 - **What stays.** History, context providers and tool-loop limits stay with the agent that started the conversation;
   `before_run` doesn't run again, and each handoff re-applies its instructions and tools. A tool chain that spans a
   handoff counts as one chain. Each call runs through the function middleware of the agent active when it arrived. A
@@ -471,7 +477,8 @@ that starts as close begins is closed rather than adopted. Close also ends any r
   `{"handoff_to": "<name>"}`. The description comes from `add_handoff(description=...)`, else the target's
   `description`, else "Handoff to the <name> agent.". The tool awaits `handoff(...)`. If the handoff fails, the tool
   returns a result telling the model the handoff failed and to carry on as the current agent. The builder injects no
-  instructions. Of two handoffs in one response, the first to reach `handoff(...)` wins and the others fail.
+  instructions. A handoff tool hands off only while its source participant is active, and a conversation's handoff
+  tools take turns, so of two handoffs in one response the first wins and the others return that failure result.
 - **Lifetime.** A handoff lasts for its realtime session; each `start_conversation(...)` and `run(...)` starts with the
   start agent.
 - **Foundry voice agents.** Only the start agent can be a `FoundryVoiceAgent`; other participants use its client. Its
@@ -504,8 +511,8 @@ that starts as close begins is closed rather than adopted. Close also ends any r
   update hooks deliver.
 - **Ownership.** Conversation middleware comes from the agent that started the conversation and applies for the whole
   call. `RealtimeHandoffBuilder(middleware=...)` applies to the built agent; its function middleware wraps every call,
-  outside the active participant's own. Participants' agent and conversation middleware don't apply, and `build()`
-  warns about them.
+  outside the active participant's own, and `start_conversation(middleware=...)`'s function middleware wraps every
+  call inside it. Participants' agent and conversation middleware don't apply, and `build()` warns about them.
 
 ## Telemetry
 

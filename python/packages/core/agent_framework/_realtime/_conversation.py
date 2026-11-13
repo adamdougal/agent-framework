@@ -26,6 +26,7 @@ from ..exceptions import (
 from ._acknowledgements import AcknowledgedT, await_acknowledgement
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
+from ._handoffs import CallSettings, handoff_completed, participant_update
 from ._options import RealtimeOptionsT
 from ._responses import ResponseLedger
 from ._tool_loop import ToolLoop, requested_by_a_tool
@@ -76,6 +77,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         initial_messages: Sequence[Message],
         agent_session: AgentSession | None,
         options: Mapping[str, Any],
+        call: CallSettings,
         tools: Sequence[ToolTypes],
         invocation_configuration: FunctionInvocationConfiguration,
         function_middleware: Sequence[FunctionMiddlewareTypes],
@@ -83,9 +85,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         control_timeout: float,
         max_queued_updates: int,
     ) -> None:
-        self._agent = agent
+        self._owner = agent
+        self._active_agent = agent._start_participant()  # pyright: ignore[reportPrivateUsage]
         self._initial_messages = initial_messages
         self._options = options
+        self._call = call
         self._tools = tools
         self._control_timeout = control_timeout
         self._max_queued_updates = max_queued_updates
@@ -106,9 +110,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             tools=list(tools),
             configuration=invocation_configuration,
             invocation_kwargs=function_invocation_kwargs,
-            function_middleware=function_middleware,
+            owner_middleware=function_middleware,
+            call=call,
             agent_session=agent_session,
             conversation=self,
+            owner=agent,
             responses=self._responses,
         )
         self._audio = AudioLedger()
@@ -116,8 +122,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
     @property
     def active_agent(self) -> RawRealtimeAgent[RealtimeOptionsT]:
-        """The agent whose instructions, tools and voice are live, which is the agent that started the conversation."""
-        return self._agent
+        """The agent whose instructions, tools and voice are live; a handoff changes it."""
+        return self._active_agent
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -126,7 +132,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if self._closing.is_set():
             raise RealtimeConversationClosedException("The realtime conversation is closed.")
         starting = asyncio.ensure_future(
-            self._agent.client.start_session(options=self._options, tools=self._tools)  # type: ignore[arg-type]
+            self._owner.client.start_session(options=self._options, tools=self._tools)  # type: ignore[arg-type]
         )
         try:
             session = await self._acknowledged(starting, "start the realtime session")
@@ -208,7 +214,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._previous_event = event
         response_id = core_attributes(event).get("response_id", "")
         if event.kind == "response_created":
-            self._responses.created(response_id, self._agent)
+            self._responses.created(response_id, self._active_agent)
         elif event.kind == "response_done":
             self._responses.finished(response_id)
             self._tool_loop.on_response_done(response_id, core_attributes(event).get("status", ""))
@@ -230,7 +236,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._emit(
             update_from_event(
                 event,
-                author=self._responses.agent_of(response_id, default=self._agent),
+                author=self._responses.agent_of(response_id, default=self._active_agent),
                 made_calls=self._responses.made_calls(response_id),
             )
         )
@@ -342,7 +348,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._emit(AgentResponseUpdate(contents=[Content.from_error(message=str(error), error_code=code)]))
 
     def _report_tool_result(self, result: Content, response_id: str) -> None:
-        author = self._responses.agent_of(response_id, default=self._agent)
+        author = self._responses.agent_of(response_id, default=self._active_agent)
         self._emit(tool_result_update(result, response_id=response_id, author=author))
 
     async def _send_tool_results(self, results: Message) -> None:
@@ -386,6 +392,54 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             session.update_session(options, tools),  # type: ignore[arg-type]
             "update the session",
         )
+
+    async def handoff(
+        self,
+        agent: RawRealtimeAgent[RealtimeOptionsT],
+        *,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,
+    ) -> None:
+        """Make ``agent`` the agent speaking in this call, in the same realtime session, without reconnecting.
+
+        The session's instructions, tools, voice and tool choice become ``agent``'s, computed as the conversation
+        started them, with ``agent`` in place of the starting agent:
+
+        - instructions are ``agent``'s, followed by the call-wide instructions from the start options, and from the
+          agent that owns the call when it doesn't speak itself, such as a handoff agent;
+        - tools are ``agent``'s, the tools its owner adds for it, such as handoff tools, the start tools and ``tools``;
+        - a voice or tool choice in the start options holds for the call; otherwise ``agent``'s applies, then the
+          owner's default. Tool choice falls back to ``"auto"``. With no voice to send, the current voice stays.
+
+        Everything else stays as the call started: history, context providers, tool-loop limits and other settings.
+        Calls that arrive afterwards run through ``agent``'s function middleware, and responses created afterwards
+        are credited to ``agent``. Once the provider acknowledges the update, a ``handoff_completed`` update streams
+        before this returns. Voice Live rejects a voice change between an Azure voice and an OpenAI voice, which
+        fails the handoff.
+
+        Args:
+            agent: The agent to hand the call to. It must use the conversation's client instance.
+
+        Keyword Args:
+            tools: More tools for ``agent``, until the next handoff.
+
+        Raises:
+            ValueError: If ``agent`` uses another client instance or is outside the owner's handoff topology, or two
+                tools share a name; nothing is sent.
+            RealtimeConversationClosedException: If the conversation has started closing.
+            RealtimeControlTimeoutException: If the provider doesn't acknowledge the update in time; it may still apply
+                it, and the previous agent stays active.
+            RealtimeControlException: If the provider rejects the update; the previous agent stays active.
+        """
+        if agent.client is not self._owner.client:
+            raise ValueError("A handoff target must use the conversation's client instance.")
+        # The owner adds the target's tools here, and raises ValueError for an agent outside its topology.
+        options, declared = participant_update(agent, self._call, normalize_tools(tools))
+        declared = unique_tools(declared)
+        async with self._control_lock:
+            await self._update_session_locked(options, declared)
+            self._tool_loop.on_tools_declared(declared)
+            source, self._active_agent = self._active_agent, agent
+            self._emit(update_from_event(handoff_completed(source, agent), author=agent))
 
     async def create_response(self, *, options: RealtimeOptionsT | None = None) -> str:
         """Request a response, and return its id once the provider reports it created.
