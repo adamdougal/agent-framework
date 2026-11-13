@@ -4599,7 +4599,7 @@ def _replace_approval_contents_with_results(
     Returns:
         The terminal contents produced while resolving the approval responses, in response order.
     """
-    from ._types import APPROVAL_REJECTION_RESULT_KEY, Content
+    from ._types import _APPROVAL_REJECTION_RESULT_KEY, Content  # pyright: ignore[reportPrivateUsage]
 
     result_groups_by_call_id: dict[str, deque[list[Content]]] = {}
     for result_group in approved_function_result_groups:
@@ -4728,7 +4728,7 @@ def _replace_approval_contents_with_results(
                             result="Error: Tool call invocation was rejected by user.",
                             additional_properties={
                                 **content.function_call.additional_properties,
-                                APPROVAL_REJECTION_RESULT_KEY: True,
+                                _APPROVAL_REJECTION_RESULT_KEY: True,
                             },
                         )
                     ]
