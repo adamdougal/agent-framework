@@ -77,6 +77,9 @@ class FakeRealtimeSession:
         self.truncate_rejections: dict[str, BaseException] = {}
         self.create_response_events: list[RealtimeEvent] = []
         self.create_response_error: BaseException | None = None
+        self.update_session_error: BaseException | None = None
+        self.say_events: list[RealtimeEvent] = []
+        self.say_error: BaseException | None = None
         self.close_raises_in_receive = False
         self.close_error: BaseException | None = None
         self._events: asyncio.Queue[Any] = asyncio.Queue()
@@ -147,9 +150,17 @@ class FakeRealtimeSession:
 
     async def update_session(self, options: RealtimeOptions, tools: Sequence[ToolTypes] | None) -> None:
         self.calls.append(("update_session", options, tools))
+        await self._acknowledge("update_session")
+        if self.update_session_error is not None:
+            raise self.update_session_error
+        self.options = cast(RealtimeOptions, {**self.options, **options})
 
     async def say(self, text: str) -> str:
         self.calls.append(("say", text))
+        self.emit(*self.say_events)
+        await self._acknowledge("say")
+        if self.say_error is not None:
+            raise self.say_error
         return "resp_said"
 
     async def create_response(self, options: RealtimeOptions | None = None) -> str:

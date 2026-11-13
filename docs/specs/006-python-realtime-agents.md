@@ -174,7 +174,7 @@ outside the topology, and app input for a call id the conversation isn't trackin
 
 | Control | Contract |
 | --- | --- |
-| `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
+| `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. The executable tools change when the provider acknowledges the update. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
 | `create_response(*, options=None) -> str` | Per-response options. Returns the response id when the response's own `response.created` arrives. |
 | `say(text) -> str` | Verbatim speech. With an Azure voice, Voice Live and Foundry send `pre_generated_assistant_message`. OpenAI, Azure OpenAI, and Foundry with an OpenAI voice request a response with the instruction "Say exactly the following, word for word, and nothing else: ...", which is best effort. Voice Live with an OpenAI voice raises `RealtimeUnsupportedException`. |
 | `interrupt(*, played_ms=None)` | Idempotent. Cancels the active response, waits for its `response.done`, and treats the provider's "no active response" error as done. With no active response it returns at once. With `played_ms`, also cuts the unheard audio ([barge-in](#barge-in)). |
@@ -330,7 +330,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
   `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
-  claimed-error rules, and the results and follow-up still go out.
+  claimed-error rules, the live tool list goes back to the tools the provider declares, with a warning, and the results
+  and follow-up still go out. An update that isn't acknowledged keeps the change, with a warning, and the next batch
+  sends it again.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
   `None`. It isn't in the tools' runtime keyword arguments. As in chat, function middleware that keeps per-session
   state gets a conversation-local session when the app passes none, and the context's

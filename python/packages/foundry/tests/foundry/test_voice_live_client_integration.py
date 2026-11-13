@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any
 
 import pytest
-from agent_framework import Content, Message, tool
+from agent_framework import Content, Message, RealtimeAgent, tool
 from agent_framework.exceptions import (
     RealtimeConnectionException,
     RealtimeControlException,
@@ -136,6 +136,33 @@ async def test_say_by_voice_type() -> None:
                 await openai_voiced.say("Thanks for calling.")
 
     assert "Thanks for calling" in _final_text(reader.of_response(response_id))
+
+
+async def test_conversation_say_speaks_the_text_verbatim() -> None:
+    """Through a realtime agent's conversation with voice en-US-AvaNeural, say("Thanks for calling Contoso.") returns
+    the id of the response whose final agent transcript is that text."""
+    async with asyncio.timeout(TURN_TIMEOUT), contextlib.AsyncExitStack() as stack:
+        credential = None
+        if not os.getenv("AZURE_VOICELIVE_API_KEY"):
+            credential = await stack.enter_async_context(AzureCliCredential())
+        options: VoiceLiveOptions = {"voice": AVA, "turn_detection": None}
+        client: VoiceLiveClient[VoiceLiveOptions] = VoiceLiveClient(credential=credential)
+        agent = RealtimeAgent(client, default_options=options)
+        async with agent.start_conversation() as conversation:
+            response_id = await conversation.say("Thanks for calling Contoso.")
+            finals: list[str] = []
+            async for update in conversation:
+                if update.response_id != response_id:
+                    continue
+                finals += [
+                    content.text or ""
+                    for content in update.contents
+                    if content.type == "text" and content.status == "completed"
+                ]
+                if update.finish_reason is not None:
+                    break
+
+    assert "Thanks for calling Contoso" in " ".join(finals)
 
 
 async def test_rejected_update_is_claimed_and_instructions_are_dropped(caplog: pytest.LogCaptureFixture) -> None:

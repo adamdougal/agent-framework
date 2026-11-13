@@ -527,9 +527,7 @@ class FunctionInvocationContext:
             async def look_up_order(order_id: str, ctx: FunctionInvocationContext) -> str:
                 if ctx.realtime_conversation is not None:
                     try:
-                        await ctx.realtime_conversation.create_response(
-                            options={"instructions": "Tell the caller you're checking their order."}
-                        )
+                        await ctx.realtime_conversation.say("One moment while I check your order.")
                     except RealtimeActiveResponseException:
                         pass  # the agent is already speaking
                 return await fetch_order(order_id)
