@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, cast
@@ -19,7 +21,7 @@ from ._realtime_options import OpenAIRealtimeOptionsT
 from ._realtime_session import OpenAIRealtimeSession, _audio_format  # pyright: ignore[reportPrivateUsage]
 from ._shared import (
     AzureTokenProvider,
-    _ensure_async_token_provider,  # pyright: ignore[reportPrivateUsage]
+    _resolve_azure_credential_to_token_provider,  # pyright: ignore[reportPrivateUsage]
     load_openai_service_settings,
 )
 
@@ -98,8 +100,9 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
         _require_websockets()
         _reject_azure_sdk_client(async_client)
         if callable(api_key):
-            # The SDK awaits a callable key, and token providers such as azure.identity's are synchronous.
-            api_key = _ensure_async_token_provider(api_key)
+            api_key = _off_the_event_loop(api_key)
+        if credential is not None:
+            credential = _off_the_event_loop(_resolve_azure_credential_to_token_provider(credential))
         settings, self._client, use_azure = load_openai_service_settings(
             model=model,
             api_key=api_key,
@@ -202,6 +205,24 @@ class _OpenAIRealtimeConnection:
 
     async def close(self) -> None:
         await self._connection.close()
+
+
+def _off_the_event_loop(provider: AzureTokenProvider) -> Callable[[], Awaitable[str]]:
+    """A synchronous token provider, such as azure.identity's, can block on I/O such as the Azure CLI.
+
+    It runs in a worker thread, so a slow fetch can't stall the other conversations on the event loop. The SDK awaits
+    the result either way.
+    """
+    if inspect.iscoroutinefunction(provider) or inspect.iscoroutinefunction(type(provider).__call__):
+        return cast("Callable[[], Awaitable[str]]", provider)
+
+    async def fetch_token() -> str:
+        token = await asyncio.to_thread(provider)
+        if inspect.isawaitable(token):
+            token = await token
+        return token
+
+    return fetch_token
 
 
 def _close_code(closed: Any) -> int | None:

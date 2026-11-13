@@ -20,6 +20,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from http import HTTPStatus
@@ -259,6 +260,18 @@ class StaticTokenCredential:
         pass
 
 
+class SyncTokenCredential:
+    """A sync token credential that records which thread fetched each token."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.threads: list[int] = []
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> AccessToken:
+        self.threads.append(threading.get_ident())
+        return AccessToken(self.token, int(time.time()) + 3600)
+
+
 async def until(condition: Callable[[], Any], timeout: float = 5.0) -> None:
     """Wait until ``condition()`` holds."""
 
@@ -445,6 +458,39 @@ async def test_a_sync_token_provider_api_key_sends_a_bearer_token() -> None:
         await session.close()
 
     assert server.headers["Authorization"] == "Bearer token-3"
+
+
+async def test_a_sync_token_provider_runs_off_the_event_loop() -> None:
+    """A synchronous api_key token provider is called in a worker thread, so a slow token fetch doesn't stall other
+    conversations on the event loop."""
+    threads: list[int] = []
+
+    def token_provider() -> str:
+        threads.append(threading.get_ident())
+        return "token-4"
+
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key=token_provider)
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert threads
+    assert threading.get_ident() not in threads
+
+
+async def test_a_sync_credential_fetches_its_token_off_the_event_loop() -> None:
+    """With a synchronous token credential returning "token-5", the handshake carries Authorization "Bearer token-5",
+    and the token was fetched in a worker thread."""
+    credential = SyncTokenCredential("token-5")
+
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, credential=credential)
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert server.headers["Authorization"] == "Bearer token-5"
+    assert credential.threads
+    assert threading.get_ident() not in credential.threads
 
 
 async def test_rejected_handshake_raises_a_connection_exception() -> None:
@@ -691,6 +737,22 @@ class TestVerification:
                 await starting
             assert server.held is not None
             await asyncio.wait_for(server.held.connection_lost_waiter, 1)
+
+    async def test_a_token_provider_returning_an_awaitable_sends_its_token(self) -> None:
+        """With api_key set to a plain callable that returns an awaitable of "token-6", the handshake carries
+        Authorization "Bearer token-6"."""
+
+        async def fetch_token() -> str:
+            return "token-6"
+
+        async with RealtimeServer() as server:
+            client = OpenAIRealtimeClient(
+                "realtime-deployment", azure_endpoint=server.url, api_key=lambda: fetch_token()
+            )
+            session = await asyncio.wait_for(client.start_session(), 5)
+            await session.close()
+
+        assert server.headers["Authorization"] == "Bearer token-6"
 
     def test_client_modules_import_without_websockets(self) -> None:
         """In a fresh interpreter, importing agent_framework_openai._realtime_client and
