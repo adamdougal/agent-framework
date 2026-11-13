@@ -17,7 +17,7 @@ OpenAI Realtime Client with Function Tools Example
 This sample runs a realtime agent on OpenAI Realtime, with one function tool. It sends one text question, prints the
 agent's transcript as it streams, and saves the spoken reply to openai_realtime_reply.wav, so it needs no microphone
 or speaker. The agent calls the tool, the conversation runs it and asks for a follow-up response, and the sample stops
-at the first response that finishes without calling a tool.
+at the first response that ends without calling a tool.
 
 Prerequisites:
 - Install the realtime extra: pip install "agent-framework-openai[realtime]" --pre
@@ -37,7 +37,11 @@ def get_weather(location: Annotated[str, Field(description="The city to get the 
 
 
 async def read_reply(conversation: RealtimeConversation[OpenAIRealtimeOptions], reply_audio: bytearray) -> None:
-    """Print the agent's transcript and tool calls, and keep its audio, until a response finishes without a call."""
+    """Print the agent's transcript and tool calls, and keep its audio, until a response ends without calling a tool.
+
+    A response that calls a tool is followed by the one that answers with its result; any other response ending,
+    including a failed or cut-short one, ends the turn.
+    """
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -49,7 +53,7 @@ async def read_reply(conversation: RealtimeConversation[OpenAIRealtimeOptions], 
                 print(f"\n[calling {content.name}({content.arguments})]\nAgent: ", end="", flush=True)
             elif content.type == "error":
                 print(f"[error: {content.message}]", end="")
-            elif content.type == "realtime_event" and content.kind == "response_done" and update.finish_reason == "stop":
+            elif content.type == "realtime_event" and content.kind == "response_done" and update.finish_reason != "tool_calls":
                 print()
                 return
 
