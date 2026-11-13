@@ -3698,6 +3698,47 @@ async def test_agent_run_accepts_prefixed_mcp_tools(chat_client_base: Any) -> No
     assert tool_names == ["search", "docs_search"]
 
 
+async def test_agent_run_puts_run_mcp_functions_in_place_and_agent_mcp_functions_last(chat_client_base: Any) -> None:
+    captured_options: list[dict[str, Any]] = []
+    original_inner = chat_client_base._inner_get_response
+
+    async def capturing_inner(
+        *, messages: MutableSequence[Message], options: dict[str, Any], **kwargs: Any
+    ) -> ChatResponse:
+        captured_options.append(dict(options))
+        return await original_inner(messages=messages, options=options, **kwargs)
+
+    chat_client_base._inner_get_response = capturing_inner
+    agent_tool = FunctionTool(func=lambda: "agent", name="agent_tool", description="Agent tool")
+    run_tool = FunctionTool(func=lambda: "run", name="run_tool", description="Run tool")
+    agent = Agent(
+        client=chat_client_base,
+        tools=[_ConnectedMCPTool(name="agent-mcp", function_names=["agent_search"]), agent_tool],
+    )
+
+    await agent.run("hello", tools=[_ConnectedMCPTool(name="run-mcp", function_names=["run_search"]), run_tool])
+
+    tool_names = [tool.name for tool in captured_options[0]["tools"]]
+    assert tool_names == ["agent_tool", "run_search", "run_tool", "agent_search"]
+
+
+async def test_agent_close_closes_a_run_mcp_tool_connected_during_the_run(chat_client_base: MockBaseChatClient) -> None:
+    events: list[str] = []
+    mcp_tool = _LifecycleMCPTool("lazy", events)
+    mcp_tool.is_connected = False
+    agent = Agent(client=chat_client_base)
+
+    await agent.run("hello", tools=[mcp_tool])
+
+    assert events == ["lazy.enter"]
+    assert mcp_tool.is_connected
+
+    await agent.close()
+
+    assert events == ["lazy.enter", "lazy.exit"]
+    assert not mcp_tool.is_connected
+
+
 async def test_agent_tool_without_context_does_not_receive_session(chat_client_base: Any) -> None:
     """Verify tools without FunctionInvocationContext no longer receive injected session kwargs."""
 
