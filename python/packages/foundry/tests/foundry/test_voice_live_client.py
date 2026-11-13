@@ -968,8 +968,6 @@ async def test_assistant_text_is_sent_as_a_text_part() -> None:
 
 class TestVerification:
     async def test_item_created_says_whether_a_user_item_holds_audio(self) -> None:
-        """Voice Live's conversation.item.created for a user item with an input_audio part maps to item_added with
-        input_audio True, and for one with an input_text part to input_audio False."""
         caller_audio = {"type": "input_audio", "transcript": None}
         session, connection = await voice_live_session()
 

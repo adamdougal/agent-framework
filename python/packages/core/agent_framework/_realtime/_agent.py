@@ -74,7 +74,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             name: The agent's name, which assistant and tool updates carry as their author.
             description: A description of the agent.
             context_providers: The agent's context providers. A live conversation runs their ``before_run`` once,
-                when it opens, and their ``after_run`` once per exchange, during the call and at close.
+                when it opens, and their ``after_run`` once per exchange when it closes.
             middleware: The agent's middleware. Realtime conversations run its function middleware.
         """
         super().__init__(
@@ -103,8 +103,12 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         """Create a live conversation with the provider, which opens when entered with ``async with``.
 
         Entering the conversation runs the context providers' ``before_run``, starts the provider session with the
-        merged options and tools, including those the providers added, replays the history they loaded, then sends
-        ``messages`` as context; it never requests a response. Leaving it closes the conversation and its session.
+        merged options and tools, replays the history they loaded, then sends ``messages`` as context; it never requests
+        a response. The instructions, tools and function middleware the providers add follow the agent's own; chat
+        middleware has no model call to wrap, so it's skipped as for the agent's own. Leaving the conversation closes
+        it and its session, then reports the call to the context providers one exchange at a time. A call whose process
+        ends before it closes never reaches them, so an app that needs each exchange stored as it happens records it
+        from the conversation's updates.
 
         Options merge over the agent's ``default_options``: ``instructions`` are appended to the agent's instructions,
         ``metadata`` merges, and other keys replace the default, ``None`` included. ``tools`` join the agent's tools.
@@ -163,11 +167,10 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         )
 
     def _add_history_when_none_loads(self, session: AgentSession | None) -> None:
-        """As with a chat agent, passing a session keeps the conversation's history in it by default."""
         if session is not None and not any(
             provider.load_messages for provider in self.context_providers if isinstance(provider, HistoryProvider)
         ):
-            # First, so the agent's own providers see the loaded history in before_run.
+            # Load history before providers such as compaction inspect the context.
             self.context_providers.insert(0, InMemoryHistoryProvider())
 
 

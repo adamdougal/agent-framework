@@ -253,9 +253,7 @@ async def test_bad_credentials_raise() -> None:
 
 class TestVerification:
     async def test_replayed_history_reaches_the_model(self) -> None:
-        """A conversation opened on an AgentSession whose history holds the caller saying their name is Ada, the
-        agent's reply, a get_time call and its result answers "What's my name?" with "Ada", streams no error, and
-        records the new turns in conversation.history."""
+        """Voice Live uses a different assistant-text wire type, so verify replay against the service."""
         history = InMemoryHistoryProvider()
         agent_session = AgentSession()
         await history.save_messages(
@@ -299,7 +297,6 @@ class TestVerification:
         assert recorded[0].text == "What's my name?"
 
     async def test_delete_item_is_acknowledged(self) -> None:
-        """delete_item() on a user text item the test sent returns once Voice Live confirms the deletion."""
         async with asyncio.timeout(TURN_TIMEOUT):
             async with live_session({"voice": AVA, "turn_detection": None}) as (session, reader):
                 await session.send(Message("user", ["Remember the number seven."]))

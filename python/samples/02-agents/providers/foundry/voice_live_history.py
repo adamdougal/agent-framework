@@ -8,8 +8,9 @@ session's history, and prints `conversation.history` when it ends, as an app wou
 replays that history into its new realtime session, so the agent still knows the caller's name. It sends text, so it
 needs no microphone or speaker.
 
-Passing a session adds an in-memory history provider, as it does for a chat agent. With your own context providers,
-each exchange reaches their `after_run` during the call.
+Passing a session adds an in-memory history provider, as it does for a chat agent. Context providers get the call
+when it closes, one `after_run` per exchange, so an app that must store each exchange as it happens records it from
+the conversation's updates.
 
 Prerequisites:
 - Install the realtime extra: pip install "agent-framework-foundry[realtime]" --pre
@@ -31,7 +32,6 @@ load_dotenv()
 
 
 async def ask(conversation: RealtimeConversation[VoiceLiveOptions], text: str) -> None:
-    """Send the caller's text, and print the agent's reply as it streams."""
     print(f"Caller: {text}\nAgent: ", end="")
     await conversation.send(text)
     async for update in conversation:

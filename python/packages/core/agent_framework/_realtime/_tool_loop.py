@@ -418,7 +418,7 @@ class ToolLoop:
         chain.batch_started()
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
-            batch = await self._run_executor(calls, _keep_results_as_they_finish(calls))
+            batch = await self._run_executor(calls)
         except Exception:
             # The executor discards a batch that fails closed, so calls that finished first mustn't keep their results.
             for call in calls:
@@ -433,9 +433,7 @@ class ToolLoop:
                 )
         return batch.should_terminate, batch.executed_call_count
 
-    async def _run_executor(
-        self, calls: Sequence[_Call], on_call_finished: Callable[[Content, list[Content]], None]
-    ) -> Any:
+    async def _run_executor(self, calls: Sequence[_Call]) -> Any:
         return await _execute_function_calls(
             custom_args=dict(self._invocation_kwargs),
             function_calls=[call.content for call in calls],
@@ -446,12 +444,11 @@ class ToolLoop:
             invocation_session=self._agent_session,
             middleware_pipeline=self._middleware_pipeline,
             realtime_conversation=self._conversation,
-            on_call_finished=on_call_finished,
+            on_call_finished=_keep_results_as_they_finish(calls),
         )
 
 
 def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, list[Content]], None]:
-    """Close may cancel the batch, and a call that already finished must keep its real result."""
     by_content = {id(call.content): call for call in calls}
 
     def keep(function_call: Content, results: list[Content]) -> None:

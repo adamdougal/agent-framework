@@ -90,7 +90,7 @@ def dicts(messages: Sequence[Message]) -> list[dict[str, Any]]:
 
 
 def shapes(messages: Sequence[Message]) -> list[tuple[str, list[str], str | None, str | None]]:
-    """Each message's role, content types, author and id, for messages whose contents carry generated ids."""
+    """Compare stable fields because generated payload ids vary."""
     return [
         (message.role, [content.type for content in message.contents], message.author_name, message.message_id)
         for message in messages
@@ -124,47 +124,18 @@ class Failing(Recorder):
     def __init__(self, source_id: str = "failing", *, failures: int = 1_000) -> None:
         super().__init__(source_id)
         self.failures = failures
-        self.attempts = 0
 
     async def after_run(
         self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
     ) -> None:
-        self.attempts += 1
         if self.failures:
             self.failures -= 1
             raise RuntimeError(f"{self.source_id} store down")
         await super().after_run(agent=agent, session=session, context=context, state=state)
 
 
-class Slow(Recorder):
-    def __init__(self) -> None:
-        super().__init__("slow")
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.cancelled = False
-
-    async def after_run(
-        self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
-    ) -> None:
-        if not self.started.is_set():
-            self.started.set()
-            try:
-                await self.release.wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-        await super().after_run(agent=agent, session=session, context=context, state=state)
-
-
 async def read_all(conversation: Any) -> list[AgentResponseUpdate]:
     return [update async for update in conversation]
-
-
-async def until_error(conversation: Any) -> AgentResponseUpdate:
-    while True:
-        update = await next_update(conversation)
-        if any(content.type == "error" for content in update.contents):
-            return update
 
 
 def texts(report: SessionContext) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -216,7 +187,6 @@ def usage(response_id: str, input_tokens: int, output_tokens: int) -> RealtimeEv
 
 
 def spoken_then_written(response_id: str = "resp_1") -> list[RealtimeEvent]:
-    """item_a is spoken, as 1,000 ms of audio, and item_b is only written, so a cut in item_a leaves item_b unheard."""
     written = Content.from_text("The full terms are as follows...", merge_mode="replace", status="completed")
     return [
         event("response_created", response_id=response_id),

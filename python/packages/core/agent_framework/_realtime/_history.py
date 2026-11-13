@@ -19,28 +19,24 @@ if TYPE_CHECKING:
 @dataclass
 class _CallerTurn:
     item_id: str
+    waiting: bool
     text: str | None = None
     status: str = "completed"
     partial: str = ""
-    text_less: str = "transcript_pending"
 
     @property
-    def settled(self) -> bool:
-        return self.text is not None or self.text_less != "transcript_pending"
+    def pending(self) -> bool:
+        return self.waiting and self.text is None
 
-    def stop_waiting(self, reason: str) -> None:
-        """Never invent the caller's words: keep what was transcribed so far, else say why there's no text."""
+    def stop_waiting(self) -> None:
         if self.partial:
             self.text, self.status = self.partial, "incomplete"
-        else:
-            self.text_less = reason
+        self.waiting = False
 
     def messages(self) -> list[Message]:
         if self.text is not None:
             return [Message("user", [Content.from_text(self.text, status=self.status)], message_id=self.item_id)]
-        return [
-            Message("user", [], message_id=self.item_id, additional_properties={"core": {"text_less": self.text_less}})
-        ]
+        return [Message("user", [], message_id=self.item_id, additional_properties={"core": {"text_less": True}})]
 
 
 @dataclass
@@ -54,13 +50,7 @@ class _AgentTurn:
     heard: bool = True
     heard_fraction: float | None = None
 
-    @property
-    def settled(self) -> bool:
-        """Its response settles it: the exchange waits for that response to finish."""
-        return True
-
     def response_ended(self, status: str) -> None:
-        """A response that didn't complete was cut short, so its text is only what was generated before that."""
         if status == "completed":
             return
         if self.text is None:
@@ -92,10 +82,6 @@ class _CallItem:
     result: Content | None = None
     author_name: str | None = None
 
-    @property
-    def settled(self) -> bool:
-        return self.call is None or self.result is not None
-
     def messages(self) -> list[Message]:
         if self.call is None:
             return []
@@ -118,10 +104,6 @@ class _Response:
     usage: UsageDetails | None = None
     finish_reason: FinishReasonLiteral | None = None
 
-    @property
-    def settled(self) -> bool:
-        return self.finished
-
     def messages(self) -> list[Message]:
         return []
 
@@ -130,14 +112,11 @@ class _Response:
 class Exchange:
     inputs: list[Message]
     outputs: list[Message]
-    settled: bool = True
     usage: UsageDetails | None = None
     response_id: str | None = None
     finish_reason: FinishReasonLiteral | None = None
-    end: int = 0
 
     def include(self, response: _Response) -> None:
-        """As a run reports its last model call, the exchange reports its last response, with every response's usage."""
         self.usage = add_usage_details(self.usage, response.usage)
         self.response_id = response.response_id
         self.finish_reason = response.finish_reason
@@ -148,8 +127,6 @@ class CallHistory:
         self._entries: list[_Item | _Response | Message] = []
         self._items: dict[str, _Item] = {}
         self._responses: dict[str, _Response] = {}
-        self._frozen: list[Exchange] = []
-        self._frozen_end = 0
 
     def on_item_added(self, event: RealtimeEvent, *, transcribing: bool) -> None:
         if (item := _item_for(core_attributes(event), transcribing=transcribing)) is not None:
@@ -161,7 +138,6 @@ class CallHistory:
             turn.heard = False
 
     def heard_messages_after(self, response_id: str, item_id: str) -> list[str]:
-        """Messages already counted as unheard are left out, so none is ever deleted twice."""
         later: list[str] = []
         found = False
         for entry in self._entries:
@@ -177,16 +153,12 @@ class CallHistory:
 
     def stop_waiting_for_caller_transcripts(self) -> None:
         for turn in self._waiting_caller_turns():
-            turn.stop_waiting("transcript_missing")
+            turn.stop_waiting()
 
     def _waiting_caller_turns(self) -> list[_CallerTurn]:
-        return [item for item in self._items.values() if isinstance(item, _CallerTurn) and not item.settled]
+        return [item for item in self._items.values() if isinstance(item, _CallerTurn) and item.pending]
 
     def on_app_input(self, message: Message) -> None:
-        """Only its text: the session drops attachments, and audio becomes the caller's turn.
-
-        A copy, so the app changing its message after sending it doesn't rewrite what was said.
-        """
         recorded = copy.copy(message)
         recorded.contents = [content for content in message.contents if content.type == "text"]
         if recorded.contents:
@@ -198,7 +170,7 @@ class CallHistory:
 
     def on_input_transcription_failed(self, event: RealtimeEvent) -> None:
         if (turn := self._item(event, _CallerTurn)) is not None:
-            turn.stop_waiting("transcription_failed")
+            turn.stop_waiting()
 
     def on_output_text(self, event: RealtimeEvent, author: BaseAgent) -> None:
         if (turn := self._item(event, _AgentTurn)) is None:
@@ -210,7 +182,7 @@ class CallHistory:
     def on_response_created(self, event: RealtimeEvent) -> None:
         core = core_attributes(event)
         if core.get("out_of_band"):
-            return  # its output joins no conversation item, so it belongs to no exchange
+            return
         response_id = core["response_id"]
         response = _Response(response_id)
         self._responses[response_id] = response
@@ -222,7 +194,6 @@ class CallHistory:
             response.usage = event.content.usage_details
 
     def end_unfinished_responses(self) -> None:
-        """A closed session finishes no more responses, so one still running was cut short by the close."""
         for response in self._responses.values():
             if not response.finished:
                 self.on_response_done(response.response_id, "cancelled")
@@ -238,11 +209,10 @@ class CallHistory:
             response.finished = True
             response.finish_reason = finish_reason
             if status == "incomplete" and reason == "content_filter":
-                # The provider never finishes transcribing a turn it filtered, so waiting would hold every later
-                # exchange until close.
+                # The provider never finishes transcribing a turn it filtered, so close would wait for nothing.
                 for turn in self._exchange_inputs(response):
-                    if isinstance(turn, _CallerTurn) and not turn.settled:
-                        turn.stop_waiting("transcript_missing")
+                    if isinstance(turn, _CallerTurn) and turn.pending:
+                        turn.stop_waiting()
         for item in self._items.values():
             if isinstance(item, _AgentTurn) and item.response_id == response_id:
                 item.response_ended(status)
@@ -266,7 +236,6 @@ class CallHistory:
             call.author_name = author.name
 
     def on_tool_result(self, result: Content) -> None:
-        """Only its text, which is all the session sends."""
         recorded = copy.copy(result)
         recorded.items = [part for part in result.items or [] if part.type == "text"]
         for item in self._items.values():
@@ -276,17 +245,10 @@ class CallHistory:
     def messages(self) -> list[Message]:
         return [message for exchange in self.exchanges() for message in (*exchange.inputs, *exchange.outputs)]
 
-    def freeze(self, exchange: Exchange) -> None:
-        """Once providers have an exchange, later events mustn't make history disagree with what they recorded."""
-        if exchange.end > self._frozen_end:
-            self._frozen.append(exchange)
-            self._frozen_end = exchange.end
-
     def exchanges(self) -> list[Exchange]:
-        """An input that follows the agent's reply starts the next exchange."""
         exchanges: list[Exchange] = []
         replied = False
-        for position, entry in enumerate(self._entries[self._frozen_end :], self._frozen_end):
+        for entry in self._entries:
             is_input = isinstance(entry, (Message, _CallerTurn))
             if not exchanges or (is_input and replied):
                 exchanges.append(Exchange([], []))
@@ -294,16 +256,10 @@ class CallHistory:
             messages = [entry] if isinstance(entry, Message) else entry.messages()
             (exchanges[-1].inputs if is_input else exchanges[-1].outputs).extend(messages)
             replied = replied or (not is_input and _is_reply(entry))
-            if not isinstance(entry, Message) and not entry.settled:
-                exchanges[-1].settled = False
             if isinstance(entry, _Response):
                 exchanges[-1].include(entry)
-            exchanges[-1].end = position + 1
         # Echoes of replayed history render nothing, and on their own they're no exchange of this call.
-        return [
-            *self._frozen,
-            *(exchange for exchange in exchanges if exchange.inputs or exchange.outputs or exchange.response_id),
-        ]
+        return [exchange for exchange in exchanges if exchange.inputs or exchange.outputs or exchange.response_id]
 
     def _item(self, event: RealtimeEvent, item_type: type[_ItemT]) -> _ItemT | None:
         item = self._items.get(core_attributes(event)["item_id"])
@@ -311,13 +267,10 @@ class CallHistory:
 
 
 def _item_for(item: dict[str, Any], *, transcribing: bool) -> _Item | None:
-    """The caller's audio, the agent's messages and calls are the call's own turns.
-
-    Other user and system items are the echoes of app input, which is recorded as it's sent, or of replayed history.
-    """
+    """Other user and system items echo app input or replay, which mustn't be recorded twice."""
     role = item.get("role")
     if role == "user" and item.get("input_audio"):
-        return _CallerTurn(item["item_id"], text_less="transcript_pending" if transcribing else "transcription_off")
+        return _CallerTurn(item["item_id"], waiting=transcribing)
     if role == "assistant":
         return _AgentTurn(item["item_id"])
     if role is None:
@@ -331,7 +284,6 @@ def _is_reply(entry: _Item | _Response) -> bool:
 
 
 def _take_transcript(turn: _CallerTurn | _AgentTurn, transcript: RealtimeEvent) -> None:
-    """Only the completed transcript is the turn's text; deltas build the partial text a cut-short turn keeps."""
     if transcript.content is None:
         return
     if transcript.content.status == "completed":

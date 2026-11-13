@@ -170,12 +170,16 @@ Approvals and local MCP tools are in scope, with `Agent`'s MCP lifecycle. See
 ### Voice history
 
 History holds the provider conversation's authored turns as text, in spoken order, with only what the caller heard of a
-cut-off turn. A live conversation reports history to context providers one exchange at a time during the call, through
-the same `after_run` a run uses, and every close path reports the rest. This replaces ADR 0035's authored-turn ledger
-finalized at close. Reporting per exchange keeps chat's inputs-then-outputs order, keeps all but the last exchange if
-the process dies, and keeps close fast. Storing audio, ordering by arrival and dropping text-less caller turns were
-rejected. Ordering by arrival puts late transcripts after their replies, and dropping text-less turns makes replies look
-unprompted. See [History](../specs/006-python-realtime-agents.md#history).
+cut-off turn. Every close path reports a live conversation's history to context providers one exchange at a time, in
+order, through the same `after_run` a run uses, as chat reports when a run ends. Like ADR 0035's authored-turn ledger,
+history is finalized at close, but one `after_run` per exchange keeps chat's inputs-then-outputs order in stored
+history. A provider that fails skips the call's later exchanges while the others carry on, so one store's outage can't
+lose the call for the rest. Reporting during the call was rejected: `before_run` runs only at start, so mid-call reports
+never reach the live model, and they need a background reporter, retries and rules that freeze reported exchanges. The
+cost is that a process killed mid-call reports nothing for that call, so apps that need each exchange stored as it
+happens record it from the update stream. Storing audio, ordering by arrival and dropping text-less caller turns were
+also rejected. Ordering by arrival puts late transcripts after their replies, and dropping text-less turns makes replies
+look unprompted. See [History](../specs/006-python-realtime-agents.md#history).
 
 ### In-session handoffs
 
@@ -324,7 +328,7 @@ nobody has verified that the project-scoped route serves realtime.
 | `RealtimeSessionOptions` | `RealtimeOptions`, with `create_response` inside turn detection |
 | `event_type` categories | Agent Framework kinds, with `service_event_type` verbatim |
 | A refactored shared executor | `_execute_function_calls` reused, with realtime loop rules |
-| An authored-turn ledger finalized at close | Per-exchange reporting during the call |
+| An authored-turn ledger finalized at close | History reported at close, one `after_run` per exchange |
 | Handoffs deferred | In-session `handoff(...)` and `RealtimeHandoffBuilder` |
 | Realtime middleware deferred; `RawOpenAIRealtimeClient` | Conversation middleware; telemetry at the agent layer |
 | OpenAI first | OpenAI, Azure OpenAI, Voice Live and Foundry voice agents, with a capability table |

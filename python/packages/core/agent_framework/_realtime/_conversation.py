@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
 from .._feature_stage import ExperimentalFeature, experimental
 from .._middleware import categorize_middleware
-from .._sessions import AgentSession, ContextProvider, HistoryProvider, SessionContext
+from .._sessions import AgentSession, HistoryProvider, SessionContext
 from .._tools import _append_unique_tools, normalize_tools  # pyright: ignore[reportPrivateUsage]
 from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
 from ..exceptions import (
@@ -29,7 +29,7 @@ from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._history import CallHistory
 from ._options import RealtimeOptionsT
-from ._reporting import ExchangeReporter
+from ._reporting import report_exchanges
 from ._responses import ResponseLedger
 from ._tool_loop import ToolLoop, requested_by_a_tool
 from ._update_stream import UpdateStream
@@ -63,9 +63,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     ``RealtimeConnectionException`` or ``RealtimeBackpressureException``, after the queued updates are read.
 
     The call's turns are kept as text in ``history``. Opening runs the agent's context providers' ``before_run`` once,
-    applies their instructions and tools, and replays the history they load into the new realtime session. Each
-    exchange, the input from the caller or the app with the reply and tool calls it drives, then reaches their
-    ``after_run`` during the call, and close reports the rest.
+    applies their instructions, tools and function middleware, and replays the history they load into the new realtime
+    session. Close reports each exchange, the input from the caller or the app with the reply and tool calls it drives,
+    to their ``after_run`` in order. A call whose process ends before it closes never reaches them, so an app that
+    needs each exchange stored as it happens records it from the updates.
 
     Examples:
         .. code-block:: python
@@ -112,7 +113,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._caller_quiet = asyncio.Event()
         self._caller_quiet.set()
         if agent_session is None and agent.context_providers:
-            # As in chat: state a provider sets up in before_run must reach the tools through the same session.
             agent_session = AgentSession()
         self._tool_loop = ToolLoop(
             tools=list(tools),
@@ -127,11 +127,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._history = CallHistory()
         self._history_changed = asyncio.Event()
         self._provider_session = agent_session if agent_session is not None else AgentSession()
-        self._reporter = (
-            ExchangeReporter(agent, self._provider_session, self._history, self._report_context_provider_failure)
-            if agent.context_providers
-            else None
-        )
+        self._start_context: SessionContext | None = None
         self._previous_event: RealtimeEvent | None = None
 
     @property
@@ -143,13 +139,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     def history(self) -> list[Message]:
         """A snapshot of the call's turns so far, as text messages in the provider's conversation order.
 
-        It holds the caller's turns as their transcripts, the agent's turns, app input and tool calls with their
-        results, including exchanges not yet reported to context providers, and the final record after close. A cut-off
-        turn keeps only what the caller heard, marked ``status="incomplete"``. A caller turn without text has no
-        contents and says why in ``additional_properties["core"]["text_less"]``: ``"transcript_pending"``,
-        ``"transcription_failed"``, ``"transcription_off"`` or ``"transcript_missing"``.
+        It holds the caller's turns as their transcripts, the agent's turns, the text of app input as it was sent, and
+        tool calls with the text of their results, and holds the final record after close. A cut-off turn keeps only
+        what the caller heard, marked ``status="incomplete"``. A caller turn without text, because its transcript
+        failed, isn't configured or hasn't arrived, has no contents and ``additional_properties["core"]["text_less"]``
+        set to ``True``. The messages are copies: changing them, or a message after sending it, changes neither the
+        history nor what context providers store.
         """
-        # Copies, because context providers may hold these same messages in the agent session.
         return copy.deepcopy(self._history.messages())
 
     async def __aenter__(self) -> Self:
@@ -178,7 +174,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._tool_loop.on_tools_declared(self._tools)
         try:
             async with self._write_lock:
-                # Loaded history is already the agent session's, so it's replayed without being recorded again.
                 for message in start_context.get_messages():
                     self._raise_if_closed_while_starting()
                     await session.send(message)
@@ -199,27 +194,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 ) from error
             raise
         self._receive_task = asyncio.create_task(self._receive_loop(session))
-        if self._reporter is not None:
-            self._spawn(self._reporter.run())
         return self
 
     async def _prepare_from_context_providers(self) -> SessionContext:
-        start_context = await self._load_start_context()
-        self._apply_start_context(start_context)
-        if self._reporter is not None:
-            self._reporter.start(start_context)
-        if not self._options.get("transcription") and any(
-            isinstance(provider, HistoryProvider) for provider in self._agent.context_providers
-        ):
-            # Switching transcription on would bill a second model, which is the app's call.
-            logger.warning(
-                "The realtime conversation has a history provider but no transcription, so caller turns are stored "
-                "without text. Set the transcription option to keep what the caller said."
-            )
-        return start_context
-
-    async def _load_start_context(self) -> SessionContext:
-        """Context providers run once per conversation, as they run once per chat run."""
         context = SessionContext(
             session_id=self._provider_session.session_id,
             input_messages=list(self._initial_messages),
@@ -235,13 +212,18 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 context=context,
                 state=self._provider_session.state.setdefault(provider.source_id, {}),
             )
+        self._apply_start_context(context)
+        self._start_context = context
+        if not self._options.get("transcription") and any(
+            isinstance(provider, HistoryProvider) for provider in self._agent.context_providers
+        ):
+            logger.warning(
+                "The realtime conversation has a history provider but no transcription, so caller turns are stored "
+                "without text. Set the transcription option to keep what the caller said."
+            )
         return context
 
     def _apply_start_context(self, context: SessionContext) -> None:
-        """As in chat, providers add their instructions, tools and function middleware after the agent's.
-
-        Chat middleware has no model call to wrap here, as with the agent's own.
-        """
         if context.instructions:
             self._options = {
                 **self._options,
@@ -344,8 +326,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         elif event.kind == "output_text":
             self._history.on_output_text(event, self._responses.agent_of(response_id, default=self._agent))
         self._history_changed.set()
-        if self._reporter is not None:
-            self._reporter.wake()
         self._emit(
             update_from_event(
                 event,
@@ -464,15 +444,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         code = error.code if isinstance(error, RealtimeControlException) else None
         self._emit(AgentResponseUpdate(contents=[Content.from_error(message=str(error), error_code=code)]))
 
-    def _report_context_provider_failure(self, provider: ContextProvider, error: Exception) -> None:
-        """The call goes on: the provider retries this exchange with the next report, and close raises if it can't."""
-        message = f"Context provider '{provider.source_id}' failed to record an exchange: {error}"
-        self._emit(AgentResponseUpdate(contents=[Content.from_error(message=message)]))
-
     def _report_tool_result(self, result: Content, response_id: str) -> None:
         self._history.on_tool_result(result)
-        if self._reporter is not None:
-            self._reporter.wake()
         author = self._responses.agent_of(response_id, default=self._agent)
         self._emit(tool_result_update(result, response_id=response_id, author=author))
 
@@ -706,7 +679,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _delete_items(
         self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], item_ids: Sequence[str]
     ) -> RealtimeControlException | None:
-        """A delete the provider rejects mustn't stop the deletes after it, so the first failure comes at the end."""
         first_failure: RealtimeControlException | None = None
         for item_id in item_ids:
             try:
@@ -737,13 +709,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         Closing stops new input and control calls at once. While the session is still open, it waits up to about 3
         seconds for caller transcripts still on their way. It then closes the session, cancels running tools with the
         ``conversation_closed`` reason, and streams an error result for each call that didn't finish; calls that had
-        finished keep their results. It reports the remaining exchanges to the agent's context providers. Iteration
-        ends once the queued updates are read. Closing again waits for the same close, and a cancelled caller doesn't
-        cancel the close itself.
+        finished keep their results. It then reports the call to the agent's context providers, one ``after_run`` per
+        exchange in order, with providers in reverse registration order for each. A provider whose ``after_run`` fails
+        gets none of the later exchanges, while the others carry on. Iteration ends once the queued updates are read.
+        Closing again waits for the same close, and a cancelled caller doesn't cancel the close itself.
 
         Raises:
-            Exception: The failure of a context provider that still couldn't record the conversation, after cleanup,
-                or an ``ExceptionGroup`` when several couldn't.
+            Exception: The failure of a context provider that couldn't record the call, after cleanup, or an
+                ``ExceptionGroup`` when several couldn't.
         """
         await asyncio.shield(self._start_close())
 
@@ -782,8 +755,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await self._tool_loop.close()
             self._history.stop_waiting_for_caller_transcripts()
             self._history.end_unfinished_responses()
-            if self._reporter is not None:
-                provider_failures = await self._reporter.report_remaining()
+            if self._start_context is not None and self._agent.context_providers:
+                provider_failures = await report_exchanges(
+                    self._agent, self._provider_session, self._start_context, self._history.exchanges()
+                )
             await self._end_background_tasks()
         finally:
             self._updates.finish(self._failure)
@@ -799,7 +774,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
 
 def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
-    """The call's turns really happened, so a provider that couldn't record them must not fail silently."""
     if len(failures) == 1:
         raise failures[0]
     if failures:

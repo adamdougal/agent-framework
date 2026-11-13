@@ -1228,8 +1228,6 @@ async def test_a_truncate_cancelled_before_sending_leaves_a_later_truncation_to_
 
 
 async def test_delete_item_sends_the_delete_and_returns_on_its_deletion() -> None:
-    """delete_item("item_1") sends conversation.item.delete {item_id: "item_1"} and returns once
-    conversation.item.deleted for "item_1" arrives, not before."""
     session, connection = await started()
 
     async with reading(session):
@@ -1640,8 +1638,6 @@ async def test_usage_maps_detail_keys() -> None:
 
 
 async def test_item_added_maps_order_and_role() -> None:
-    """conversation.item.added for a user text message with previous_item_id null yields item_added with core
-    {item_id, previous_item_id: None, role: "user", input_audio: False}; a function_call item yields no role."""
     message, call = await mapped(
         {
             "type": "conversation.item.added",
@@ -1668,8 +1664,6 @@ async def test_item_added_maps_order_and_role() -> None:
 
 
 async def test_response_created_marks_an_out_of_band_response() -> None:
-    """response.created for a response with conversation_id null yields response_created with core
-    {response_id, out_of_band: True}; one in the conversation carries no out_of_band."""
     out_of_band, in_conversation = await mapped(
         response_created("resp_oob", conversation_id=None),
         response_created("resp_1"),
@@ -1680,8 +1674,6 @@ async def test_response_created_marks_an_out_of_band_response() -> None:
 
 
 async def test_item_added_says_whether_a_user_item_holds_audio() -> None:
-    """A user message item with an input_audio part maps to input_audio True, one with an input_text part to
-    input_audio False, and assistant and function_call items carry no input_audio."""
 
     def added(item_id: str, item: dict[str, Any]) -> dict[str, Any]:
         return {"type": "conversation.item.added", "event_id": f"e_{item_id}", "item": {"id": item_id, **item}}
@@ -2097,8 +2089,7 @@ def test_session_module_imports_without_the_realtime_extra() -> None:
 
 class TestVerification:
     async def test_a_rejected_delete_raises_with_the_providers_code(self) -> None:
-        """An error with no event id while delete_item("item_9") waits fails it with RealtimeControlException carrying
-        the provider's code "item_not_found"."""
+        """Some providers omit request ids, so deletion errors must still be claimed."""
         session, connection = await started()
 
         async with reading(session):

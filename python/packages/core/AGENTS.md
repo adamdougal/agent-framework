@@ -134,8 +134,8 @@ the root package:
 - `_history.py` - `CallHistory`, the ordered item registry behind `RealtimeConversation.history`. It records caller
   turns (`user` items with `input_audio`), app input as it's written, agent turns and calls, and splits them into
   exchanges. `user` and `system` items without audio are echoes of app input or replay, so it ignores them.
-- `_reporting.py` - `ExchangeReporter`, which reports each settled exchange to the context providers' `after_run` in a
-  background task, keeps a place per provider so a failing one retries, and freezes an exchange once reported.
+- `_reporting.py` - `report_exchanges`, which close uses to report each exchange to the context providers'
+  `after_run` in order. A provider that fails skips the later exchanges, and the others carry on.
 
 Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, the
 live tool list, and an `on_call_finished` callback that keeps a cancelled batch's finished results, as private
