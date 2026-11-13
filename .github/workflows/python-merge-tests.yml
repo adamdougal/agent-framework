@@ -364,6 +364,7 @@ jobs:
       AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZUREOPENAI__RESPONSESDEPLOYMENTNAME }}
       AZURE_OPENAI_MODEL: ${{ vars.AZUREOPENAI__RESPONSESDEPLOYMENTNAME }}
       AZURE_OPENAI_EMBEDDING_MODEL: ${{ vars.AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      AZURE_OPENAI_REALTIME_MODEL: ${{ vars.AZUREOPENAI__REALTIMEDEPLOYMENTNAME || '' }}
       AZURE_OPENAI_ENDPOINT: ${{ vars.AZUREOPENAI__ENDPOINT }}
     defaults:
       run:
@@ -389,6 +390,7 @@ jobs:
           packages/openai/tests/openai/test_openai_chat_completion_client_azure.py
           packages/openai/tests/openai/test_openai_chat_client_azure.py
           packages/openai/tests/openai/test_openai_embedding_client_azure.py
+          packages/openai/tests/openai/test_openai_realtime_client_azure.py
           -m integration
           -n logical --dist worksteal
           --timeout=120 --session-timeout=900 --timeout_method thread

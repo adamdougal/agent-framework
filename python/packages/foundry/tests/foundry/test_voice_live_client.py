@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Mapping
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 import pytest
@@ -956,6 +956,32 @@ async def test_assistant_text_is_sent_as_a_text_part() -> None:
         "role": "assistant",
         "content": [{"type": "text", "text": "Earlier reply."}],
     }
+
+
+async def test_ga_only_settings_are_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """start(options={"speed": 1.2, "truncation": "auto"}) on a Voice Live session sends neither key and warns naming
+    'speed' and 'truncation'."""
+    session = await flat_session(cast(VoiceLiveOptions, {"voice": "alloy", "speed": 1.2, "truncation": "auto"}))
+
+    assert "speed" not in session
+    assert "truncation" not in session
+    assert "'speed'" in caplog.text
+    assert "'truncation'" in caplog.text
+
+
+async def test_cancel_response_sends_no_response_id() -> None:
+    """With "resp_1" active, a Voice Live session's cancel_response() sends response.cancel with no response_id."""
+    session, connection = await voice_live_session()
+
+    async with reading(session) as events:
+        connection.push(response_created("resp_1"))
+        await until(lambda: any(event.kind == "response_created" for event in events))
+        cancelling = asyncio.create_task(session.cancel_response())
+        cancel = await connection.wait_sent("response.cancel")
+        connection.push({"type": "response.done", "event_id": "evt_done", "response": {"id": "resp_1"}})
+        await asyncio.wait_for(cancelling, 1)
+
+    assert "response_id" not in cancel
 
 
 # endregion

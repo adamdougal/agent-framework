@@ -7,6 +7,7 @@ This package provides:
 - `OpenAIChatClient` for the OpenAI Responses API
 - `OpenAIChatCompletionClient` for the Chat Completions API
 - `OpenAIEmbeddingClient` for embeddings
+- `OpenAIRealtimeClient`, an experimental realtime client for OpenAI Realtime and Azure OpenAI Realtime
 - `OpenAIRealtimeSession`, an experimental realtime session for services that speak the OpenAI Realtime protocol
 
 ## Installation
@@ -68,12 +69,14 @@ These variables are used when the client is configured for OpenAI:
 | `OPENAI_CHAT_MODEL` | Preferred model for `OpenAIChatClient` |
 | `OPENAI_CHAT_COMPLETION_MODEL` | Preferred model for `OpenAIChatCompletionClient` |
 | `OPENAI_EMBEDDING_MODEL` | Preferred model for `OpenAIEmbeddingClient` |
+| `OPENAI_REALTIME_MODEL` | Preferred model for `OpenAIRealtimeClient` |
 
 Model lookup order:
 
 - `OpenAIChatClient`: `OPENAI_CHAT_MODEL` -> `OPENAI_MODEL`
 - `OpenAIChatCompletionClient`: `OPENAI_CHAT_COMPLETION_MODEL` -> `OPENAI_MODEL`
 - `OpenAIEmbeddingClient`: `OPENAI_EMBEDDING_MODEL` -> `OPENAI_MODEL`
+- `OpenAIRealtimeClient`: `OPENAI_REALTIME_MODEL` -> `OPENAI_MODEL`
 
 These model variables are only consulted when you do not pass `model=` directly. In other words,
 `OpenAIChatClient(model="...")` ignores `OPENAI_CHAT_MODEL`, and
@@ -93,12 +96,14 @@ These variables are used when the client is configured for Azure OpenAI:
 | `AZURE_OPENAI_CHAT_MODEL` | Preferred deployment for `OpenAIChatClient` |
 | `AZURE_OPENAI_CHAT_COMPLETION_MODEL` | Preferred deployment for `OpenAIChatCompletionClient` |
 | `AZURE_OPENAI_EMBEDDING_MODEL` | Preferred deployment for `OpenAIEmbeddingClient` |
+| `AZURE_OPENAI_REALTIME_MODEL` | Preferred deployment for `OpenAIRealtimeClient` |
 
 Deployment lookup order:
 
 - `OpenAIChatClient`: `AZURE_OPENAI_CHAT_MODEL` -> `AZURE_OPENAI_MODEL`
 - `OpenAIChatCompletionClient`: `AZURE_OPENAI_CHAT_COMPLETION_MODEL` -> `AZURE_OPENAI_MODEL`
 - `OpenAIEmbeddingClient`: `AZURE_OPENAI_EMBEDDING_MODEL` -> `AZURE_OPENAI_MODEL`
+- `OpenAIRealtimeClient`: `AZURE_OPENAI_REALTIME_MODEL` -> `AZURE_OPENAI_MODEL`
 
 For Azure routing, the same rule applies: the client-specific deployment variable is checked first,
 then the generic `AZURE_OPENAI_MODEL` fallback. Passing `model=` overrides both environment variables
@@ -147,7 +152,32 @@ from agent_framework.openai import OpenAIChatCompletionClient
 client = OpenAIChatCompletionClient(model="gpt-4o-mini")
 ```
 
-## Realtime sessions (experimental)
+## Realtime agents (experimental)
+
+`OpenAIRealtimeClient` opens live voice sessions on OpenAI Realtime, or on an Azure OpenAI realtime deployment, for a
+`RealtimeAgent`. It needs the realtime extra, which adds `openai[realtime]` and `websockets`:
+
+```bash
+pip install "agent-framework-openai[realtime]" --pre
+```
+
+```python
+from agent_framework import RealtimeAgent
+from agent_framework.openai import OpenAIRealtimeClient
+
+agent = RealtimeAgent(OpenAIRealtimeClient(model="gpt-realtime-mini"), instructions="Be brief.")
+async with agent.start_conversation() as conversation:
+    await conversation.send("Hello!")
+```
+
+It routes like the chat clients: a `credential`, an `azure_endpoint` or the Azure variables route to Azure OpenAI, where
+`model` is the deployment's name. Azure OpenAI is reached on the resource's `/openai/v1` route, which takes no API
+version, so an injected `AsyncAzureOpenAI` client is rejected; inject an `AsyncOpenAI` on that route instead.
+`OpenAIRealtimeOptions` adds the GA protocol's session settings to the neutral realtime options: output `speed`,
+`truncation`, `reasoning_effort`, `parallel_tool_calls`, semantic VAD `eagerness`, an `idle_timeout_ms` and a
+transcription `prompt`.
+
+### Realtime sessions
 
 `OpenAIRealtimeSession` implements the realtime session protocol for any service that speaks the OpenAI Realtime
 protocol. It translates the neutral realtime options, maps server events to realtime event kinds, and runs the control

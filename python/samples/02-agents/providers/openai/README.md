@@ -41,6 +41,14 @@ This folder contains OpenAI provider samples for the generic clients in
 | [`client_with_structured_output.py`](client_with_structured_output.py) | Structured output with Pydantic models. |
 | [`client_with_web_search.py`](client_with_web_search.py) | Web search with the responses client. |
 
+## Realtime samples (`OpenAIRealtimeClient`)
+
+These need the realtime extra: `pip install "agent-framework-openai[realtime]" --pre`.
+
+| File | Description |
+|------|-------------|
+| [`realtime_client_with_function_tools.py`](realtime_client_with_function_tools.py) | A realtime agent with a function tool: send text, stream the agent's transcript and save its spoken reply to a WAV file. |
+
 ## Environment Variables
 
 Set these before running the OpenAI provider samples:
@@ -52,6 +60,7 @@ Optionally, you can also set:
 
 - `OPENAI_ORG_ID`
 - `OPENAI_BASE_URL`
+- `OPENAI_REALTIME_MODEL`, for the realtime samples, which read it before `OPENAI_MODEL`
 
 If your shell also contains `AZURE_OPENAI_*` variables, these samples still stay on OpenAI as long as
 `OPENAI_API_KEY` is present. To force Azure routing with the generic clients, pass an explicit Azure

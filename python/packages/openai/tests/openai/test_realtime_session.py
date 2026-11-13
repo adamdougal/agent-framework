@@ -9,7 +9,7 @@ import json
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from agent_framework import (
@@ -2040,6 +2040,57 @@ def test_session_module_imports_without_the_realtime_extra() -> None:
 
 # endregion
 
+# region Typed GA settings and the targeted cancel
+
+
+async def test_speed_is_sent_as_the_output_speed() -> None:
+    """start(options={"voice": "marin", "speed": 1.2}) sends audio.output {"voice": "marin", "speed": 1.2}."""
+    session = await initial_session(cast(RealtimeOptions, {"voice": "marin", "speed": 1.2}))
+
+    assert session["audio"]["output"] == {"voice": "marin", "speed": 1.2}
+
+
+async def test_reasoning_effort_is_sent_as_reasoning() -> None:
+    """start(options={"reasoning_effort": "low"}) sends reasoning {"effort": "low"} and no reasoning_effort key."""
+    session = await initial_session(cast(RealtimeOptions, {"reasoning_effort": "low"}))
+
+    assert session["reasoning"] == {"effort": "low"}
+    assert "reasoning_effort" not in session
+
+
+async def test_truncation_is_sent_as_given() -> None:
+    """start(options={"truncation": {"type": "retention_ratio", "retention_ratio": 0.8}}) sends that truncation
+    unchanged."""
+    truncation = {"type": "retention_ratio", "retention_ratio": 0.8}
+
+    session = await initial_session(cast(RealtimeOptions, {"truncation": truncation}))
+
+    assert session["truncation"] == truncation
+
+
+async def test_parallel_tool_calls_is_sent_as_given() -> None:
+    """start(options={"parallel_tool_calls": False}) sends parallel_tool_calls False."""
+    session = await initial_session(cast(RealtimeOptions, {"parallel_tool_calls": False}))
+
+    assert session["parallel_tool_calls"] is False
+
+
+async def test_cancel_response_names_the_active_response() -> None:
+    """With "resp_1" active, cancel_response() sends response.cancel with response_id "resp_1"."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        await activate_response(connection, reader, "resp_1")
+        cancelling = asyncio.create_task(session.cancel_response())
+        cancel = await connection.wait_sent("response.cancel")
+        connection.push(response_done("resp_1", "cancelled"))
+        await asyncio.wait_for(cancelling, 1)
+
+    assert cancel["response_id"] == "resp_1"
+
+
+# endregion
+
 
 class TestVerification:
     async def test_image_token_details_map(self) -> None:
@@ -2180,3 +2231,56 @@ class TestVerification:
 
         assert "temperature" not in request["response"]
         assert "'temperature'" in caplog.text
+
+    async def test_turn_detection_and_transcription_extras_pass_through(self) -> None:
+        """start(options={"turn_detection": {"type": "semantic_vad", "eagerness": "low"}, "transcription": {"model":
+        "gpt-4o-transcribe", "prompt": "Contoso"}}) sends both unchanged under audio.input, and a later
+        update_session({"turn_detection": {"type": "server_vad", "idle_timeout_ms": 6000}}) sends idle_timeout_ms
+        6000."""
+        turn_detection = {"type": "semantic_vad", "eagerness": "low"}
+        transcription = {"model": "gpt-4o-transcribe", "prompt": "Contoso"}
+        session, connection = await started(
+            cast(RealtimeOptions, {"turn_detection": turn_detection, "transcription": transcription})
+        )
+
+        async with reading(session):
+            await asyncio.wait_for(
+                session.update_session(
+                    cast(RealtimeOptions, {"turn_detection": {"type": "server_vad", "idle_timeout_ms": 6000}}), None
+                ),
+                1,
+            )
+
+        assert connection.sent[0]["session"]["audio"]["input"] == {
+            "turn_detection": turn_detection,
+            "transcription": transcription,
+        }
+        assert connection.sent[1]["session"]["audio"]["input"]["turn_detection"]["idle_timeout_ms"] == 6000
+
+    async def test_update_session_sends_the_typed_settings(self) -> None:
+        """update_session({"speed": 0.9, "reasoning_effort": "high"}) sends audio.output.speed 0.9 and reasoning
+        {"effort": "high"}, and once acknowledged, options holds speed 0.9 and reasoning_effort "high"."""
+        session, connection = await started()
+
+        async with reading(session):
+            await asyncio.wait_for(
+                session.update_session(cast(RealtimeOptions, {"speed": 0.9, "reasoning_effort": "high"}), None), 1
+            )
+
+        update = connection.sent[-1]["session"]
+        assert update["audio"]["output"] == {"speed": 0.9}
+        assert update["reasoning"] == {"effort": "high"}
+        assert cast(dict[str, Any], session.options) == {"speed": 0.9, "reasoning_effort": "high"}
+
+    async def test_typed_settings_per_response_are_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
+        """create_response({"speed": 1.2}) warns naming 'speed' and sends no speed."""
+        session, connection = await started()
+
+        async with reading(session):
+            creating = asyncio.create_task(session.create_response(cast(RealtimeOptions, {"speed": 1.2})))
+            request = await connection.wait_sent("response.create")
+            connection.push(response_created("resp_1", request_id_of(request)))
+            await asyncio.wait_for(creating, 1)
+
+        assert "speed" not in request["response"]
+        assert "'speed'" in caplog.text
