@@ -13,12 +13,11 @@ from .._middleware import categorize_middleware
 from .._sessions import HistoryProvider, InMemoryHistoryProvider
 from .._tools import (
     _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
-    _append_unique_tools,  # pyright: ignore[reportPrivateUsage]
     normalize_function_invocation_configuration,
     normalize_tools,
 )
 from .._types import _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
-from ._conversation import RealtimeConversation
+from ._conversation import RealtimeConversation, unique_tools
 from ._options import RealtimeOptionsT
 
 if TYPE_CHECKING:
@@ -148,9 +147,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         # As in chat, the invoking agent's provider-owned session keys are recomputed here, so caller kwargs can't
         # replace them, and an agent tool with propagate_session=True keeps them out of its child session.
         invocation_kwargs[_PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY] = _provider_service_session_state_keys(self)
-        session_tools = _append_unique_tools(
-            [], [*self.tools, *normalize_tools(tools)], duplicate_error_message="Tool names must be unique."
-        )
+        session_tools = unique_tools([*self.tools, *normalize_tools(tools)])
         self._add_history_when_none_loads(session)
         return RealtimeConversation(
             self,

@@ -175,6 +175,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         # The conversation owns the session from here, so a close that starts while the initial messages go out
         # closes it.
         self._session = session
+        self._tool_loop.on_tools_declared(self._tools)
         try:
             async with self._write_lock:
                 # Loaded history is already the agent session's, so it's replayed without being recorded again.
@@ -249,11 +250,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 ),
             }
         if context.tools:
-            provider_tools = normalize_tools(context.tools)
-            self._tools = _append_unique_tools(
-                list(self._tools), provider_tools, duplicate_error_message="Tool names must be unique."
-            )
-            self._tool_loop.add_tools(provider_tools)
+            self._tools = unique_tools([*self._tools, *normalize_tools(context.tools)])
         if provider_middleware := context.get_middleware():
             self._tool_loop.add_function_middleware(
                 categorize_middleware(provider_middleware, supported_categories=("function",))["function"]
@@ -327,14 +324,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._tool_loop.on_new_input()
         elif event.kind == "speech_stopped":
             self._caller_quiet.set()
+        elif event.kind == "item_added":
+            if core.get("role") == "user":
+                # A caller turn the app commits itself brings no speech_started, only the user item it adds.
+                self._tool_loop.on_new_input()
+            self._history.on_item_added(event, transcribing=bool(self._session_options().get("transcription")))
         elif event.kind == "output_audio":
             self._cut_unheard(self._audio.on_output_audio(event))
         elif event.kind == "item_truncated":
             truncations = self._audio.on_item_truncated(event)
             self._cut_unheard(truncations, self._mark_unheard_text(self._audio.response_cut_at(core["item_id"])))
             self._history.on_item_truncated(event, self._audio.generated_ms(core["item_id"], core["content_index"]))
-        elif event.kind == "item_added":
-            self._history.on_item_added(event, transcribing=bool(self._session_options().get("transcription")))
         elif event.kind == "input_transcription":
             self._history.on_input_transcription(event)
         elif event.kind == "input_transcription_failed":
@@ -389,9 +389,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
         A ``RealtimeEvent`` is a raw command: the session sends its ``raw_representation`` verbatim, and the
         conversation doesn't track it. Other input is added to the provider's conversation in order. Audio-only input
-        leaves the response to turn detection. Any other input starts a new tool chain, so the tool loop's limits
-        count afresh, and then requests a response unless ``create_response`` is ``False``. Adding the input never
-        waits behind a control call.
+        leaves the response to turn detection or the app, and starts a new tool chain once the caller's turn is
+        committed. Any other input starts a new tool chain, so the tool loop's limits count afresh, and then requests a
+        response unless ``create_response`` is ``False``. Adding the input never waits behind a control call.
 
         Args:
             value: The input, or a raw provider command.
@@ -420,7 +420,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 # Close may have started while this send waited its turn, or while an earlier message went out.
                 await self._add_app_input(self._require_open_session(), message)
         if _is_audio_only(messages):
-            return  # the caller's audio: turn detection starts the chain and requests the response
+            return  # committing the caller's turn starts its chain; turn detection or the app asks for the response
         self._tool_loop.on_new_input()
         if create_response:
             await self.create_response()
@@ -480,6 +480,44 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         async with self._write_lock:
             await self._require_open_session().send(results)
 
+    async def update_session(
+        self,
+        *,
+        options: RealtimeOptionsT | None = None,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,
+    ) -> None:
+        """Change the live realtime session's settings or tools mid-call, without reconnecting.
+
+        ``options`` merge over the session's current settings. ``tools``, when given, replace both the tools the
+        provider declares and the tools the conversation runs, ``[]`` clearing them; calls that already arrived keep
+        the tools they resolved to. The call returns once the provider acknowledges the update, so any response
+        requested afterwards uses it, or at once when the provider client drops every option it can't honor. Neither
+        the agent's defaults nor the agent session change.
+
+        Keyword Args:
+            options: The settings to change.
+            tools: The tools to use instead of the current ones, or ``None`` to keep them.
+
+        Raises:
+            ValueError: If two tools share a name; nothing is sent.
+            RealtimeConversationClosedException: If the conversation has started closing.
+            RealtimeControlTimeoutException: If the provider doesn't acknowledge the update in time; it may still apply
+                it, and the conversation keeps running its current tools.
+            RealtimeControlException: If the provider rejects the update; nothing changes.
+        """
+        declared = None if tools is None else unique_tools(normalize_tools(tools))
+        async with self._control_lock:
+            await self._update_session_locked(options or {}, declared)
+        if declared is not None:
+            self._tool_loop.on_tools_declared(declared)
+
+    async def _update_session_locked(self, options: Mapping[str, Any], tools: list[ToolTypes] | None) -> None:
+        session = self._require_open_session()  # close may have started while this call waited its turn
+        await self._acknowledged(
+            session.update_session(options, tools),  # type: ignore[arg-type]
+            "update the session",
+        )
+
     async def create_response(self, *, options: RealtimeOptionsT | None = None) -> str:
         """Request a response, and return its id once the provider reports it created.
 
@@ -508,22 +546,55 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _create_response_locked(
         self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], options: Mapping[str, Any] | None
     ) -> str:
+        return await self._request_response(
+            lambda: session.create_response(options),  # type: ignore[arg-type]
+            "create a response",
+        )
+
+    async def _request_response(self, request: Callable[[], Awaitable[str]], action: str) -> str:
+        """Called under the control lock. Generated and verbatim responses follow the same rules."""
         if self._responses.any_active:
             raise RealtimeActiveResponseException(
                 "A response is active. Call interrupt() first to talk over it; nothing is queued."
             )
         self._responses.request_started()
         try:
-            response_id = await self._acknowledged(
-                session.create_response(options),  # type: ignore[arg-type]
-                "create a response",
-            )
+            response_id = await self._acknowledged(request(), action)
             self._responses.requested(response_id)
             if requested_by_a_tool(self):
                 self._responses.filler(response_id)
             return response_id
         finally:
             self._responses.request_settled()
+
+    async def say(self, text: str) -> str:
+        """Have the agent speak ``text`` word for word, and return the response id once it's created.
+
+        With an Azure text-to-speech voice, Voice Live and Foundry voice agents speak the text as a pre-generated
+        response. Other providers and voices ask the model to repeat it, which is best effort. Like
+        ``create_response(...)``, nothing is queued while a response is active, and a line that a tool or function
+        middleware of this conversation says, such as filler while a tool runs, doesn't count as the tool batch's
+        follow-up.
+
+        Args:
+            text: The words to speak.
+
+        Returns:
+            The provider's id for the response that speaks the text.
+
+        Raises:
+            RealtimeActiveResponseException: If a response is active, or another response started instead.
+            RealtimeUnsupportedException: If the provider can't speak text verbatim with the session's voice, such as
+                Voice Live with an OpenAI voice.
+            RealtimeConversationClosedException: If the conversation has started closing.
+            RealtimeControlTimeoutException: If the provider doesn't acknowledge the request in time; it may still
+                speak the text.
+            RealtimeControlException: If the provider rejects the request.
+        """
+        self._require_open_session()
+        async with self._control_lock:
+            session = self._require_open_session()  # close may have started while this call waited its turn
+            return await self._request_response(lambda: session.say(text), "say the text")
 
     async def interrupt(self, *, played_ms: int | None = None) -> None:
         """Cancel the active response, and cut the audio the caller didn't hear.
@@ -733,6 +804,11 @@ def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
         raise failures[0]
     if failures:
         raise ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
+
+
+def unique_tools(tools: Sequence[ToolTypes]) -> list[ToolTypes]:
+    """A realtime session declares its tools by name, so two tools can't share one."""
+    return _append_unique_tools([], tools, duplicate_error_message="Tool names must be unique.")
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:

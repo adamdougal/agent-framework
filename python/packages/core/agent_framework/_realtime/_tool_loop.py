@@ -25,6 +25,8 @@ from .._tools import (
 from .._types import Content, Message
 from ..exceptions import (
     RealtimeActiveResponseException,
+    RealtimeControlException,
+    RealtimeControlTimeoutException,
     RealtimeConversationClosedException,
     RealtimeException,
     ToolExecutionException,
@@ -112,6 +114,7 @@ class ToolLoop:
         responses: ResponseLedger,
     ) -> None:
         self._tools = tools
+        self._declared: list[ToolTypes] = []
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
         self._function_middleware = list(function_middleware)
@@ -131,9 +134,6 @@ class ToolLoop:
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
         self._calls_by_response: dict[str, list[_Call]] = {}
-
-    def add_tools(self, tools: Sequence[ToolTypes]) -> None:
-        self._tools.extend(tools)
 
     def add_function_middleware(self, middleware: Sequence[FunctionMiddlewareTypes]) -> None:
         self._function_middleware.extend(middleware)
@@ -162,6 +162,14 @@ class ToolLoop:
             "don't support that yet, so the call gets an error result.",
             tool.name,
         )
+
+    def on_tools_declared(self, tools: Sequence[ToolTypes]) -> None:
+        """The provider declares exactly ``tools`` now, at start or after an acknowledged update.
+
+        The executable list changes in place, so a call still running changes it through ``ctx.add_tools()``.
+        """
+        self._tools[:] = tools
+        self._declared = list(tools)
 
     def on_new_input(self) -> None:
         """Each caller turn or app input is a new request, so the limits count afresh.
@@ -297,6 +305,7 @@ class ToolLoop:
         )
         terminated = terminated or chain_ends
         results = [call.result for call in calls if call.result is not None]
+        await self._declare_tool_changes()
         await self._conversation._send_tool_results(Message("tool", results))  # pyright: ignore[reportPrivateUsage]
         self._results_marker = self._responses.created_count
         if chain.first_results_marker is None:
@@ -305,6 +314,34 @@ class ToolLoop:
             self._report(call)
         if not terminated:
             self._follow_up_due(chain)
+
+    async def _declare_tool_changes(self) -> None:
+        """Tools a call added or removed must reach the provider before the results the model acts on.
+
+        Results never wait behind another control call unless there's a change to declare. The change is compared again
+        once its turn comes, so an app's update queued ahead of it is never undone by a stale copy.
+        """
+        if not _differ(self._declared, self._tools):
+            return
+        async with self._conversation._control_lock:  # pyright: ignore[reportPrivateUsage]
+            if not _differ(self._declared, self._tools):
+                return
+            declaring = list(self._tools)
+            try:
+                await self._conversation._update_session_locked({}, declaring)  # pyright: ignore[reportPrivateUsage]
+            except RealtimeControlTimeoutException as timeout:
+                # The provider may still apply it, so the change stays and the next batch that finishes resends it.
+                logger.warning("The tool changes a tool call made may not have reached the provider: %s", timeout)
+            except RealtimeControlException as rejection:
+                logger.warning(
+                    "The provider rejected the tool changes a tool call made, so the conversation keeps the tools it "
+                    "declared before: %s",
+                    rejection,
+                )
+                self.on_tools_declared(self._declared)
+            else:
+                # Another batch may have changed the live list while this update waited; that change goes out next.
+                self._declared = declaring
 
     def _follow_up_due(self, chain: _ToolChain) -> None:
         """Follow-ups due together merge into one request."""
@@ -431,6 +468,10 @@ def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddl
 
         return AgentSession()
     return None
+
+
+def _differ(tools: Sequence[ToolTypes], others: Sequence[ToolTypes]) -> bool:
+    return len(tools) != len(others) or any(tool is not other for tool, other in zip(tools, others, strict=True))
 
 
 def _bind_namesakes_to_the_first(calls: Sequence[_Call]) -> None:

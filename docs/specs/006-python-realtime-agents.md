@@ -176,7 +176,7 @@ outside the topology, and app input for a call id the conversation isn't trackin
 
 | Control | Contract |
 | --- | --- |
-| `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
+| `update_session(*, options=None, tools=None)` | `options` merge over the realtime session's settings. `tools`, when given, replace the declared and executable tools together; `[]` clears them. The executable tools change when the provider acknowledges the update. Returns on `session.updated`. Changes neither the agent's defaults nor the agent session. |
 | `create_response(*, options=None) -> str` | Per-response options. Returns the response id when the response's own `response.created` arrives. |
 | `say(text) -> str` | Verbatim speech. With an Azure voice, Voice Live and Foundry send `pre_generated_assistant_message`. OpenAI, Azure OpenAI, and Foundry with an OpenAI voice request a response with the instruction "Say exactly the following, word for word, and nothing else: ...", which is best effort. Voice Live with an OpenAI voice raises `RealtimeUnsupportedException`. |
 | `interrupt(*, played_ms=None)` | Idempotent. Cancels the active response, waits for its `response.done`, and treats the provider's "no active response" error as done. With no active response it returns at once. With `played_ms`, also cuts the unheard audio ([barge-in](#barge-in)). |
@@ -338,7 +338,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
   `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
-  claimed-error rules, and the results and follow-up still go out.
+  claimed-error rules, the live tool list goes back to the tools the provider declares, with a warning, and the results
+  and follow-up still go out. An update that isn't acknowledged keeps the change, with a warning, and the next batch
+  sends it again.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
   `None`. It isn't in the tools' runtime keyword arguments. As in chat, when the app passes no session, tools and
   function middleware that keep per-session state get a conversation-local session, the same one context providers get,
@@ -346,7 +348,8 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   replace.
 - **Configuration and limits.** `function_invocation_configuration` on the agent configures the loop, and function
   middleware comes from the agent's `middleware=`. In a live conversation each tool chain is one request, restarting
-  when the caller speaks or the app sends input. A batch counts toward the chain that was current when its response
+  when the caller speaks, when the app sends input, or when a user item enters the provider's conversation, such as a
+  caller turn the app commits itself. A batch counts toward the chain that was current when its response
   finished, even if new input starts another before or while it runs. `max_iterations` counts follow-ups: the responses
   created after the chain's first results, whoever requested them, apart from filler. The other limits count across the
   chain's batches. When a limit trips, the loop still sends the results and requests the follow-up with
@@ -681,8 +684,10 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   `FOUNDRY_VOICE_AGENTS`.
 
 On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content
-serializes; `Content.from_text(status=...)` and text merges that keep the latest status; the audio,
-text and image `UsageDetails` keys and their telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
+serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
+and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
+`ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys and their
+telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.

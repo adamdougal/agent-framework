@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from typing import NamedTuple
 
-from .._types import _get_data_bytes  # pyright: ignore[reportPrivateUsage]
 from ._events import RealtimeEvent
 from ._updates import core_attributes
 
@@ -85,7 +84,7 @@ class AudioLedger:
             part.generated_ms = None
             logger.warning("Barge-in can't measure %r audio, so interrupt() won't cut it.", media_type)
             return
-        part.generated_ms += len(_get_data_bytes(event.content) or b"") / bytes_per_ms
+        part.generated_ms += len(event.content.get_data_bytes()) / bytes_per_ms
 
     def on_item_truncated(self, event: RealtimeEvent) -> list[Truncation]:
         """A provider's own cut leaves the response's later parts unheard.

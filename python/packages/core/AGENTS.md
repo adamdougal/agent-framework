@@ -125,7 +125,9 @@ the root package:
 - `_responses.py` - `ResponseLedger`, which tracks each response's agent, calls and active state, and which responses
   can count as a tool batch's follow-up.
 - `_tool_loop.py` - `ToolLoop`, which runs each finished response's calls through `_execute_function_calls(...)`,
-  sends the results, requests one follow-up per batch, and settles unfinished calls on close.
+  sends the results, requests one follow-up per batch, and settles unfinished calls on close. It keeps the tools it
+  runs in step with the tools the provider declares: tool-list changes a call makes with `ctx.add_tools()` or
+  `ctx.remove_tools()` go out as a session update before that batch's results.
 - `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
   a provider truncation into truncates. It remembers where each response was cut, so the conversation can delete the
   response's later text-only messages, which truncation can't reach.

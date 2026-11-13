@@ -1021,6 +1021,44 @@ async def test_sending_audio_does_not_restart_the_tool_chain() -> None:
     assert client.session.calls == [("create_response", None), ("create_response", {"tool_choice": "none"})]
 
 
+async def test_the_tool_chain_restarts_when_the_app_commits_the_callers_turn() -> None:
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_iterations": 2})
+
+    async with agent.start_conversation() as conversation:
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: len(client.session.calls) == 1)
+        await conversation.send(Content.from_data(data=b"\x00" * 480, media_type="audio/pcm;rate=24000"))
+        await conversation.send(RealtimeEvent("passthrough", raw_representation={"type": "input_audio_buffer.commit"}))
+        client.session.emit(
+            event("passthrough", service_event_type="input_audio_buffer.committed"),
+            event("item_added", item_id="item_9", previous_item_id="item_8", role="user"),
+            *_response("resp_2", _call("call_2", "get_weather", response_id="resp_2", city="Rome")),
+        )
+        await eventually(lambda: len(client.session.calls) == 2)
+
+    assert client.session.calls == [("create_response", None), ("create_response", None)]
+
+
+async def test_items_the_agent_adds_do_not_restart_the_tool_chain() -> None:
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[get_weather], function_invocation_configuration={"max_iterations": 2})
+
+    async with agent.start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: len(client.session.calls) == 1)
+        client.session.emit(
+            event("response_created", response_id="resp_2"),
+            event("item_added", item_id="item_reply_2", previous_item_id="item_8", role="assistant"),
+            event("item_added", item_id="item_call_2", previous_item_id="item_reply_2"),
+            _call("call_2", "get_weather", response_id="resp_2", city="Rome"),
+            event("response_done", response_id="resp_2", status="completed"),
+        )
+        await eventually(lambda: len(client.session.calls) == 2)
+
+    assert client.session.calls == [("create_response", None), ("create_response", {"tool_choice": "none"})]
+
+
 async def test_a_batch_from_an_earlier_tool_chain_does_not_count_toward_the_new_one() -> None:
     client = FakeRealtimeClient()
     look_up, started, release = _blocking_tool()
@@ -1715,3 +1753,24 @@ class TestVerification:
             await eventually(lambda: len(_tool_messages(client.session)) == 2)
 
         assert _results(client.session) == [("call_1", "offered"), ("call_2", "noon")]
+
+    async def test_a_batch_running_when_the_callers_turn_is_committed_counts_toward_its_own_chain(self) -> None:
+        client = FakeRealtimeClient()
+        look_up, started, release = _blocking_tool()
+        agent = RealtimeAgent(
+            client, tools=[look_up, get_weather], function_invocation_configuration={"max_function_calls": 1}
+        )
+
+        async with agent.start_conversation():
+            client.session.emit(*_response("resp_1", _call("call_1", "look_up")))
+            await started.wait()
+            client.session.emit(event("item_added", item_id="item_9", previous_item_id="item_8", role="user"))
+            await asyncio.sleep(0.01)  # the committed turn starts a new tool chain
+            release.set()
+            await eventually(lambda: len(_tool_messages(client.session)) == 1)
+            client.session.emit(
+                *_response("resp_2", _call("call_2", "get_weather", response_id="resp_2", city="Paris"))
+            )
+            await eventually(lambda: len(_tool_messages(client.session)) == 2)
+
+        assert _results(client.session)[1] == ("call_2", "Sunny in Paris")

@@ -816,6 +816,29 @@ async def test_before_run_instructions_and_tools_apply_to_the_session() -> None:
     assert result.contents[0].result == "found"
 
 
+async def test_a_providers_start_tools_send_no_tool_update_after_the_first_batch() -> None:
+    @tool
+    def look_up() -> str:
+        """Look something up."""
+        return "found"
+
+    class Tools(ContextProvider):
+        async def before_run(
+            self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+        ) -> None:
+            context.extend_tools(self.source_id, [look_up])
+
+    client = FakeRealtimeClient()
+    agent = RealtimeAgent(client, tools=[get_weather], context_providers=[Tools("tools")])
+
+    async with agent.start_conversation() as conversation:
+        client.session.emit(*call_response("resp_a", "item_1", "call_1", "look_up"))
+        await until_tool_result(conversation)
+        await eventually(lambda: bool(client.session.sent))
+
+    assert [call for call in client.session.calls if call[0] == "update_session"] == []
+
+
 async def test_the_first_exchange_carries_the_start_context() -> None:
     class Briefing(Recorder):
         async def before_run(

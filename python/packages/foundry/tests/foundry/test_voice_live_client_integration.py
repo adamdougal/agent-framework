@@ -8,7 +8,6 @@ asyncio.timeout(), and checks Voice Live behaviour the unit tests can only assum
 """
 
 import asyncio
-import base64
 import contextlib
 import logging
 import os
@@ -139,6 +138,33 @@ async def test_say_by_voice_type() -> None:
     assert "Thanks for calling" in _final_text(reader.of_response(response_id))
 
 
+async def test_conversation_say_speaks_the_text_verbatim() -> None:
+    """Through a realtime agent's conversation with voice en-US-AvaNeural, say("Thanks for calling Contoso.") returns
+    the id of the response whose final agent transcript is that text."""
+    async with asyncio.timeout(TURN_TIMEOUT), contextlib.AsyncExitStack() as stack:
+        credential = None
+        if not os.getenv("AZURE_VOICELIVE_API_KEY"):
+            credential = await stack.enter_async_context(AzureCliCredential())
+        options: VoiceLiveOptions = {"voice": AVA, "turn_detection": None}
+        client: VoiceLiveClient[VoiceLiveOptions] = VoiceLiveClient(credential=credential)
+        agent = RealtimeAgent(client, default_options=options)
+        async with agent.start_conversation() as conversation:
+            response_id = await conversation.say("Thanks for calling Contoso.")
+            finals: list[str] = []
+            async for update in conversation:
+                if update.response_id != response_id:
+                    continue
+                finals += [
+                    content.text or ""
+                    for content in update.contents
+                    if content.type == "text" and content.status == "completed"
+                ]
+                if update.finish_reason is not None:
+                    break
+
+    assert "Thanks for calling Contoso" in " ".join(finals)
+
+
 async def test_rejected_update_is_claimed_and_instructions_are_dropped(caplog: pytest.LogCaptureFixture) -> None:
     """An update Voice Live rejects raises RealtimeControlException, though its errors echo no event_id;
     create_response({"instructions": ...}) warns and still returns a response id."""
@@ -194,7 +220,7 @@ async def test_cancel_and_truncate() -> None:
 
             def audio_bytes() -> int:
                 audio = [event for event in reader.of_response(response_id) if event.kind == "output_audio"]
-                return sum(len(base64.b64decode(event.content.uri.split(",", 1)[1])) for event in audio)
+                return sum(len(event.content.get_data_bytes()) for event in audio)
 
             await reader.until(lambda: audio_bytes() >= PCM_24K_BYTES_PER_SECOND)
             await session.cancel_response()

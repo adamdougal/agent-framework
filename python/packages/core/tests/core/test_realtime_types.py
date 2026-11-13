@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Tests for the realtime contract types and the additive core changes they need (spec 006)."""
+"""Tests for the realtime contract types and the additive core changes they need."""
 
 from __future__ import annotations
 
