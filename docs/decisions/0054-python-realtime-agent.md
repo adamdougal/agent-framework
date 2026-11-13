@@ -274,7 +274,8 @@ nobody has verified that the project-scoped route serves realtime.
 - Bad, because a handoff lasts only for its realtime session, so a host calling `run(...)` per turn restarts at the
   start agent each turn. Some providers keep the old voice, and of two handoffs in one response only the first happens.
 - Bad, because history estimates the heard part of a cut-off turn proportionally, every `run(...)` replays the whole
-  history, and a context provider may see an exchange twice after a retry.
+  history, a context provider that fails misses the call's later exchanges, and a process killed mid-call reports
+  nothing for that call.
 - Bad, because exporters receive the conversation span only at close, so a crash loses it. History and telemetry don't
   see changes that conversation middleware's update hooks make. .NET instruments realtime at the client and Python at
   the agent, so their traces differ.
