@@ -9,13 +9,16 @@ import contextlib
 import copy
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
+from .._agents import append_tools_with_mcp_functions
 from .._feature_stage import ExperimentalFeature, experimental
+from .._mcp import MCPTool
 from .._middleware import categorize_middleware
 from .._sessions import AgentSession, HistoryProvider, SessionContext
-from .._tools import _append_unique_tools, normalize_tools  # pyright: ignore[reportPrivateUsage]
+from .._tools import normalize_tools
 from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
 from ..exceptions import (
     RealtimeActiveResponseException,
@@ -90,6 +93,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         invocation_configuration: FunctionInvocationConfiguration,
         function_middleware: Sequence[FunctionMiddlewareTypes],
         function_invocation_kwargs: Mapping[str, Any],
+        mcp_connection_kwargs: Mapping[str, Any],
+        mcp_exit_stack: AsyncExitStack,
         control_timeout: float,
         max_queued_updates: int,
     ) -> None:
@@ -97,6 +102,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._initial_messages = initial_messages
         self._options = options
         self._tools = tools
+        self._mcp_connection_kwargs = mcp_connection_kwargs
+        self._mcp_exit_stack = mcp_exit_stack
         self._control_timeout = control_timeout
         self._max_queued_updates = max_queued_updates
         self._session: RealtimeClientSessionProtocol[RealtimeOptionsT] | None = None
@@ -155,8 +162,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if self._closing.is_set():
             raise RealtimeConversationClosedException("The realtime conversation is closed.")
         start_context = await self._prepare_from_context_providers()
+        tools = await self._resolve_tools(self._tools)
         starting = asyncio.ensure_future(
-            self._agent.client.start_session(options=self._options, tools=self._tools)  # type: ignore[arg-type]
+            self._agent.client.start_session(options=self._options, tools=tools)  # type: ignore[arg-type]
         )
         try:
             session = await self._acknowledged(starting, "start the realtime session")
@@ -171,7 +179,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         # The conversation owns the session from here, so a close that starts while the initial messages go out
         # closes it.
         self._session = session
-        self._tool_loop.on_tools_declared(self._tools)
+        self._tool_loop.on_tools_declared(tools)
         try:
             async with self._write_lock:
                 for message in start_context.get_messages():
@@ -195,6 +203,22 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             raise
         self._receive_task = asyncio.create_task(self._receive_loop(session))
         return self
+
+    async def _resolve_tools(self, tools: Sequence[ToolTypes]) -> list[ToolTypes]:
+        """The conversation keeps its own list of each MCP tool's functions, so server-side changes wait for an update.
+
+        A tool connected here stays open for the starting agent's lifetime. One still connecting when close starts is
+        abandoned, so a hung server can't hold up close, and the connection never joins an agent that has already
+        exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
+        """
+        resolving = append_tools_with_mcp_functions(
+            [], tools, exit_stack=self._mcp_exit_stack, connection_kwargs=self._mcp_connection_kwargs
+        )
+        if not any(isinstance(tool, MCPTool) for tool in tools):
+            return await resolving
+        return await await_acknowledgement(
+            resolving, action="connect its MCP tools", timeout=None, closing=self._closing
+        )
 
     async def _prepare_from_context_providers(self) -> SessionContext:
         context = SessionContext(
@@ -232,7 +256,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 ),
             }
         if context.tools:
-            self._tools = unique_tools([*self._tools, *normalize_tools(context.tools)])
+            self._tools = [*self._tools, *normalize_tools(context.tools)]
         if provider_middleware := context.get_middleware():
             self._tool_loop.add_function_middleware(
                 categorize_middleware(provider_middleware, supported_categories=("function",))["function"]
@@ -467,18 +491,25 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         requested afterwards uses it, or at once when the provider client drops every option it can't honor. Neither
         the agent's defaults nor the agent session change.
 
+        An MCP tool in ``tools`` is declared as the functions its server offers now, which is how a change to the
+        server's tools reaches the call. A tool that isn't connected connects first, before the update takes its turn
+        among the control calls, so a slow server doesn't hold up ``interrupt()``; it then stays open for the agent's
+        lifetime.
+
         Keyword Args:
             options: The settings to change.
             tools: The tools to use instead of the current ones, or ``None`` to keep them.
 
         Raises:
-            ValueError: If two tools share a name; nothing is sent.
+            ValueError: If two tools share a name, including an MCP tool's functions; nothing is sent.
+            ToolException: If an MCP tool fails to connect; nothing is sent.
             RealtimeConversationClosedException: If the conversation has started closing.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the update in time; it may still apply
                 it, and the conversation keeps running its current tools.
             RealtimeControlException: If the provider rejects the update; nothing changes.
         """
-        declared = None if tools is None else unique_tools(normalize_tools(tools))
+        self._require_open_session()
+        declared = None if tools is None else await self._resolve_tools(normalize_tools(tools))
         async with self._control_lock:
             await self._update_session_locked(options or {}, declared)
         if declared is not None:
@@ -778,11 +809,6 @@ def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
         raise failures[0]
     if failures:
         raise ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
-
-
-def unique_tools(tools: Sequence[ToolTypes]) -> list[ToolTypes]:
-    """A realtime session declares its tools by name, so two tools can't share one."""
-    return _append_unique_tools([], tools, duplicate_error_message="Tool names must be unique.")
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:

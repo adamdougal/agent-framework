@@ -150,7 +150,7 @@ async def test_start_tools_follow_the_agents_tools() -> None:
     assert [tool.name for tool in client.start_session_calls[0]["tools"]] == ["get_weather", "get_time"]
 
 
-def test_duplicate_tool_names_raise_value_error_before_connecting() -> None:
+async def test_duplicate_tool_names_raise_value_error_before_connecting() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, tools=[get_weather])
 
@@ -159,13 +159,16 @@ def test_duplicate_tool_names_raise_value_error_before_connecting() -> None:
         """Get the weather another way."""
         return f"Rainy in {city}"
 
+    conversation = agent.start_conversation(tools=[other_weather])
+
     with pytest.raises(ValueError, match="unique"):
-        agent.start_conversation(tools=[other_weather])
+        async with conversation:
+            pass
 
     assert client.start_session_calls == []
 
 
-def test_distinct_agent_tools_sharing_a_name_raise_value_error_before_connecting() -> None:
+async def test_distinct_agent_tools_sharing_a_name_raise_value_error_before_connecting() -> None:
     client = FakeRealtimeClient()
 
     @tool(name="get_weather")
@@ -175,8 +178,11 @@ def test_distinct_agent_tools_sharing_a_name_raise_value_error_before_connecting
 
     agent = RealtimeAgent(client, tools=[get_weather, other_weather])
 
+    conversation = agent.start_conversation()
+
     with pytest.raises(ValueError, match="unique"):
-        agent.start_conversation()
+        async with conversation:
+            pass
 
     assert client.start_session_calls == []
 
