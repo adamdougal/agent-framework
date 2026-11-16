@@ -15,6 +15,7 @@ from agent_framework.exceptions import (
 )
 
 from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
+from .realtime_history_helpers import spoken_then_written
 
 # Audio below is 24 kHz 16-bit mono PCM, 48 bytes per millisecond, unless a test says otherwise.
 PCM_24K = "audio/pcm;rate=24000"
@@ -507,6 +508,149 @@ async def test_a_client_truncation_cuts_nothing_more() -> None:
     assert client.session.calls == []
 
 
+async def test_interrupt_deletes_a_later_text_only_message_of_the_cut_response() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        await conversation.interrupt(played_ms=400)
+
+    assert client.session.calls == [("truncate", "item_a", 0, 400), ("delete_item", "item_b")]
+
+
+async def test_a_later_text_only_message_of_a_cut_response_is_left_out_of_history() -> None:
+    client = FakeRealtimeClient()
+    spoken = Content.from_text("Your balance is fine", merge_mode="replace", status="completed")
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("output_text", content=spoken, response_id="resp_1", item_id="item_a", content_index=0),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        await conversation.interrupt(played_ms=400)
+        await _play(
+            conversation,
+            client.session,
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=400, truncated_by="client"),
+        )
+
+        assert [message.message_id for message in conversation.history] == ["item_a"]
+
+
+async def test_a_provider_truncation_deletes_the_responses_later_text_only_messages() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+        )
+        await eventually(lambda: bool(client.session.calls))
+
+    assert client.session.calls == [("delete_item", "item_b")]
+
+
+async def test_a_running_responses_later_text_only_messages_are_deleted_when_it_finishes() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+        )
+        await asyncio.sleep(0.01)
+        assert client.session.calls == []
+
+        await _play(
+            conversation,
+            client.session,
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        await eventually(lambda: bool(client.session.calls))
+
+    assert client.session.calls == [("delete_item", "item_b")]
+
+
+async def test_a_failed_delete_raises_from_interrupt_and_is_not_retried() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        client.session.delete_rejections["item_b"] = RealtimeControlException("No such item.", code="item_not_found")
+
+        with pytest.raises(RealtimeControlException):
+            await conversation.interrupt(played_ms=400)
+        await conversation.interrupt(played_ms=400)
+
+    assert [call for call in client.session.calls if call[0] == "delete_item"] == [("delete_item", "item_b")]
+
+
+async def test_a_failed_delete_does_not_stop_the_later_deletes() -> None:
+    client = FakeRealtimeClient()
+    more = Content.from_text("And one more thing...", merge_mode="replace", status="completed")
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("item_added", item_id="item_c", previous_item_id="item_b", role="assistant"),
+            event("output_text", content=more, response_id="resp_1", item_id="item_c", content_index=0),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        client.session.delete_rejections["item_b"] = RealtimeControlException("No such item.", code="item_not_found")
+
+        with pytest.raises(RealtimeControlException):
+            await conversation.interrupt(played_ms=400)
+
+        assert [call for call in client.session.calls if call[0] == "delete_item"] == [
+            ("delete_item", "item_b"),
+            ("delete_item", "item_c"),
+        ]
+        assert [message.message_id for message in conversation.history] == []
+
+
+async def test_unheard_text_leaves_history_as_soon_as_the_cut_response_has_finished() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        await _play(
+            conversation,
+            client.session,
+            *spoken_then_written(),
+            event("item_added", item_id="item_c", previous_item_id="item_b", role="assistant"),
+            _audio("resp_1", "item_c", 48 * 1000),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        release = client.session.hold("truncate")
+        await _play(
+            conversation,
+            client.session,
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+        )
+
+        assert "item_b" not in [message.message_id for message in conversation.history]
+        release.set()
+
+
 class TestVerification:
     async def test_a_message_heard_to_41_ms_before_its_end_is_cut_there(self) -> None:
         client = FakeRealtimeClient()
@@ -583,3 +727,24 @@ class TestVerification:
             await conversation.interrupt(played_ms=400)
 
         assert client.session.calls == [("truncate", "item_b", 0, 0), ("cancel_response",)]
+
+    async def test_messages_before_the_cut_and_messages_with_audio_are_not_deleted(self) -> None:
+        client = FakeRealtimeClient()
+        written = Content.from_text("Here's a summary.", merge_mode="replace", status="completed")
+
+        async with RealtimeAgent(client).start_conversation() as conversation:
+            await _play(
+                conversation,
+                client.session,
+                event("response_created", response_id="resp_1"),
+                event("item_added", item_id="item_a", previous_item_id=None, role="assistant"),
+                event("output_text", content=written, response_id="resp_1", item_id="item_a", content_index=0),
+                event("item_added", item_id="item_b", previous_item_id="item_a", role="assistant"),
+                _audio("resp_1", "item_b", 48 * 1000),
+                event("item_added", item_id="item_c", previous_item_id="item_b", role="assistant"),
+                _audio("resp_1", "item_c", 48 * 1000),
+                event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+            )
+            await conversation.interrupt(played_ms=400)
+
+        assert client.session.calls == [("truncate", "item_b", 0, 400), ("truncate", "item_c", 0, 0)]

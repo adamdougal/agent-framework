@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -117,6 +117,7 @@ class ToolLoop:
         self._declared: list[ToolTypes] = []
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
+        self._function_middleware = list(function_middleware)
         self._middleware_pipeline = FunctionMiddlewarePipeline(*function_middleware)
         self._agent_session = (
             agent_session if agent_session is not None else _session_for_stateful_middleware(function_middleware)
@@ -133,6 +134,10 @@ class ToolLoop:
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
         self._calls_by_response: dict[str, list[_Call]] = {}
+
+    def add_function_middleware(self, middleware: Sequence[FunctionMiddlewareTypes]) -> None:
+        self._function_middleware.extend(middleware)
+        self._middleware_pipeline = FunctionMiddlewarePipeline(*self._function_middleware)
 
     def on_function_call(self, event: RealtimeEvent) -> None:
         """A call is bound to the tool that existed when the model made it.
@@ -414,10 +419,14 @@ class ToolLoop:
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
             batch = await self._run_executor(calls)
+        except Exception:
+            # The executor discards a batch that fails closed, so calls that finished first mustn't keep their results.
+            for call in calls:
+                call.result = None
+            raise
         finally:
             _CALLING_CONVERSATION.reset(requested_by_tools)
-        for call, group in zip(calls, batch.result_groups, strict=True):
-            call.result = next((content for content in group if content.type == "function_result"), None)
+        for call in calls:
             if call.result is None:
                 call.result = _settled_with_error(
                     call.content, "the call paused for an answer it can't get", "unsupported"
@@ -435,7 +444,18 @@ class ToolLoop:
             invocation_session=self._agent_session,
             middleware_pipeline=self._middleware_pipeline,
             realtime_conversation=self._conversation,
+            on_call_finished=_keep_results_as_they_finish(calls),
         )
+
+
+def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, list[Content]], None]:
+    by_content = {id(call.content): call for call in calls}
+
+    def keep(function_call: Content, results: list[Content]) -> None:
+        call = by_content[id(function_call)]
+        call.result = next((content for content in results if content.type == "function_result"), call.result)
+
+    return keep
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:
