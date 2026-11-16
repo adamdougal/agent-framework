@@ -199,7 +199,7 @@ def _handoff_tool(
                 return _not_handed_off(handoff, "another handoff already moved the call")
             try:
                 await conversation.handoff(target)
-            except RealtimeException as error:
+            except (RealtimeException, ValueError) as error:
                 return _not_handed_off(handoff, str(error))
         return {HANDOFF_FUNCTION_RESULT_KEY: handoff.target_id}
 

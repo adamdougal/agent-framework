@@ -280,6 +280,26 @@ async def test_a_rejected_handoff_returns_a_result_telling_the_model_to_carry_on
     assert "carry on" in str(result.result).lower()
 
 
+async def test_a_handoff_refused_before_sending_returns_a_result_telling_the_model_to_carry_on() -> None:
+    @tool(name="get_balance")
+    def get_household_balance() -> str:
+        """Get the household's balance."""
+        return "£7"
+
+    client = FakeRealtimeClient()
+    receptionist = _receptionist(client)
+    agent = RealtimeHandoffBuilder(participants=[receptionist, _billing(client)]).with_start_agent(receptionist).build()
+
+    async with agent.start_conversation(tools=[get_household_balance]) as conversation:
+        client.session.emit(*_response("resp_1", _call("call_1", "handoff_to_billing")))
+        await _eventually(lambda: bool(_results(client.session)))
+        active = conversation.active_agent
+
+    [(_, result)] = _results(client.session)
+    assert active is receptionist
+    assert "carry on" in str(result).lower()
+
+
 async def test_of_two_handoffs_in_one_response_the_first_wins() -> None:
     client = FakeRealtimeClient()
     receptionist = _receptionist(client)
