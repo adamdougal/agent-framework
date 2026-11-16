@@ -9,19 +9,16 @@ import contextlib
 import copy
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
-from .._agents import _append_tools_with_mcp_functions  # pyright: ignore[reportPrivateUsage]
+from .._agents import append_tools_with_mcp_functions
 from .._feature_stage import ExperimentalFeature, experimental
 from .._mcp import MCPTool
 from .._middleware import categorize_middleware
 from .._sessions import AgentSession, HistoryProvider, SessionContext
-from .._tools import (
-    _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
-    _append_unique_tools,  # pyright: ignore[reportPrivateUsage]
-    normalize_tools,
-)
+from .._tools import normalize_tools
 from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
 from ..exceptions import (
     RealtimeActiveResponseException,
@@ -96,6 +93,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         invocation_configuration: FunctionInvocationConfiguration,
         function_middleware: Sequence[FunctionMiddlewareTypes],
         function_invocation_kwargs: Mapping[str, Any],
+        mcp_connection_kwargs: Mapping[str, Any],
+        mcp_exit_stack: AsyncExitStack,
         control_timeout: float,
         max_queued_updates: int,
     ) -> None:
@@ -103,7 +102,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._initial_messages = initial_messages
         self._options = options
         self._tools = tools
-        self._function_invocation_kwargs = function_invocation_kwargs
+        self._mcp_connection_kwargs = mcp_connection_kwargs
+        self._mcp_exit_stack = mcp_exit_stack
         self._control_timeout = control_timeout
         self._max_queued_updates = max_queued_updates
         self._session: RealtimeClientSessionProtocol[RealtimeOptionsT] | None = None
@@ -207,21 +207,12 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _resolve_tools(self, tools: Sequence[ToolTypes]) -> list[ToolTypes]:
         """The conversation keeps its own list of each MCP tool's functions, so server-side changes wait for an update.
 
-        The tools are prepared with the app's kwargs, as chat prepares them with the run's, without the agent's private
-        session-state claim. A tool connected here stays open for the starting agent's lifetime. One still connecting
-        when close starts is abandoned, so a hung server can't hold up close, and the connection never joins an agent
-        that has already exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
+        A tool connected here stays open for the starting agent's lifetime. One still connecting when close starts is
+        abandoned, so a hung server can't hold up close, and the connection never joins an agent that has already
+        exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
         """
-        connection_kwargs = {
-            name: value
-            for name, value in self._function_invocation_kwargs.items()
-            if name != _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY
-        }
-        resolving = _append_tools_with_mcp_functions(
-            [],
-            tools,
-            exit_stack=self._agent._exit_stack,  # pyright: ignore[reportPrivateUsage]
-            connection_kwargs=connection_kwargs,
+        resolving = append_tools_with_mcp_functions(
+            [], tools, exit_stack=self._mcp_exit_stack, connection_kwargs=self._mcp_connection_kwargs
         )
         if not any(isinstance(tool, MCPTool) for tool in tools):
             return await resolving
@@ -265,7 +256,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 ),
             }
         if context.tools:
-            self._tools = unique_tools([*self._tools, *normalize_tools(context.tools)])
+            self._tools = [*self._tools, *normalize_tools(context.tools)]
         if provider_middleware := context.get_middleware():
             self._tool_loop.add_function_middleware(
                 categorize_middleware(provider_middleware, supported_categories=("function",))["function"]
@@ -818,11 +809,6 @@ def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
         raise failures[0]
     if failures:
         raise ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
-
-
-def unique_tools(tools: Sequence[ToolTypes]) -> list[ToolTypes]:
-    """A realtime session declares its tools by name, so two tools can't share one."""
-    return _append_unique_tools([], tools, duplicate_error_message="Tool names must be unique.")
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:

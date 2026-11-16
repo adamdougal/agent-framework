@@ -20,7 +20,7 @@ from .._tools import (
     normalize_tools,
 )
 from .._types import _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
-from ._conversation import RealtimeConversation, unique_tools
+from ._conversation import RealtimeConversation
 from ._options import RealtimeOptionsT
 
 if TYPE_CHECKING:
@@ -110,7 +110,6 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         self._exit_stack = AsyncExitStack()
 
     async def __aenter__(self) -> Self:
-        # A tool the app connected stays out of the stack, so leaving never closes a connection the app shares.
         try:
             for tool in self.tools:
                 if isinstance(tool, MCPTool) and not tool.is_connected:
@@ -175,9 +174,10 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             The conversation, not yet open.
 
         Raises:
-            ValueError: If ``control_timeout`` isn't positive, ``max_queued_updates`` is less than 1, two tools
-                share a name, or the function invocation configuration is invalid. An MCP tool's functions are
-                checked when the conversation is entered, which raises ``ValueError`` for a clash.
+            ValueError: If ``control_timeout`` isn't positive, ``max_queued_updates`` is less than 1, or the
+                function invocation configuration is invalid. Entering the conversation raises ``ValueError``, before
+                anything is sent, if two of its tools share a name, counting MCP tools' functions and context
+                providers' tools.
         """
         if control_timeout <= 0:
             raise ValueError("control_timeout must be greater than 0.")
@@ -188,13 +188,12 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             "function"
         ]
         session_options = _merge_session_options(self.default_options, self.instructions, options or {})
-        invocation_kwargs = dict(function_invocation_kwargs or {})
+        app_kwargs = dict(function_invocation_kwargs or {})
+        invocation_kwargs = dict(app_kwargs)
         # As in chat, the invoking agent's provider-owned session keys are recomputed here, so caller kwargs can't
         # replace them, and an agent tool with propagate_session=True keeps them out of its child session.
         invocation_kwargs[_PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY] = _provider_service_session_state_keys(self)
         session_tools = [*self.tools, *normalize_tools(tools)]
-        # An MCP tool's own name is never declared; its functions' names are checked once it connects, at entry.
-        unique_tools([tool for tool in session_tools if not isinstance(tool, MCPTool)])
         self._add_history_when_none_loads(session)
         return RealtimeConversation(
             self,
@@ -205,6 +204,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             invocation_configuration=invocation_configuration,
             function_middleware=function_middleware,
             function_invocation_kwargs=invocation_kwargs,
+            mcp_connection_kwargs=app_kwargs,
+            mcp_exit_stack=self._exit_stack,
             control_timeout=control_timeout,
             max_queued_updates=max_queued_updates,
         )
