@@ -116,7 +116,7 @@ class FoundryVoiceAgentClient:
                 given.
             ModuleNotFoundError: If the realtime extra isn't installed.
         """
-        _require_voice_agent_transport()
+        _require_voice_agents_sdk()
         settings = load_settings(
             FoundryAgentSettings,
             env_prefix="FOUNDRY_",
@@ -394,9 +394,9 @@ def _media_type(audio_format: Mapping[str, Any]) -> str:
     return f"{audio_format['type']};rate={rate}" if rate else str(audio_format["type"])
 
 
-def _require_voice_agent_transport() -> None:
-    if importlib.util.find_spec("aiohttp") is None:
+def _require_voice_agents_sdk() -> None:
+    if importlib.util.find_spec("azure.ai.projects.aio._realtime") is None:
         raise ModuleNotFoundError(
-            "FoundryVoiceAgentClient needs aiohttp for the voice-agent connection, which the realtime extra installs: "
-            "pip install 'agent-framework-foundry[realtime]'"
+            "FoundryVoiceAgentClient needs azure-ai-projects 2.7 or later for the voice-agent connection, which the "
+            "realtime extra installs: pip install 'agent-framework-foundry[realtime]'"
         )

@@ -416,15 +416,17 @@ def test_missing_project_access_raises_value_error(access: dict[str, Any]) -> No
         FoundryVoiceAgentClient(agent_name="receptionist", **access)
 
 
-def test_a_missing_voice_agent_sdk_raises_the_realtime_extra_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When aiohttp can't be found, building a client raises ModuleNotFoundError whose message names
-    'agent-framework-foundry[realtime]'."""
+def test_a_projects_sdk_without_voice_agents_raises_the_realtime_extra_install_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the installed azure-ai-projects has no realtime voice-agent module, as before 2.7, building a client
+    raises ModuleNotFoundError whose message names 'agent-framework-foundry[realtime]'."""
     real_find_spec = importlib.util.find_spec
 
-    def find_spec_without_aiohttp(name: str, *args: Any, **kwargs: Any) -> Any:
-        return None if name == "aiohttp" else real_find_spec(name, *args, **kwargs)
+    def find_spec_without_voice_agents(name: str, *args: Any, **kwargs: Any) -> Any:
+        return None if name == "azure.ai.projects.aio._realtime" else real_find_spec(name, *args, **kwargs)
 
-    monkeypatch.setattr(importlib.util, "find_spec", find_spec_without_aiohttp)
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec_without_voice_agents)
 
     with pytest.raises(ModuleNotFoundError, match=re.escape("agent-framework-foundry[realtime]")):
         FoundryVoiceAgentClient(
