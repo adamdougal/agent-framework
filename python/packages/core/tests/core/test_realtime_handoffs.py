@@ -13,6 +13,7 @@ from agent_framework import (
     AgentMiddleware,
     AgentSession,
     Content,
+    ContextProvider,
     FunctionInvocationContext,
     FunctionMiddleware,
     Message,
@@ -20,6 +21,8 @@ from agent_framework import (
     RealtimeAgent,
     RealtimeEvent,
     RealtimeOptions,
+    SessionContext,
+    SupportsAgentRun,
     function_middleware,
     tool,
 )
@@ -57,7 +60,9 @@ def escalate() -> str:
     return "escalated"
 
 
-def _receptionist(client: FakeRealtimeClient, *, middleware: Sequence[Any] = ()) -> RealtimeAgent:
+def _receptionist(
+    client: FakeRealtimeClient, *, middleware: Sequence[Any] = (), context_providers: Sequence[Any] = ()
+) -> RealtimeAgent:
     default_options: RealtimeOptions = {"voice": "alloy", "tool_choice": "required"}
     return RealtimeAgent(
         client,
@@ -66,6 +71,7 @@ def _receptionist(client: FakeRealtimeClient, *, middleware: Sequence[Any] = ())
         tools=[greet],
         default_options=default_options,
         middleware=list(middleware),
+        context_providers=list(context_providers),
     )
 
 
@@ -88,6 +94,19 @@ def _recorder(label: str, seen: list[tuple[str, str]]) -> Any:
         await call_next()
 
     return record
+
+
+class _Briefing(ContextProvider):
+    def __init__(self, seen: list[tuple[str, str]]) -> None:
+        super().__init__("briefing")
+        self.seen = seen
+
+    async def before_run(
+        self, *, agent: SupportsAgentRun, session: AgentSession, context: SessionContext, state: dict[str, Any]
+    ) -> None:
+        context.extend_instructions(self.source_id, "Be brief.")
+        context.extend_tools(self.source_id, [get_time])
+        context.extend_middleware(self.source_id, [_recorder("briefing", self.seen)])
 
 
 def _call(call_id: str, name: str, *, response_id: str = "resp_1") -> RealtimeEvent:
@@ -201,6 +220,17 @@ async def test_handoff_tools_add_tools_until_the_next_handoff() -> None:
     [(_, _, billing_tools), (_, _, receptionist_tools)] = client.session.calls
     assert billing_tools == [get_balance, escalate]
     assert receptionist_tools == [greet]
+
+
+async def test_a_context_providers_instructions_and_tools_hold_across_handoffs() -> None:
+    client = FakeRealtimeClient()
+
+    async with _receptionist(client, context_providers=[_Briefing([])]).start_conversation() as conversation:
+        await conversation.handoff(_billing(client))
+
+    [(_, options, tools)] = client.session.calls
+    assert options["instructions"] == "Answer billing questions.\nBe brief."
+    assert tools == [get_balance, get_time]
 
 
 async def test_a_voice_or_tool_choice_in_the_start_options_holds_across_handoffs() -> None:
@@ -337,6 +367,19 @@ async def test_start_middleware_wraps_every_call_inside_the_participants() -> No
         await eventually(lambda: bool(_results(client.session)))
 
     assert seen == [("billing", "get_balance"), ("start", "get_balance")]
+
+
+async def test_a_context_providers_function_middleware_wraps_a_targets_calls_inside_its_own() -> None:
+    client = FakeRealtimeClient()
+    seen: list[tuple[str, str]] = []
+    billing = _billing(client, middleware=[_recorder("billing", seen)])
+
+    async with _receptionist(client, context_providers=[_Briefing(seen)]).start_conversation() as conversation:
+        await conversation.handoff(billing)
+        client.session.emit(*_response("resp_balance", _call("call_1", "get_balance", response_id="resp_balance")))
+        await eventually(lambda: bool(_results(client.session)))
+
+    assert seen == [("billing", "get_balance"), ("briefing", "get_balance")]
 
 
 async def test_a_targets_stateful_middleware_gets_a_conversation_local_session() -> None:

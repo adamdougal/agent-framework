@@ -2707,6 +2707,7 @@ async def _try_execute_function_call_groups(
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
     realtime_conversation: RealtimeConversation[Any] | None = None,
     live_tools: list[ToolTypes] | None = None,
+    on_call_finished: Callable[[Content, list[Content]], None] | None = None,
 ) -> tuple[list[list[Content]], bool]:
     """Execute multiple function calls concurrently while preserving per-call result groups.
 
@@ -2721,6 +2722,8 @@ async def _try_execute_function_call_groups(
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
         realtime_conversation: The realtime conversation whose tool loop made the calls, for their contexts.
         live_tools: The live tools list to expose on each call's context, when it isn't ``tools`` itself.
+        on_call_finished: Called with each executed call and its result group as soon as that call finishes, so a
+            caller that cancels the batch keeps the results of calls that already finished.
 
     Returns:
         A tuple of:
@@ -2789,21 +2792,24 @@ async def _try_execute_function_call_groups(
 
     # Each locally executable call gets its own task so context changes made by
     # one tool cannot leak into another.
-    def create_execution_task(function_call: Content) -> asyncio.Task[tuple[list[Content], bool]]:
-        return contextvars.copy_context().run(
-            asyncio.create_task,
-            _execute_single_function_call(
-                function_call,
-                custom_args=custom_args,
-                config=config,
-                tool_map=tool_map,
-                invocation_session=invocation_session,
-                middleware_pipeline=middleware_pipeline,
-                live_tools=live_tools,
-                host_payload_budget=host_payload_budget,
-                realtime_conversation=realtime_conversation,
-            ),
+    async def execute_and_report(function_call: Content) -> tuple[list[Content], bool]:
+        result = await _execute_single_function_call(
+            function_call,
+            custom_args=custom_args,
+            config=config,
+            tool_map=tool_map,
+            invocation_session=invocation_session,
+            middleware_pipeline=middleware_pipeline,
+            live_tools=live_tools,
+            host_payload_budget=host_payload_budget,
+            realtime_conversation=realtime_conversation,
         )
+        if on_call_finished is not None:
+            on_call_finished(function_call, result[0])
+        return result
+
+    def create_execution_task(function_call: Content) -> asyncio.Task[tuple[list[Content], bool]]:
+        return contextvars.copy_context().run(asyncio.create_task, execute_and_report(function_call))
 
     async def execute_local_calls(function_calls_to_execute: Sequence[Content]) -> list[tuple[list[Content], bool]]:
         execution_results: list[tuple[list[Content], bool]] = []
@@ -2986,6 +2992,7 @@ async def _execute_function_calls(
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
     realtime_conversation: RealtimeConversation[Any] | None = None,
     live_tools: list[ToolTypes] | None = None,
+    on_call_finished: Callable[[Content, list[Content]], None] | None = None,
 ) -> _FunctionExecutionBatch:
     tools = _extract_tools(options)
     if not tools:
@@ -3001,6 +3008,7 @@ async def _execute_function_calls(
         host_payload_budget=host_payload_budget,
         realtime_conversation=realtime_conversation,
         live_tools=live_tools,
+        on_call_finished=on_call_finished,
     )
     return _FunctionExecutionBatch(
         result_groups=result_groups,

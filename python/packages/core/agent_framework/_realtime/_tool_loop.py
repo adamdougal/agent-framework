@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from itertools import groupby
@@ -127,10 +127,11 @@ class ToolLoop:
         self._invocation_kwargs = invocation_kwargs
         self._call = call
         self._agent_session = agent_session
+        self._own_middleware: dict[BaseAgent, Sequence[FunctionMiddlewareTypes]] = {}
         self._pipelines: dict[BaseAgent, FunctionMiddlewarePipeline] = {}
         if owner._start_participant() is owner:  # pyright: ignore[reportPrivateUsage]
             # The owner's middleware was sorted when the conversation started, warning about any it skips.
-            self._add_pipeline(owner, owner_middleware)
+            self._own_middleware[owner] = owner_middleware
         self._conversation = conversation
         self._responses = responses
         self._results_marker = 0
@@ -143,6 +144,11 @@ class ToolLoop:
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
         self._calls_by_response: dict[str, list[_Call]] = {}
+
+    def use_call(self, call: CallSettings) -> None:
+        """Context providers add to the call's settings once they've run, before any call arrives."""
+        self._call = call
+        self._pipelines.clear()
 
     def on_function_call(self, event: RealtimeEvent) -> None:
         """A call is bound to the tool that existed when the model made it.
@@ -166,17 +172,13 @@ class ToolLoop:
                 can't run.
         """
         if (pipeline := self._pipelines.get(agent)) is None:
-            own = categorize_middleware(agent.middleware, supported_categories=("function",))["function"]
-            pipeline = self._add_pipeline(agent, own)
-        return pipeline
-
-    def _add_pipeline(
-        self, agent: BaseAgent, own_middleware: Sequence[FunctionMiddlewareTypes]
-    ) -> FunctionMiddlewarePipeline:
-        middleware = [*self._call.host_middleware, *own_middleware, *self._call.start_middleware]
-        if self._agent_session is None:
-            self._agent_session = _session_for_stateful_middleware(middleware)
-        pipeline = self._pipelines[agent] = FunctionMiddlewarePipeline(*middleware)
+            if (own := self._own_middleware.get(agent)) is None:
+                own = categorize_middleware(agent.middleware, supported_categories=("function",))["function"]
+                self._own_middleware[agent] = own
+            middleware = [*self._call.host_middleware, *own, *self._call.start_middleware]
+            if self._agent_session is None:
+                self._agent_session = _session_for_stateful_middleware(middleware)
+            pipeline = self._pipelines[agent] = FunctionMiddlewarePipeline(*middleware)
         return pipeline
 
     def _would_pause(self, tool: FunctionTool) -> bool:
@@ -451,13 +453,21 @@ class ToolLoop:
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
             for pipeline, same_agent in groupby(calls, key=attrgetter("middleware_pipeline")):
-                group = list(same_agent)
-                batch = await self._run_executor(group, pipeline)
-                _settle_from(group, batch.result_groups)
+                batch = await self._run_executor(list(same_agent), pipeline)
                 terminated = terminated or batch.should_terminate
                 executed += batch.executed_call_count
+        except Exception:
+            # The executor discards a batch that fails closed, so calls that finished first mustn't keep their results.
+            for call in calls:
+                call.result = None
+            raise
         finally:
             _CALLING_CONVERSATION.reset(requested_by_tools)
+        for call in calls:
+            if call.result is None:
+                call.result = _settled_with_error(
+                    call.content, "the call paused for an answer it can't get", "unsupported"
+                )
         return terminated, executed
 
     async def _run_executor(self, calls: Sequence[_Call], middleware_pipeline: FunctionMiddlewarePipeline) -> Any:
@@ -471,14 +481,18 @@ class ToolLoop:
             invocation_session=self._agent_session,
             middleware_pipeline=middleware_pipeline,
             realtime_conversation=self._conversation,
+            on_call_finished=_keep_results_as_they_finish(calls),
         )
 
 
-def _settle_from(calls: Sequence[_Call], result_groups: Sequence[Sequence[Content]]) -> None:
-    for call, results in zip(calls, result_groups, strict=True):
-        call.result = next((content for content in results if content.type == "function_result"), None)
-        if call.result is None:
-            call.result = _settled_with_error(call.content, "the call paused for an answer it can't get", "unsupported")
+def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, list[Content]], None]:
+    by_content = {id(call.content): call for call in calls}
+
+    def keep(function_call: Content, results: list[Content]) -> None:
+        call = by_content[id(function_call)]
+        call.result = next((content for content in results if content.type == "function_result"), call.result)
+
+    return keep
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:
