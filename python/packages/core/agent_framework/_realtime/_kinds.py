@@ -97,9 +97,12 @@ class RealtimeResponseCreatedAttributes(TypedDict, total=False):
 
     Keys:
         response_id: The provider's response id. Required.
+        out_of_band: ``True`` for a response outside the conversation, whose output joins no conversation item.
+            Absent otherwise.
     """
 
     response_id: Required[str]
+    out_of_band: bool
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
@@ -129,11 +132,14 @@ class RealtimeItemAddedAttributes(TypedDict, total=False):
         item_id: The item's id. Required.
         previous_item_id: The id of the item before it, or ``None`` when it's first. Required.
         role: The role of a message item. Absent for other items, such as function calls.
+        input_audio: Whether a user message item holds the caller's audio, rather than text the app or history added.
+            Absent for other items.
     """
 
     item_id: Required[str]
     previous_item_id: Required[str | None]
     role: str
+    input_audio: bool
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
