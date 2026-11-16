@@ -487,6 +487,28 @@ async def test_close_keeps_a_result_the_app_sent_while_a_sibling_tool_runs() -> 
     assert settled["call_2"].exception == "conversation_closed"
 
 
+async def test_close_keeps_a_rejection_the_app_sent_while_a_sibling_approval_waits() -> None:
+    """Two calls in one batch need approval. The app rejects the first, then the call closes with the second
+    unanswered: the first keeps its rejection result and the second gets conversation_closed."""
+    runs: list[int] = []
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
+        updates = _collect(conversation)
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "issue_refund", amount=5), _call("call_2", "issue_refund", amount=7))
+        )
+        first = await _approval_request(updates)
+        await _approval_request(updates, 1)
+        await conversation.send(first.to_function_approval_response(approved=False))
+
+    await eventually(lambda: len(_of_type(updates, "function_result")) == 2)
+    settled = {update.contents[0].call_id: update.contents[0] for update in _of_type(updates, "function_result")}
+    assert settled["call_1"].result == "Error: Tool call invocation was rejected by user."
+    assert settled["call_2"].exception == "conversation_closed"
+    assert runs == []
+
+
 @pytest.mark.parametrize("answering", ["an approval for the app-run call", "a result for the approval call"])
 async def test_an_answer_of_the_wrong_kind_raises(answering: str) -> None:
     """An approval response for a call waiting for the app's result, and a function result for a call waiting for

@@ -67,6 +67,7 @@ class _Call:
     result: Content | None = None
     reported: bool = False
     approval: Content | None = None
+    decision: asyncio.Future[bool] | None = None
     app_result: asyncio.Future[Content] | None = None
     input_requests: list[Content] = field(default_factory=list[Content])
 
@@ -306,8 +307,12 @@ class ToolLoop:
         for call in unfinished:
             if call.result is None:
                 # The app may have answered while the batch still waited on something else.
-                call.result = _accepted_app_result(call) or _settled_with_error(
-                    call.content, "the conversation closed before the tool finished", _CONVERSATION_CLOSED_REASON
+                call.result = (
+                    _accepted_app_result(call)
+                    or _rejection_sent(call)
+                    or _settled_with_error(
+                        call.content, "the conversation closed before the tool finished", _CONVERSATION_CLOSED_REASON
+                    )
                 )
             self._report(call)
 
@@ -425,9 +430,9 @@ class ToolLoop:
     def _request_approval(self, call: _Call) -> asyncio.Future[bool]:
         """The request carries the call's occurrence id, which the app's answer must name."""
         request = Content.from_function_approval_request(id=call.content.id or "", function_call=call.content)
-        decision = self._app_input.approval(request.id or "")
+        call.decision = self._app_input.approval(request.id or "")
         self._ask_the_app(call, [request])
-        return decision
+        return call.decision
 
     def _request_input(self, call: _Call) -> None:
         """A tool that raised UserInputRequiredException is answered with a result for its call."""
@@ -604,6 +609,13 @@ def _accepted_app_result(call: _Call) -> Content | None:
     result = copy.copy(call.app_result.result())
     result.id = call.content.id
     return result
+
+
+def _rejection_sent(call: _Call) -> Content | None:
+    decision = call.decision
+    if decision is None or not decision.done() or decision.cancelled() or decision.result():
+        return None
+    return approval_rejection_result(call.content, id=call.content.id)
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:
