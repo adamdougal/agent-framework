@@ -22,7 +22,7 @@ from agent_framework import (
 )
 from agent_framework._feature_stage import ExperimentalFeature, experimental
 from agent_framework._middleware import categorize_middleware
-from agent_framework._realtime._handoffs import PARTICIPANT_OPTIONS
+from agent_framework._realtime._handoffs import PER_PARTICIPANT_OPTIONS
 from agent_framework._realtime._options import RealtimeOptionsT
 from agent_framework.exceptions import RealtimeException
 
@@ -166,7 +166,7 @@ def _reject_unrunnable_bundles(agent: RawRealtimeAgent[Any]) -> None:
 
 def _warn_about_settings_that_wont_apply(agent_id: str, agent: RawRealtimeAgent[Any]) -> None:
     """A participant brings who's speaking; the built agent owns the call's other settings, history and limits."""
-    ignored = [key for key in agent.default_options if key not in PARTICIPANT_OPTIONS]
+    ignored = [key for key in agent.default_options if key not in PER_PARTICIPANT_OPTIONS]
     if agent.context_providers:
         ignored.append("context_providers")
     if agent.function_invocation_configuration is not None:

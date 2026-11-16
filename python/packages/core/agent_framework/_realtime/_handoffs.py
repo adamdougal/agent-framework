@@ -32,8 +32,8 @@ class CallSettings:
     host_middleware: Sequence[FunctionMiddlewareTypes]
 
 
-PARTICIPANT_OPTIONS = ("voice", "tool_choice")
-"""The options a participant brings with its instructions and tools; every other option holds for the call."""
+PER_PARTICIPANT_OPTIONS = ("voice", "tool_choice")
+"""The session options that change with whoever is speaking; every other option holds for the call."""
 
 
 def call_settings(
@@ -43,7 +43,7 @@ def call_settings(
     owner_middleware: Sequence[FunctionMiddlewareTypes],
     start_middleware: Sequence[FunctionMiddlewareTypes],
 ) -> CallSettings:
-    defaults = {key: value for key, value in owner.default_options.items() if key not in PARTICIPANT_OPTIONS}
+    defaults = {key: value for key, value in owner.default_options.items() if key not in PER_PARTICIPANT_OPTIONS}
     options = _merge_session_options(defaults, start_options)
     if owner._start_participant() is owner:  # pyright: ignore[reportPrivateUsage]
         return CallSettings(owner, options, start_tools, start_middleware, participant_defaults={}, host_middleware=())
@@ -52,7 +52,7 @@ def call_settings(
     if (instructions := _append_instructions(owner.instructions, start_options.get("instructions"))) is not None:
         options["instructions"] = instructions
     participant_defaults = {
-        key: owner.default_options[key] for key in PARTICIPANT_OPTIONS if key in owner.default_options
+        key: owner.default_options[key] for key in PER_PARTICIPANT_OPTIONS if key in owner.default_options
     }
     return CallSettings(
         owner, options, start_tools, start_middleware, participant_defaults, host_middleware=owner_middleware
@@ -105,7 +105,7 @@ def _participant_settings(agent: RawRealtimeAgent[Any], call: CallSettings) -> d
     settings: dict[str, Any] = {}
     if (instructions := _append_instructions(agent.instructions, call.options.get("instructions"))) is not None:
         settings["instructions"] = instructions
-    for key in PARTICIPANT_OPTIONS:
+    for key in PER_PARTICIPANT_OPTIONS:
         if (value := _call_or_participant(key, agent, call)) is not None:
             settings[key] = value
     return settings
