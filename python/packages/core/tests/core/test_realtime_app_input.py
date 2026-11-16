@@ -441,6 +441,52 @@ async def test_a_send_answering_one_call_twice_raises_and_answers_nothing() -> N
         assert _tool_messages(client.session) == []
 
 
+async def test_a_result_naming_an_answered_occurrence_raises_though_another_call_shares_its_call_id() -> None:
+    """Two app-run calls share call_id "call_1". After the first is answered by its occurrence id, the same result
+    again raises ValueError instead of answering the second."""
+    client = FakeRealtimeClient()
+    first = _call("call_1", "look_up_account")
+    second = _call("call_1", "look_up_account", response_id="resp_2")
+
+    async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
+        client.session.emit(*_response("resp_1", first), *_response("resp_2", second))
+        await eventually(lambda: second.content is not None and second.content.id is not None)
+        assert first.content is not None
+        answer = Content.from_function_result(call_id="call_1", id=first.content.id, result="first account")
+        await conversation.send(answer)
+
+        with pytest.raises(ValueError):
+            await conversation.send(answer)
+
+
+async def test_close_keeps_a_result_the_app_sent_while_a_sibling_tool_runs() -> None:
+    """An app-run call and a slow tool share a batch. The app answers while the slow tool runs, then the call closes:
+    the app-run call keeps the app's result."""
+    started = asyncio.Event()
+
+    @tool
+    async def look_up(order_id: str) -> str:
+        """Look up an order, slowly."""
+        started.set()
+        await asyncio.Event().wait()
+        return "found"
+
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[_account_tool(), look_up]).start_conversation() as conversation:
+        updates = _collect(conversation)
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "look_up", order_id="42"))
+        )
+        await asyncio.wait_for(started.wait(), 1)
+        await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
+
+    await eventually(lambda: len(_of_type(updates, "function_result")) == 2)
+    settled = {update.contents[0].call_id: update.contents[0] for update in _of_type(updates, "function_result")}
+    assert (settled["call_1"].result, settled["call_1"].exception) == ("Account 42", None)
+    assert settled["call_2"].exception == "conversation_closed"
+
+
 @pytest.mark.parametrize("answering", ["an approval for the app-run call", "a result for the approval call"])
 async def test_an_answer_of_the_wrong_kind_raises(answering: str) -> None:
     """An approval response for a call waiting for the app's result, and a function result for a call waiting for
@@ -630,6 +676,33 @@ async def test_a_hosted_call_done_streams_as_an_assistant_update() -> None:
         await eventually(lambda: bool(updates))
 
     assert updates[0].role == "assistant"
+
+
+async def test_hosted_calls_approved_together_get_one_follow_up_once_all_are_done() -> None:
+    """One send approves requests for "mcp_1" and "mcp_2". The first hosted_call_done requests nothing; the second
+    requests one follow-up."""
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        updates = _collect(conversation)
+        client.session.emit(_hosted_request("mcpr_1", "mcp_1"), _hosted_request("mcpr_2", "mcp_2"))
+        first = await _approval_request(updates)
+        second = await _approval_request(updates, 1)
+        await conversation.send([
+            first.to_function_approval_response(approved=True),
+            second.to_function_approval_response(approved=True),
+        ])
+
+        client.session.emit(event("hosted_call_done", item_id="mcp_1", status="completed"))
+        await asyncio.sleep(0.02)
+
+        assert client.session.calls == []
+
+        client.session.emit(event("hosted_call_done", item_id="mcp_2", status="completed"))
+        await eventually(lambda: bool(client.session.calls))
+        await asyncio.sleep(0.02)
+
+    assert client.session.calls == [("create_response", None)]
 
 
 async def test_another_hosted_calls_completion_does_not_release_the_follow_up() -> None:

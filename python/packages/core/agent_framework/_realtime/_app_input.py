@@ -54,9 +54,9 @@ class AppInput:
         return None
 
     def _waiting_call(self, result: Content) -> str | None:
-        """An app that only knows the provider's call id answers the earliest call waiting with it."""
-        if result.id in self._results:
-            return result.id
+        """A named occurrence answers only that call; a bare call id answers the earliest call waiting with it."""
+        if result.id is not None:
+            return result.id if result.id in self._results else None
         return next(
             (occurrence_id for occurrence_id, waiting in self._results.items() if waiting.call_id == result.call_id),
             None,

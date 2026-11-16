@@ -76,6 +76,14 @@ class _Call:
         return self.approval or self.content
 
 
+@dataclass
+class _HostedFollowUp:
+    """One send's hosted answers get one follow-up, once every call they approved is done."""
+
+    chain: _ToolChain
+    running: set[str]
+
+
 class _ToolChain:
     """The responses and calls driven by one caller turn or app input, which the loop's limits count.
 
@@ -159,8 +167,8 @@ class ToolLoop:
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
         self._calls_by_response: dict[str, list[_Call]] = {}
-        # Approved hosted calls the provider is running, by call item, each with the chain it continues.
-        self._hosted_calls_running: dict[str, _ToolChain] = {}
+        # Approved hosted calls the provider is running, by call item, each with the follow-up it holds back.
+        self._hosted_calls_running: dict[str, _HostedFollowUp] = {}
 
     def use_call(self, call: CallSettings) -> None:
         """Context providers add to the call's settings once they've run, before any call arrives."""
@@ -227,20 +235,24 @@ class ToolLoop:
         A request the provider client couldn't link to its call names itself instead, and no completion will ever name
         it, so its follow-up can't wait.
         """
+        follow_up = _HostedFollowUp(self._chain, set())
         for answer in answers:
             call_item_id = answer.function_call.call_id if answer.function_call is not None else None
             if answer.approved and call_item_id and call_item_id != answer.id:
-                self._hosted_calls_running[call_item_id] = self._chain
-            else:
-                self._results_are_out(self._chain)
-                self._follow_up_due(self._chain)
+                follow_up.running.add(call_item_id)
+                self._hosted_calls_running[call_item_id] = follow_up
+        if not follow_up.running:
+            self._results_are_out(follow_up.chain)
+            self._follow_up_due(follow_up.chain)
 
     def on_hosted_call_done(self, item_id: str) -> None:
         """A follow-up requested before the hosted call finishes can't see its result, so it waits for this."""
-        if (chain := self._hosted_calls_running.pop(item_id, None)) is None:
+        if (follow_up := self._hosted_calls_running.pop(item_id, None)) is None:
             return
-        self._results_are_out(chain)
-        self._follow_up_due(chain)
+        follow_up.running.discard(item_id)
+        if not follow_up.running:
+            self._results_are_out(follow_up.chain)
+            self._follow_up_due(follow_up.chain)
 
     def on_response_done(self, response_id: str, status: str) -> None:
         if self._closing:
@@ -293,7 +305,8 @@ class ToolLoop:
         self._calls_by_response.clear()
         for call in unfinished:
             if call.result is None:
-                call.result = _settled_with_error(
+                # The app may have answered while the batch still waited on something else.
+                call.result = _accepted_app_result(call) or _settled_with_error(
                     call.content, "the conversation closed before the tool finished", _CONVERSATION_CLOSED_REASON
                 )
             self._report(call)
@@ -405,12 +418,9 @@ class ToolLoop:
         await asyncio.gather(*(self._take_app_result(call) for call in calls))
 
     async def _take_app_result(self, call: _Call) -> None:
-        if call.app_result is None:
-            return
-        answer = await call.app_result
-        # The result carries the call's occurrence id, as a result the loop produced would.
-        call.result = copy.copy(answer)
-        call.result.id = call.content.id
+        if call.app_result is not None:
+            await call.app_result
+            call.result = _accepted_app_result(call)
 
     def _request_approval(self, call: _Call) -> asyncio.Future[bool]:
         """The request carries the call's occurrence id, which the app's answer must name."""
@@ -585,6 +595,15 @@ def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, l
             call.input_requests = results
 
     return keep
+
+
+def _accepted_app_result(call: _Call) -> Content | None:
+    if call.app_result is None or not call.app_result.done() or call.app_result.cancelled():
+        return None
+    # The result carries the call's occurrence id, as a result the loop produced would.
+    result = copy.copy(call.app_result.result())
+    result.id = call.content.id
+    return result
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:
