@@ -259,6 +259,10 @@ class _FoundryVoiceAgentSession(OpenAIRealtimeSession[FoundryVoiceAgentOptions])
     ) -> None:
         if tools is not None and _includes_definition(tools):
             self._warn_about_unimplemented_functions(tools)
+        elif tools is not None:
+            # The session opens on the definition's settings, so another participant mustn't inherit its tool choice,
+            # just as none carries over on a handoff.
+            options = cast("FoundryVoiceAgentOptions", {"tool_choice": "auto", **(options or {})})
         await super().start(options=options, tools=tools)
 
     def _warn_about_unimplemented_functions(self, tools: Sequence[ToolTypes]) -> None:

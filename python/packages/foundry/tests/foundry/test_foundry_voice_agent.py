@@ -16,7 +16,7 @@ import re
 import time
 from collections.abc import AsyncGenerator, Mapping
 from types import TracebackType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from agent_framework import InMemoryHistoryProvider, Message, RealtimeAgent, tool
@@ -1170,6 +1170,41 @@ def topology(
 
 def tool_names(session: Mapping[str, Any]) -> list[str | None]:
     return [declared.get("name") for declared in session["tools"]]
+
+
+# region Handoffs
+
+
+@pytest.mark.parametrize(("greeter_tool_choice", "expected"), [(None, "auto"), ("none", "none")], ids=["unset", "set"])
+async def test_a_plain_start_agent_does_not_inherit_the_definitions_tool_choice(
+    greeter_tool_choice: Literal["none"] | None, expected: str
+) -> None:
+    """With a definition whose tool_choice requires get_current_time and a plain start agent on foundry_agent.client,
+    the start's session update sends the start agent's tool choice, or 'auto' when it sets none."""
+    published = {**DEFINITION, "tool_choice": {"type": "function", "name": "get_current_time"}}
+    project = FakeProjectClient({"3": published})
+    receptionist = FoundryVoiceAgent(
+        project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
+    )
+    greeter_options = FoundryVoiceAgentOptions(voice=SONIA)
+    if greeter_tool_choice is not None:
+        greeter_options["tool_choice"] = greeter_tool_choice
+    greeter = RealtimeAgent(
+        receptionist.client, name="greeter", instructions="Greet the caller.", default_options=greeter_options
+    )
+    built = (
+        RealtimeHandoffBuilder[FoundryVoiceAgentOptions](participants=[greeter, receptionist])
+        .with_start_agent(greeter)
+        .build()
+    )
+
+    async with built, built.start_conversation():
+        pass
+
+    assert project.server.updates()[0]["tool_choice"] == expected
+
+
+# endregion
 
 
 class TestVerification:
