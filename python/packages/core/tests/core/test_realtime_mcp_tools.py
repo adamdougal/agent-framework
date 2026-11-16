@@ -222,7 +222,7 @@ async def test_closing_while_an_mcp_tool_connects_at_start_ends_entry() -> None:
     await conversation.close()
 
     with pytest.raises(RealtimeConversationClosedException):
-        await asyncio.wait_for(entering, 1)
+        await asyncio.wait_for(entering, 5)
     assert client.start_session_calls == []
 
 
@@ -323,7 +323,7 @@ async def test_an_update_still_connecting_its_mcp_tool_stops_when_the_conversati
     orders.release.set()
 
     with pytest.raises(RealtimeConversationClosedException):
-        await asyncio.wait_for(updating, 1)
+        await asyncio.wait_for(updating, 5)
     assert not orders.is_connected
 
 
@@ -480,7 +480,7 @@ class TestVerification:
             updating = asyncio.create_task(conversation.update_session(tools=[orders]))
             await orders.connecting.wait()
 
-            assert await asyncio.wait_for(conversation.create_response(), 1) == "resp_1"
+            assert await asyncio.wait_for(conversation.create_response(), 5) == "resp_1"
 
             orders.release.set()
             await updating

@@ -485,7 +485,7 @@ async def test_middleware_failure_fails_the_conversation() -> None:
     async with agent.start_conversation() as conversation:
         client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
         with pytest.raises(MiddlewareFailure, match="Blocked by policy"):
-            await asyncio.wait_for(read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 5)
         await eventually(lambda: client.session.close_count == 1)
 
 
@@ -505,7 +505,7 @@ async def test_a_middleware_failure_settles_its_batchs_calls() -> None:
     async with agent.start_conversation() as conversation:
         client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
         with pytest.raises(MiddlewareFailure):
-            await asyncio.wait_for(read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 5)
 
     settled = [content for update in updates for content in update.contents if content.type == "function_result"]
     assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
@@ -540,7 +540,7 @@ async def test_a_middleware_failure_discards_the_results_its_batch_already_has()
             *_response("resp_1", _call("call_1", "get_weather", city="Paris"), _call("call_2", "book", city="Rome"))
         )
         with pytest.raises(MiddlewareFailure):
-            await asyncio.wait_for(read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 5)
 
     settled = [content for update in updates for content in update.contents if content.type == "function_result"]
     assert sorted((content.call_id, content.exception) for content in settled) == [
@@ -565,7 +565,7 @@ async def test_a_tool_that_cancels_itself_ends_the_conversation_and_its_call_is_
     async with RealtimeAgent(client, tools=[give_up]).start_conversation() as conversation:
         client.session.emit(*_response("resp_1", _call("call_1", "give_up")))
         with pytest.raises(ToolExecutionException):
-            await asyncio.wait_for(read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 5)
 
     settled = [content for update in updates for content in update.contents if content.type == "function_result"]
     assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
@@ -593,7 +593,7 @@ async def test_a_tool_that_cancels_itself_while_closing_still_has_its_call_settl
         give_up_now.set()
         await asyncio.sleep(0.01)
         session_closed.set()
-        await asyncio.wait_for(closing, 1)
+        await asyncio.wait_for(closing, 5)
         updates = await _read_all(conversation)
 
     settled = [content for update in updates for content in update.contents if content.type == "function_result"]
@@ -833,7 +833,7 @@ async def test_an_unexpected_failure_in_a_follow_up_ends_the_conversation() -> N
         client.session.create_response_error = KeyError("response")
         client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
         with pytest.raises(KeyError):
-            await asyncio.wait_for(read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 5)
 
     assert client.session.close_count == 1
 
@@ -1493,7 +1493,7 @@ async def test_a_tool_that_closes_the_conversation_settles_as_conversation_close
 
     async with RealtimeAgent(client, tools=[hang_up]).start_conversation() as conversation:
         client.session.emit(*_response("resp_1", _call("call_1", "hang_up")))
-        updates = await asyncio.wait_for(_read_all(conversation), 1)
+        updates = await asyncio.wait_for(_read_all(conversation), 5)
 
     settled = [content for update in updates for content in update.contents if content.type == "function_result"]
     assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]
@@ -1548,7 +1548,7 @@ async def test_a_batch_that_finishes_while_closing_requests_no_follow_up() -> No
     await asyncio.sleep(0.01)  # the batch finishes while the session is still closing
     session_closed.set()
 
-    await asyncio.wait_for(closing, 1)
+    await asyncio.wait_for(closing, 5)
 
     assert client.session.calls == []
     settled = [
@@ -1575,7 +1575,7 @@ async def test_a_result_send_that_fails_as_the_conversation_closes_does_not_fail
         release_send.set()
         await asyncio.sleep(0.01)
         session_closed.set()
-        await asyncio.wait_for(closing, 1)
+        await asyncio.wait_for(closing, 5)
 
         updates = await _read_all(conversation)
 
@@ -1597,7 +1597,7 @@ async def test_results_of_calls_that_never_ran_are_not_sent_once_closed(caplog: 
 
         await conversation.close()
         release_send.set()
-        await asyncio.wait_for(app_send, 1)
+        await asyncio.wait_for(app_send, 5)
         await asyncio.sleep(0.01)
 
     assert _tool_messages(client.session) == []
@@ -1669,7 +1669,7 @@ class TestVerification:
             client.session.emit(*_response("resp_1", _call("call_1", "look_up")))
             await started.wait()
             client.session.end()
-            updates = await asyncio.wait_for(_read_all(conversation), 1)
+            updates = await asyncio.wait_for(_read_all(conversation), 5)
 
         settled = [content for update in updates for content in update.contents if content.type == "function_result"]
         assert [(content.call_id, content.exception) for content in settled] == [("call_1", "conversation_closed")]

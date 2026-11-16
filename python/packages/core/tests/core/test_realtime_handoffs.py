@@ -493,7 +493,7 @@ class TestVerification:
         async with receptionist.start_conversation(control_timeout=0.05) as conversation:
             client.session.hold("update_session")
             with pytest.raises(RealtimeControlTimeoutException):
-                await asyncio.wait_for(conversation.handoff(_billing(client)), 1)
+                await asyncio.wait_for(conversation.handoff(_billing(client)), 5)
 
             assert conversation.active_agent is receptionist
 

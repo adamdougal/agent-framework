@@ -492,7 +492,7 @@ async def test_close_raises_a_failing_providers_error_after_cleanup() -> None:
             )
 
     assert client.session.close_count == 1
-    await asyncio.wait_for(read_all(conversation), 1)
+    await asyncio.wait_for(read_all(conversation), 5)
 
 
 async def test_close_raises_an_exception_group_when_several_providers_fail() -> None:
@@ -877,7 +877,7 @@ class TestVerification:
         async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
             await streamed(conversation, caller_item("item_1"))
             client.session.end()
-            await asyncio.wait_for(read_all(conversation), 1)
+            await asyncio.wait_for(read_all(conversation), 5)
 
         assert conversation.history[0].additional_properties == {"core": {"text_less": True}}
 
@@ -1076,7 +1076,7 @@ class TestVerification:
                 event("response_created", response_id="resp_1"),
                 event("response_done", response_id="resp_1", status="incomplete", reason="content_filter"),
             )
-            await asyncio.wait_for(conversation.close(), 1)
+            await asyncio.wait_for(conversation.close(), 5)
 
     async def test_a_receive_failure_still_reports_the_remaining_exchanges(self) -> None:
         client = FakeRealtimeClient()

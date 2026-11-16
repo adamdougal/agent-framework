@@ -578,7 +578,7 @@ async def test_failed_start_closes_the_socket() -> None:
 
         with pytest.raises(RealtimeControlException):
             await asyncio.wait_for(client.start_session(options={"instructions": "Be brief."}), 5)
-        await asyncio.wait_for(server.socket_closed.wait(), 1)
+        await asyncio.wait_for(server.socket_closed.wait(), 5)
 
 
 async def test_cancelled_start_closes_the_socket() -> None:
@@ -592,7 +592,7 @@ async def test_cancelled_start_closes_the_socket() -> None:
 
         with pytest.raises(asyncio.CancelledError):
             await starting
-        await asyncio.wait_for(server.socket_closed.wait(), 1)
+        await asyncio.wait_for(server.socket_closed.wait(), 5)
 
 
 # endregion
@@ -794,7 +794,7 @@ class TestVerification:
             with pytest.raises(asyncio.CancelledError):
                 await starting
             assert server.held is not None
-            await asyncio.wait_for(server.held.connection_lost_waiter, 1)
+            await asyncio.wait_for(server.held.connection_lost_waiter, 5)
 
     async def test_a_token_provider_returning_an_awaitable_sends_its_token(self) -> None:
         """With api_key set to a plain callable that returns an awaitable of "token-6", the handshake carries

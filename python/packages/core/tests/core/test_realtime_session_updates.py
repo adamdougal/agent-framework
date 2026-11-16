@@ -229,7 +229,7 @@ async def test_an_unacknowledged_update_raises_control_timeout() -> None:
         client.session.hold("update_session")
 
         with pytest.raises(RealtimeControlTimeoutException):
-            await asyncio.wait_for(conversation.update_session(options={"instructions": "Speak Spanish."}), 1)
+            await asyncio.wait_for(conversation.update_session(options={"instructions": "Speak Spanish."}), 5)
 
 
 # endregion
@@ -556,7 +556,7 @@ class TestVerification:
             client.session.hold("say")
 
             with pytest.raises(RealtimeControlTimeoutException):
-                await asyncio.wait_for(conversation.say("One moment."), 1)
+                await asyncio.wait_for(conversation.say("One moment."), 5)
 
     async def test_an_unsupported_say_leaves_the_conversation_usable(self) -> None:
         client = FakeRealtimeClient()

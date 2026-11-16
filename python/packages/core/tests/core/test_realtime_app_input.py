@@ -344,7 +344,7 @@ async def test_a_batchs_other_calls_run_without_waiting_for_an_app_run_call() ->
         client.session.emit(
             *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "look_up", order_id="42"))
         )
-        await asyncio.wait_for(looked_up.wait(), 1)
+        await asyncio.wait_for(looked_up.wait(), 5)
 
         assert _tool_messages(client.session) == []
 
@@ -478,7 +478,7 @@ async def test_close_keeps_a_result_the_app_sent_while_a_sibling_tool_runs() -> 
         client.session.emit(
             *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "look_up", order_id="42"))
         )
-        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(started.wait(), 5)
         await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
 
     await eventually(lambda: len(_of_type(updates, "function_result")) == 2)

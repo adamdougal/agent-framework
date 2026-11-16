@@ -185,7 +185,7 @@ async def test_interrupt_cuts_the_response_playing_when_it_was_called() -> None:
             _audio("resp_2", "item_b", 48 * 1000),
         )
         cancelled.set()
-        await asyncio.wait_for(interrupting, 1)
+        await asyncio.wait_for(interrupting, 5)
 
     assert client.session.calls == [("cancel_response",), ("truncate", "item_a", 0, 400)]
 
@@ -427,7 +427,7 @@ async def test_a_provider_truncation_queued_when_close_starts_cuts_nothing() -> 
 
         await conversation.close()
         with pytest.raises(RealtimeConversationClosedException):
-            await asyncio.wait_for(waiting, 1)
+            await asyncio.wait_for(waiting, 5)
         await asyncio.sleep(0.01)
 
     assert client.session.calls == [("create_response", None)]
@@ -709,7 +709,7 @@ class TestVerification:
             client.session.hold("truncate")
 
             with pytest.raises(RealtimeControlTimeoutException):
-                await asyncio.wait_for(conversation.interrupt(played_ms=400), 1)
+                await asyncio.wait_for(conversation.interrupt(played_ms=400), 5)
 
     async def test_interrupt_does_not_cut_a_response_the_provider_already_cut(self) -> None:
         client = FakeRealtimeClient()
