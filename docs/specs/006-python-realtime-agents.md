@@ -285,7 +285,8 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 | `output_audio` | `data` | **`response_id`**, **`item_id`**, **`content_index`**. Media type from the session's output format when the response started, since a response in flight doesn't change. |
 | `function_call` | `function_call` | **`response_id`**, **`item_id`**. The assembled call, once its arguments finish. Not `informational_only`. |
 | `function_result` | `function_result`, `role="tool"` | None. One for every settled call. |
-| `function_approval_request` | `function_approval_request` | None. Local approvals, and hosted ones with `hosted=True`. |
+| `function_approval_request` | `function_approval_request`, `role="assistant"` | None. Local approvals, and hosted ones with `hosted=True`, whose `function_call.call_id` names the hosted call's item. An added `mcp_approval_request` item yields `item_added`, then this, once per item. |
+| `hosted_call_done` | realtime-event content, `role="assistant"` | **`item_id`**, **`status`** (`"completed"` or `"failed"`). The provider finished a hosted call, so its result is in the conversation. |
 | `handoff_completed` | realtime-event content | **`source`**, **`target`**. |
 | `usage` | `usage` | **`response_id`**. Once per response, from `response.done`. |
 | `error` | `error` | `response_id`, for failed responses. Unclaimed provider `error` events, and failed responses. |
@@ -293,7 +294,7 @@ realtime-event content. Each kind with attributes has a `Realtime<Kind>Attribute
 
 These pass through: audio-done events, output-item and content-part events, input-buffer commits, clears and timeouts,
 item done and deleted events, function-call argument deltas, `rate_limits.updated`, `conversation.created`, hosted MCP
-call events, and Voice Live's `warning`, animation, timestamp, avatar, video, viseme and `foundry_agent_call` events.
+call events other than their completion, and Voice Live's `warning`, animation, timestamp, avatar, video, viseme and `foundry_agent_call` events.
 
 - **Roles and authors.** An update takes the role of the item it's about, and `message_id` is the provider's item id.
   Only assistant and tool updates carry `author_name` and `agent_id`, from the agent that was active when their response
@@ -326,9 +327,11 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 
 - **Batches.** The conversation collects a response's calls as they arrive. At `response_done`, it runs them as one
   batch through `_execute_function_calls` in a background task beside the receive loop, with chat's rules. Approvals,
-  declaration-only calls and `UserInputRequiredException` requests pause the batch until the app answers. The rest run
-  concurrently, or in model order with `allow_concurrent_invocation=False`, and function middleware and error shaping
-  apply.
+  declaration-only calls and `UserInputRequiredException` requests pause the batch until the app answers. With approval
+  requests, none of the batch's other calls runs until every request is answered; declaration-only calls and user-input
+  requests don't hold the others up. The rest run concurrently, or in model order with
+  `allow_concurrent_invocation=False`, and function middleware and error shaping apply. An approval request that
+  function middleware returns can't be resumed in a live conversation, so that call gets an error result.
 - **Results.** Clients send `function_result.result` as the `function_call_output` item's `output` string, never as
   `items` or a raw value. They drop images, audio and files with a warning. As in chat, each call gets an occurrence
   `id` before it streams, unless it has one, and its result carries the same `id`.
@@ -369,8 +372,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `asyncio.timeout()` or by saying a filler line and catching `RealtimeActiveResponseException`.
 - **Settlement.** Calls from a response that ended `cancelled`, `incomplete` or `failed` don't run; each gets an error
   result, sent on a best-effort basis, and no follow-up. Barge-in never cancels running tools. Close stops new batches,
-  cancels running tools and waits for them, settles every unfinished call with an error result that isn't sent, and
-  clears pending approvals from the agent session. A settled error's `exception` says why, such as `cancelled` or
+  cancels running tools and waits for them, and settles every unfinished call, those waiting for the app included, with
+  an error result that isn't sent. A live conversation keeps its pending approvals to itself, so only a run has any in
+  the agent session to clear. A settled error's `exception` says why, such as `cancelled` or
   `conversation_closed`. `MiddlewareFailure` ends the conversation the same way, and iteration raises it. A tool or
   middleware that raises `CancelledError` while the conversation is open ends it too, and iteration raises
   `ToolExecutionException`. So does an unexpected failure in the conversation's background work, such as a follow-up
@@ -381,8 +385,14 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   when a live conversation ends or a run fails or is cancelled.
 - **App input.** The app answers through `send(...)` with `Content.from_function_result(...)`,
   `Content.from_function_approval_response(...)` or a `Message(role="tool")`, which the conversation routes into its
-  batch. In a live conversation an approval request streams as `function_approval_request`, the call stays open while
-  the caller talks, and the response matches through the agent session.
+  batch. In a live conversation an approval request streams as `function_approval_request`, with the call's occurrence
+  `id`, and the call stays open while the caller talks. The conversation matches each answer against what it asked the
+  app itself, not through the agent session, whose approval state holds one paused batch, so batches from different
+  responses can wait at once. An approval runs the call as the conversation received it, whatever call the response
+  embeds. A result names its call by occurrence `id`, else by `call_id`, and a declaration-only call can be answered as
+  soon as it streams. An answer is no new input: it starts no chain and requests no response, and other input sent with
+  it is handled as usual. An answer to anything the conversation didn't ask, or already settled, raises `ValueError`
+  before anything is sent.
 - **MCP tools.** `RawAgent`'s per-run MCP handling, which prepares a tool with the caller's kwargs, connects it on
   first use into the agent's exit stack and adds its functions, moves into a helper shared with the realtime
   conversation. A tool connects through `async with agent` or on first use and stays open for the agent's lifetime.
@@ -391,16 +401,25 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   its declared and executable sets at start and on `update_session(tools=...)`; server-side tool-list changes wait
   for the next update. Clashing function names raise `ValueError` when the conversation is entered, or from
   `update_session(...)`, before anything is sent.
-- **Hosted tools.** Static helpers on the provider clients declare them, and the loop never runs them. Their call events
-  pass through. Hosted approval requests become `function_approval_request` content with `hosted=True`; the app's
-  response goes to the provider as `mcp_approval_response`, and the loop then requests a follow-up.
+- **Hosted tools.** Static helpers on the provider clients declare them, `OpenAIRealtimeClient.get_mcp_tool()` with
+  `OpenAIChatClient.get_mcp_tool()`'s parameters, and the loop never runs them. Their call events pass through, apart
+  from `hosted_call_done`. Hosted approval requests become `function_approval_request` content with `hosted=True`,
+  whose `function_call.call_id` names the hosted call's item: the session links each request to the earliest waiting
+  call with its server and tool, because `previous_item_id` points at the wrong call when one response makes several.
+  The app's response goes to the provider as `mcp_approval_response`. The provider runs an approved call only then and
+  starts no response for it, and a response requested before the call finishes can't see its result, so the loop
+  requests the follow-up on that call's `hosted_call_done`, or at once for a request it couldn't link. Providers tell
+  the model nothing about a rejection, so after one the loop adds a system message, "The user declined the call to
+  `<tool>` on `<server>`, so it did not run.", then requests the follow-up; the note stays out of history. Voice Live
+  lists an MCP server's tools a moment after the session starts, and answers without them until then.
 
 ## History
 
 - **Contents.** History holds the provider conversation's authored turns as text: each caller audio item as its final
   caller transcript with `role="user"`, each assistant message item as its final agent transcript, the text of app input
-  as sent, `create_response=False` context included, function calls with the text of their settled results, and approval
-  requests and responses. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It
+  as sent, `create_response=False` context included, and function calls with the text of their settled results. A
+  call's result says what an approval decided, so approval requests and responses aren't recorded; replay couldn't send
+  them. The initial `messages` of `start_conversation(...)` are app input of the first exchange. It
   holds no realtime-event content, `error` content, usage, session updates, out-of-band responses or hosted-tool events.
   Each conversation item is one message with the provider's item id as `message_id`. A `user` item is a caller turn only
   when `item_added` reports `input_audio`; other `user` and `system` items echo app input or replay.
@@ -664,7 +683,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 
 ## Provider capabilities
 
-From live probes on 2026-11-04 and the prototype on 2026-11-06. The OpenAI column is inferred from Azure OpenAI, which
+From live probes on 2026-11-04 and 2026-11-16, and the prototype on 2026-11-06. The OpenAI column is inferred from Azure OpenAI, which
 speaks the same GA protocol, until live tests verify it.
 
 | Capability | OpenAI (inferred) | Azure OpenAI | Voice Live `2026-07-15` | Foundry voice agent (preview) |
@@ -680,6 +699,7 @@ speaks the same GA protocol, until live tests verify it.
 | Cancel reasons | `turn_detected`, `client_cancelled` | `turn_detected`, `client_cancelled` | As OpenAI, but with an Azure TTS voice a client cancel can report `turn_detected` | With an Azure TTS voice, a client cancel can report `turn_detected` |
 | Empty cancelled responses | Not observed | Not observed | A short VAD silence (the probed default of 200 ms) splits one utterance into turns whose responses are cancelled at once; 500 ms didn't split | Not probed |
 | Content filtering | `incomplete` with `content_filter`, no category, never `error` | As OpenAI | BYOM as Azure OpenAI; managed models never content-filtered | Not probed |
+| Hosted MCP approvals | As Azure OpenAI | The request item arrives after `response.done`; an approval runs the call and starts no response | As Azure OpenAI. A response requested with the approval starts before the call finishes and can't use its result; a rejection reports nothing, and drops a `reason` | Not probed |
 | `audio_tokens` in usage | Model tokens | Model tokens | Cascaded and BYOM convert Azure Speech audio (10 per second in, 20 out); BYOM with `azure-speech` counts input twice | Converted Azure Speech audio |
 
 On every provider, an `interrupt(...)` sent on `speech_started` races the server's own cancel, so a barge-in can also
@@ -699,10 +719,10 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   `agent_framework.realtime.item_truncated` events.
 - `agent-framework-orchestrations`: `RealtimeHandoffBuilder` and its built agent.
 - `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeTurnDetection`,
-  `OpenAIRealtimeTranscription`, `OpenAIRealtimeTruncation`, `OpenAIRealtimeSession`, `OpenAIRealtimeConnection` and
-  the `[realtime]` extra.
-- `agent-framework-foundry`: `VoiceLiveClient`, `VoiceLiveOptions`, the `Azure*` option types and the `[realtime]`
-  extra; `FoundryVoiceAgent`, `RawFoundryVoiceAgent`, `FoundryVoiceAgentClient` and `FoundryVoiceAgentOptions` under
+  `OpenAIRealtimeTranscription`, `OpenAIRealtimeTruncation`, `OpenAIRealtimeSession`, `OpenAIRealtimeConnection`,
+  `OpenAIRealtimeClient.get_mcp_tool()` and the `[realtime]` extra.
+- `agent-framework-foundry`: `VoiceLiveClient` with `get_mcp_tool()` and `get_foundry_agent_tool()`,
+  `VoiceLiveOptions`, the `Azure*` option types and the `[realtime]` extra; `FoundryVoiceAgent`, `RawFoundryVoiceAgent`, `FoundryVoiceAgentClient` and `FoundryVoiceAgentOptions` under
   `FOUNDRY_VOICE_AGENTS`.
 
 On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content

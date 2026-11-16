@@ -19,7 +19,6 @@ from agent_framework import (
     Content,
     FunctionInvocationContext,
     FunctionMiddleware,
-    FunctionTool,
     Message,
     MiddlewareFailure,
     MiddlewareTermination,
@@ -1237,35 +1236,6 @@ async def test_disabled_function_invocation_turns_tools_off_whatever_the_calls_w
     assert client.session.calls == [("create_response", {"tool_choice": "none"})]
 
 
-async def test_tools_that_need_approval_or_app_input_get_an_error_result(caplog: pytest.LogCaptureFixture) -> None:
-    client = FakeRealtimeClient()
-
-    @tool(approval_mode="always_require")
-    def issue_refund(amount: int) -> str:
-        """Issue a refund."""
-        return f"refunded {amount}"
-
-    ask_a_person = FunctionTool(name="ask_a_person", description="Ask a person; the app answers.")
-    agent_session = AgentSession()
-    agent = RealtimeAgent(client, tools=[issue_refund, ask_a_person])
-
-    with caplog.at_level(logging.WARNING):
-        async with agent.start_conversation(session=agent_session):
-            client.session.emit(
-                *_response("resp_1", _call("call_1", "issue_refund", amount=5), _call("call_2", "ask_a_person"))
-            )
-            await eventually(lambda: bool(_tool_messages(client.session)))
-
-    assert [call_id for call_id, _ in _results(client.session)] == ["call_1", "call_2"]
-    assert all(str(result).startswith("Error:") for _, result in _results(client.session))
-    warnings = [record.getMessage() for record in caplog.records if "approval" in record.getMessage()]
-    assert len(warnings) == 2
-    assert "issue_refund" in warnings[0]
-    assert "ask_a_person" in warnings[1]
-    history_state = {provider.source_id for provider in agent.context_providers}
-    assert set(agent_session.state) <= history_state
-
-
 async def test_a_call_runs_the_tool_it_resolved_to_on_arrival() -> None:
     client = FakeRealtimeClient()
 
@@ -1323,7 +1293,7 @@ async def test_same_named_calls_of_one_response_run_the_tool_the_first_resolved_
     ]
 
 
-async def test_same_named_calls_follow_the_first_binding_even_when_it_cannot_run() -> None:
+async def test_same_named_calls_follow_the_first_binding_even_when_it_needs_approval() -> None:
     client = FakeRealtimeClient()
     runs: list[str] = []
 
@@ -1346,7 +1316,7 @@ async def test_same_named_calls_follow_the_first_binding_even_when_it_cannot_run
         ctx.add_tools(open_look_up)
         return "swapped"
 
-    async with RealtimeAgent(client, tools=[gated_look_up, swap_look_up]).start_conversation():
+    async with RealtimeAgent(client, tools=[gated_look_up, swap_look_up]).start_conversation() as conversation:
         client.session.emit(
             event("response_created", response_id="resp_2"),
             _call("call_2", "look_up", response_id="resp_2"),
@@ -1357,11 +1327,13 @@ async def test_same_named_calls_follow_the_first_binding_even_when_it_cannot_run
             _call("call_3", "look_up", response_id="resp_2"),
             event("response_done", response_id="resp_2", status="completed"),
         )
-        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+        requests: list[Content] = []
+        while len(requests) < 2:
+            update = await next_update(conversation)
+            requests += [content for content in update.contents if content.type == "function_approval_request"]
 
     assert runs == []
-    assert [call_id for call_id, _ in _results(client.session)] == ["call_1", "call_2", "call_3"]
-    assert all(str(result).startswith("Error:") for _, result in _results(client.session)[1:])
+    assert [request.function_call.call_id for request in requests if request.function_call] == ["call_2", "call_3"]
 
 
 async def test_barge_in_does_not_cancel_a_running_tool() -> None:

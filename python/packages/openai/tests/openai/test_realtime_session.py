@@ -2137,6 +2137,135 @@ async def test_cancel_response_names_the_active_response() -> None:
 
 # endregion
 
+# region Hosted approvals
+
+
+def mcp_call_added(item_id: str, name: str = "microsoft_docs_search") -> dict[str, Any]:
+    """A hosted MCP call's item as the provider adds it, before it runs, so it has no output yet."""
+    return {
+        "type": "conversation.item.added",
+        "previous_item_id": None,
+        "item": {
+            "id": item_id,
+            "type": "mcp_call",
+            "server_label": "mslearn",
+            "name": name,
+            "arguments": "",
+            "approval_request_id": None,
+            "output": None,
+            "error": None,
+        },
+    }
+
+
+def mcp_approval_request(item_id: str, name: str = "microsoft_docs_search") -> dict[str, Any]:
+    """The conversation item a provider adds, after the response, to ask for a hosted MCP call's approval."""
+    return {
+        "type": "conversation.item.added",
+        "previous_item_id": "mcp_1",
+        "item": {
+            "id": item_id,
+            "type": "mcp_approval_request",
+            "server_label": "mslearn",
+            "name": name,
+            "arguments": '{"query": "Voice Live"}',
+        },
+    }
+
+
+def approval_requests(events: list[Any]) -> list[Any]:
+    return [event.content for event in events if event.kind == "function_approval_request"]
+
+
+async def test_an_mcp_approval_request_maps_to_item_added_then_a_hosted_approval_request() -> None:
+    """After mcp_call "mcp_1" (server "mslearn", tool "microsoft_docs_search") is added with no output, a
+    conversation.item.added for mcp_approval_request "mcpr_1" yields item_added, then
+    function_approval_request. Its content's id is "mcpr_1"; its function_call has call_id "mcp_1", the tool's name
+    and arguments, hosted=True and server_name "mslearn"."""
+    events = await mapped(mcp_call_added("mcp_1"), mcp_approval_request("mcpr_1"))
+
+    assert [event.kind for event in events[-2:]] == ["item_added", "function_approval_request"]
+    [request] = approval_requests(events)
+    assert request.id == "mcpr_1"
+    call = request.function_call
+    assert (call.call_id, call.name, call.parse_arguments(), call.hosted, call.server_name) == (
+        "mcp_1",
+        "microsoft_docs_search",
+        {"query": "Voice Live"},
+        True,
+        "mslearn",
+    )
+
+
+async def test_an_mcp_approval_request_without_its_call_item_names_itself() -> None:
+    """With no matching mcp_call item, the request's function_call.call_id is "mcpr_1"."""
+    events = await mapped(mcp_approval_request("mcpr_1"))
+
+    [request] = approval_requests(events)
+    assert request.function_call.call_id == "mcpr_1"
+
+
+async def test_a_hosted_call_that_finished_is_not_linked_to_a_later_request() -> None:
+    """mcp_call "mcp_1" is added and reports response.mcp_call.completed, as a call needing no approval does. A later
+    request for the same tool names itself, not "mcp_1"."""
+    events = await mapped(
+        mcp_call_added("mcp_1"),
+        {"type": "response.mcp_call.completed", "output_index": 0, "item_id": "mcp_1"},
+        mcp_approval_request("mcpr_1"),
+    )
+
+    [request] = approval_requests(events)
+    assert request.function_call.call_id == "mcpr_1"
+
+
+async def test_two_hosted_calls_of_one_tool_each_link_to_their_own_request() -> None:
+    """One response holds mcp_call "mcp_1", then "mcp_2", of the same tool. The first request links to "mcp_1" and the
+    second to "mcp_2"."""
+    events = await mapped(
+        mcp_call_added("mcp_1"), mcp_call_added("mcp_2"), mcp_approval_request("mcpr_1"), mcp_approval_request("mcpr_2")
+    )
+
+    assert [(request.id, request.function_call.call_id) for request in approval_requests(events)] == [
+        ("mcpr_1", "mcp_1"),
+        ("mcpr_2", "mcp_2"),
+    ]
+
+
+async def test_a_request_item_reported_twice_streams_its_approval_request_once() -> None:
+    """Two conversation.item.added events for "mcpr_1" yield one function_approval_request."""
+    events = await mapped(mcp_call_added("mcp_1"), mcp_approval_request("mcpr_1"), mcp_approval_request("mcpr_1"))
+
+    assert [request.id for request in approval_requests(events)] == ["mcpr_1"]
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+async def test_a_hosted_calls_completion_maps_to_hosted_call_done(status: str) -> None:
+    """response.mcp_call.completed and response.mcp_call.failed for item "mcp_1" each map to hosted_call_done with
+    item_id "mcp_1" and status "completed" or "failed"."""
+    [done] = await mapped({"type": f"response.mcp_call.{status}", "output_index": 0, "item_id": "mcp_1"})
+
+    assert done.kind == "hosted_call_done"
+    assert done.additional_properties["core"] == {"item_id": "mcp_1", "status": status}
+
+
+async def test_send_a_hosted_approval_response_creates_an_mcp_approval_response_item() -> None:
+    """Sending an approved hosted function_approval_response with id "mcpr_1" sends conversation.item.create with
+    {"type": "mcp_approval_response", "approval_request_id": "mcpr_1", "approve": True}."""
+    session, connection = await started()
+    call = Content.from_function_call(call_id="mcp_1", name="microsoft_docs_search", hosted=True, server_name="mslearn")
+
+    await session.send(Message("user", [Content.from_function_approval_response(True, "mcpr_1", call)]))
+
+    assert without_event_ids(connection.sent) == [
+        {
+            "type": "conversation.item.create",
+            "item": {"type": "mcp_approval_response", "approval_request_id": "mcpr_1", "approve": True},
+        }
+    ]
+
+
+# endregion
+
 
 class TestVerification:
     async def test_a_rejected_delete_raises_with_the_providers_code(self) -> None:

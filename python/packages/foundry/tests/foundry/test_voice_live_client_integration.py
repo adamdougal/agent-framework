@@ -301,6 +301,52 @@ async def test_bad_credentials_raise() -> None:
         await asyncio.wait_for(client.start_session(), 30)
 
 
+async def test_a_hosted_mcp_approval_round_trip() -> None:
+    """A RealtimeAgent with VoiceLiveClient.get_mcp_tool(name="mslearn", url="https://learn.microsoft.com/api/mcp",
+    approval_mode="always_require") is asked to search Learn, and the test approves each hosted
+    function_approval_request. After each approval a hosted_call_done arrives before the follow-up's response_created,
+    and a follow-up speaks a final transcript."""
+    learn = VoiceLiveClient.get_mcp_tool(
+        name="mslearn", url="https://learn.microsoft.com/api/mcp", approval_mode="always_require"
+    )
+    after_approvals: list[str] = []
+    follow_up_finals: list[str] = []
+    async with asyncio.timeout(TURN_TIMEOUT), contextlib.AsyncExitStack() as stack:
+        credential = None
+        if not os.getenv("AZURE_VOICELIVE_API_KEY"):
+            credential = await stack.enter_async_context(AzureCliCredential())
+        client: VoiceLiveClient[VoiceLiveOptions] = VoiceLiveClient(credential=credential)
+        options: VoiceLiveOptions = {"turn_detection": None}
+        agent = RealtimeAgent(
+            client,
+            instructions="Search once with the mslearn tool, then answer in one short sentence.",
+            tools=[learn],
+            default_options=options,
+        )
+        async with agent.start_conversation() as conversation:
+            follow_ups: set[str] = set()
+            async for update in conversation:
+                for content in update.contents:
+                    # Voice Live answers without the server's tools until it has listed them.
+                    if content.service_event_type == "mcp_list_tools.completed":
+                        await conversation.send("What is the Azure Voice Live API?")
+                    elif content.type == "function_approval_request" and content.function_call is not None:
+                        assert content.function_call.hosted
+                        await conversation.send(content.to_function_approval_response(approved=True))
+                        after_approvals.append("approved")
+                    elif after_approvals and content.kind in ("hosted_call_done", "response_created"):
+                        after_approvals.append(content.kind)
+                        if content.kind == "response_created" and update.response_id:
+                            follow_ups.add(update.response_id)
+                    elif content.type == "text" and content.status == "completed" and update.response_id in follow_ups:
+                        follow_up_finals.append(content.text or "")
+                if follow_up_finals and update.finish_reason:
+                    break
+
+    assert after_approvals[:3] == ["approved", "hosted_call_done", "response_created"]
+    assert " ".join(follow_up_finals).strip()
+
+
 class TestVerification:
     async def test_replayed_history_reaches_the_model(self) -> None:
         """Voice Live uses a different assistant-text wire type, so verify replay against the service."""

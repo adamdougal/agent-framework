@@ -139,7 +139,13 @@ the root package:
   sends the results, requests one follow-up per batch, and settles unfinished calls on close. It keeps the tools it
   runs in step with the tools the provider declares: tool-list changes a call makes with `ctx.add_tools()` or
   `ctx.remove_tools()` go out as a session update before that batch's results. Each call runs through the function
-  middleware of the agent active when it arrived.
+  middleware of the agent active when it arrived. A batch waits for the app where a call needs it: approvals first,
+  before any of its calls run, then the results of declaration-only calls and of tools that raised
+  `UserInputRequiredException`. An approved hosted call's follow-up waits for its `hosted_call_done`, since the
+  provider starts no response for it.
+- `_app_input.py` - `AppInput`, the conversation's record of what it asked the app: approval requests, app-run calls
+  and the provider's hosted approval requests. `send()` routes function results and approval responses through it,
+  and refuses an answer to anything it didn't ask, before sending anything.
 - `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
   a provider truncation into truncates. It remembers where each response was cut, so the conversation can delete the
   response's later text-only messages, which truncation can't reach.

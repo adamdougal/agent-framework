@@ -4595,6 +4595,18 @@ class _ApprovalCallOccurrence:
     closed: bool = False
 
 
+def approval_rejection_result(function_call: Content, *, id: str | None) -> Content:
+    """The result a call gets when its approval is rejected; it never ran, and compaction recognises the marker."""
+    from ._types import APPROVAL_REJECTION_RESULT_KEY, Content
+
+    return Content.from_function_result(
+        call_id=function_call.call_id or "",
+        id=id,
+        result="Error: Tool call invocation was rejected by user.",
+        additional_properties={**function_call.additional_properties, APPROVAL_REJECTION_RESULT_KEY: True},
+    )
+
+
 def _replace_approval_contents_with_results(
     messages: list[Message],
     pending_approval_responses: dict[str, Content],
@@ -4607,8 +4619,6 @@ def _replace_approval_contents_with_results(
     Returns:
         The terminal contents produced while resolving the approval responses, in response order.
     """
-    from ._types import APPROVAL_REJECTION_RESULT_KEY, Content
-
     result_groups_by_call_id: dict[str, deque[list[Content]]] = {}
     for result_group in approved_function_result_groups:
         call_id = next(
@@ -4730,14 +4740,9 @@ def _replace_approval_contents_with_results(
                     replacements = call_result_groups.popleft() if call_result_groups else None
                 else:
                     replacements = [
-                        Content.from_function_result(
-                            call_id=call_id,
+                        approval_rejection_result(
+                            content.function_call,
                             id=occurrence.function_call.id if occurrence is not None else content.function_call.id,
-                            result="Error: Tool call invocation was rejected by user.",
-                            additional_properties={
-                                **content.function_call.additional_properties,
-                                APPROVAL_REJECTION_RESULT_KEY: True,
-                            },
                         )
                     ]
                 if not replacements:

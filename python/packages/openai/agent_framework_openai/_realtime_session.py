@@ -129,6 +129,10 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         self._response_audio_formats: dict[str, str] = {}
         # Sent cuts outlive a cancelled caller, so their acknowledgements are still marked as the client's.
         self._truncate_cuts: dict[str, tuple[str, int, int]] = {}
+        # Hosted MCP calls that may be waiting for approval, by item id, with their server and tool, in the order added.
+        self._hosted_calls_awaiting_approval: dict[str, tuple[Any, Any]] = {}
+        # Some services report an item more than once, but the app must be asked once.
+        self._hosted_approval_requests: set[str] = set()
         # The session's own event ids share a prefix, so they're recognized without keeping one per audio chunk.
         self._event_id_prefix = f"af_{uuid.uuid4().hex[:12]}_"
         self._event_ids = itertools.count(1)
@@ -713,6 +717,16 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                         "output": _function_output(content.result),
                     })
                 )
+            elif (
+                content.type == "function_approval_response" and content.function_call and content.function_call.hosted
+            ):
+                wire_events.append(
+                    _item_create({
+                        "type": "mcp_approval_response",
+                        "approval_request_id": content.id,
+                        "approve": content.approved is True,
+                    })
+                )
             elif content.type in ("data", "uri") and content.has_top_level_media_type("audio"):
                 if content.type == "data":
                     wire_events.append({"type": "input_audio_buffer.append", "audio": content.get_data_base64()})
@@ -757,6 +771,13 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             self._session_state = dict(_mapping(wire.get("session")))
         elif event_type == "response.output_audio.delta":
             self._heard_output_audio = True
+        elif event_type == "conversation.item.added" and _is_hosted_call_awaiting_approval(wire["item"]):
+            # Added before its response finishes; until it's approved, Voice Live reports nothing else about it.
+            item = wire["item"]
+            self._hosted_calls_awaiting_approval[item["id"]] = (item.get("server_label"), item.get("name"))
+        elif event_type in ("response.mcp_call.completed", "response.mcp_call.failed"):
+            # A call that needed no approval finishes inside its response, and no request will ever ask about it.
+            self._hosted_calls_awaiting_approval.pop(wire["item_id"], None)
         elif event_type == "error" and (echoed := _mapping(wire.get("error")).get("event_id")) in self._truncate_cuts:
             # A cancelled truncate can still be rejected; a later provider cut there mustn't be marked as ours.
             del self._truncate_cuts[echoed]
@@ -783,14 +804,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
             case "response.done":
                 return self._response_done_events(wire)
             case "conversation.item.added":
-                item = wire["item"]
-                core = {"item_id": item["id"], "previous_item_id": wire.get("previous_item_id")}
-                if item.get("type") == "message":
-                    core.update(_present(item, "role"))
-                    if item.get("role") == "user":
-                        content_parts = cast("list[Mapping[str, Any]]", item.get("content") or [])
-                        core["input_audio"] = any(part.get("type") == "input_audio" for part in content_parts)
-                return [self._event("item_added", wire, core=core)]
+                return self._item_added_events(wire)
             case "conversation.item.truncated":
                 core = {
                     **_present(wire, "item_id", "content_index", "audio_end_ms"),
@@ -826,6 +840,9 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 audio = Content.from_data(base64.b64decode(wire.get("delta") or ""), media_type)
                 core = _present(wire, "response_id", "item_id", "content_index")
                 return [self._payload("output_audio", wire, audio, core)]
+            case "response.mcp_call.completed" | "response.mcp_call.failed":
+                core = {"item_id": wire["item_id"], "status": event_type.rsplit(".", 1)[1]}
+                return [self._event("hosted_call_done", wire, core=core)]
             case "response.output_item.done" if wire["item"].get("type") == "function_call":
                 item = wire["item"]
                 call = Content.from_function_call(item["call_id"], item["name"], arguments=item.get("arguments"))
@@ -833,6 +850,50 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
                 return [self._payload("function_call", wire, call, core)]
             case _:
                 return [self._passthrough(wire)]
+
+    def _item_added_events(self, wire: dict[str, Any]) -> list[RealtimeEvent]:
+        """An item asking for a hosted call's approval is also the approval request, whichever event added it."""
+        item = wire["item"]
+        core = {"item_id": item["id"], "previous_item_id": wire.get("previous_item_id")}
+        if item.get("type") == "message":
+            core.update(_present(item, "role"))
+            if item.get("role") == "user":
+                content_parts = cast("list[Mapping[str, Any]]", item.get("content") or [])
+                core["input_audio"] = any(part.get("type") == "input_audio" for part in content_parts)
+        events = [self._event("item_added", wire, core=core)]
+        if item.get("type") == "mcp_approval_request" and item["id"] not in self._hosted_approval_requests:
+            self._hosted_approval_requests.add(item["id"])
+            events.append(self._hosted_approval_request(wire))
+        return events
+
+    def _hosted_approval_request(self, wire: dict[str, Any]) -> RealtimeEvent:
+        """The request names the hosted call it asks about, so the call's completion can be matched to it.
+
+        Providers link a request to its call only through ``previous_item_id``, which points at the wrong call when one
+        response makes several, so the request takes the earliest waiting call with its server and tool.
+        """
+        item = wire["item"]
+        asked_about = (item.get("server_label"), item.get("name"))
+        call_item_id = next(
+            (
+                waiting_id
+                for waiting_id, waiting in self._hosted_calls_awaiting_approval.items()
+                if waiting == asked_about
+            ),
+            item["id"],
+        )
+        self._hosted_calls_awaiting_approval.pop(call_item_id, None)
+        call = Content.from_function_call(
+            call_id=call_item_id,
+            name=item.get("name") or "",
+            arguments=item.get("arguments"),
+            hosted=True,
+            server_name=item.get("server_label"),
+        )
+        request = Content.from_function_approval_request(id=item["id"], function_call=call)
+        return RealtimeEvent(
+            "function_approval_request", content=request, service_event_type=wire["type"], raw_representation=wire
+        )
 
     def _response_done_events(self, wire: dict[str, Any]) -> list[RealtimeEvent]:
         """One response.done as usage, error if it failed, then response_done, so a reader stopping there saw both."""
@@ -991,6 +1052,10 @@ def _voice_echoed(requested: Any, echoed: Any) -> bool:
 def _truncation_cut(wire: dict[str, Any]) -> tuple[Any, Any, Any]:
     """Repeated cuts can share an item, so all three coordinates identify an acknowledgement."""
     return (wire.get("item_id"), wire.get("content_index"), wire.get("audio_end_ms"))
+
+
+def _is_hosted_call_awaiting_approval(item: Mapping[str, Any]) -> bool:
+    return item.get("type") == "mcp_call" and item.get("output") is None and item.get("error") is None
 
 
 def _is_out_of_band(wire: dict[str, Any]) -> bool:

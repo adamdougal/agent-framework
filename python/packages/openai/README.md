@@ -177,6 +177,10 @@ version, so an injected `AsyncAzureOpenAI` client is rejected; inject an `AsyncO
 `truncation`, `reasoning_effort`, `parallel_tool_calls`, semantic VAD `eagerness`, an `idle_timeout_ms` and a
 transcription `prompt`.
 
+`OpenAIRealtimeClient.get_mcp_tool(...)` declares a hosted MCP server that the realtime service calls itself, with the
+same parameters as `OpenAIChatClient.get_mcp_tool(...)`. A tool that needs approval streams a `function_approval_request`
+whose `function_call` has `hosted=True`, and the app answers it through `send(...)`.
+
 ### Realtime sessions
 
 `OpenAIRealtimeSession` implements the realtime session protocol for any service that speaks the OpenAI Realtime

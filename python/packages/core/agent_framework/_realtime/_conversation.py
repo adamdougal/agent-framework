@@ -20,7 +20,13 @@ from .._mcp import MCPTool
 from .._middleware import categorize_middleware
 from .._sessions import AgentSession, HistoryProvider, SessionContext
 from .._tools import normalize_tools
-from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
+from .._types import (
+    AgentResponseUpdate,
+    Content,
+    Message,
+    _append_instructions,  # pyright: ignore[reportPrivateUsage]
+    normalize_messages,
+)
 from ..exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -29,6 +35,7 @@ from ..exceptions import (
     RealtimeException,
 )
 from ._acknowledgements import AcknowledgedT, await_acknowledgement
+from ._app_input import AppInput, declined_note
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._handoffs import CallSettings, handoff_completed, participant_update, start_settings
@@ -49,7 +56,7 @@ CALLER_TRANSCRIPT_WAIT_SECONDS = 3.0
 if TYPE_CHECKING:
     from .._middleware import FunctionMiddlewareTypes
     from .._tools import FunctionInvocationConfiguration, ToolTypes
-    from .._types import AgentRunInputs, Message
+    from .._types import AgentRunInputs
     from ._agent import RawRealtimeAgent
     from ._clients import RealtimeClientSessionProtocol
 
@@ -122,6 +129,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._receive_task: asyncio.Task[None] | None = None
         self._responses = ResponseLedger()
+        self._app_input = AppInput()
         self._caller_quiet = asyncio.Event()
         self._caller_quiet.set()
         if agent_session is None and agent.context_providers:
@@ -136,6 +144,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             conversation=self,
             owner=agent,
             responses=self._responses,
+            emit=self._emit,
+            app_input=self._app_input,
         )
         self._audio = AudioLedger()
         self._history = CallHistory()
@@ -349,6 +359,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             truncations = self._audio.on_item_truncated(event)
             self._cut_unheard(truncations, self._mark_unheard_text(self._audio.response_cut_at(core["item_id"])))
             self._history.on_item_truncated(event, self._audio.generated_ms(core["item_id"], core["content_index"]))
+        elif event.kind == "function_approval_request" and event.content is not None:
+            self._app_input.hosted_request(event.content)
+        elif event.kind == "hosted_call_done":
+            self._tool_loop.on_hosted_call_done(core["item_id"])
         elif event.kind == "input_transcription":
             self._history.on_input_transcription(event)
         elif event.kind == "input_transcription_failed":
@@ -405,6 +419,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         committed. Any other input starts a new tool chain, so the tool loop's limits count afresh, and then requests a
         response unless ``create_response`` is ``False``. Adding the input never waits behind a control call.
 
+        Function results and approval responses answer calls waiting for the app: a call to a tool that needs approval,
+        a declaration-only tool, or a tool that raised ``UserInputRequiredException``. Each goes to its call's batch,
+        which sends the results and requests the follow-up once every call in it has one, so an answer starts no tool
+        chain and requests no response. A result names its call by the occurrence ``id`` the call streamed with, or by
+        its ``call_id``. The app can answer a declaration-only tool's call as soon as it streams. An approval runs the
+        call as the conversation received it, whatever call the response embeds. Other input sent alongside answers is
+        handled as above.
+
         Args:
             value: The input, or a raw provider command.
 
@@ -412,8 +434,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             create_response: Whether to request a response after adding text or message input.
 
         Raises:
-            ValueError: If the input holds a function result or approval response; no call in this conversation waits
-                for the app's answer.
+            ValueError: If the input holds a function result or approval response that answers nothing the
+                conversation is waiting for; nothing is sent.
             RealtimeActiveResponseException: If a response is requested while another is active. The input has
                 already been added.
             RealtimeConversationClosedException: If the conversation has started closing.
@@ -426,7 +448,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 await self._require_open_session().send(value)
             return
         messages = normalize_messages(value)
-        _reject_app_input_for_calls(messages)
+        answers = [content for message in messages for content in message.contents if _is_an_answer(content)]
+        if answers:
+            if hosted_answers := self._app_input.route(answers):
+                await self._send_hosted_answers(hosted_answers)
+            messages = _without_answers(messages)
+            if not messages:
+                return
         async with self._write_lock:
             for message in messages:
                 # Close may have started while this send waited its turn, or while an earlier message went out.
@@ -436,6 +464,16 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._tool_loop.on_new_input()
         if create_response:
             await self.create_response()
+
+    async def _send_hosted_answers(self, answers: list[Content]) -> None:
+        """The provider runs or skips the hosted call itself; the loop only follows up."""
+        declined = [declined_note(answer) for answer in answers if not answer.approved]
+        async with self._write_lock:
+            session = self._require_open_session()
+            await session.send(Message("user", answers))
+            if declined:
+                await session.send(Message("system", declined))
+        self._tool_loop.on_hosted_answers(answers)
 
     async def _add_app_input(self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], message: Message) -> None:
         await session.send(message)
@@ -885,15 +923,18 @@ async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any])
         logger.warning("Closing the realtime session after entry failed also failed: %s", error)
 
 
-def _reject_app_input_for_calls(messages: Sequence[Message]) -> None:
-    """No call in this conversation waits for app input, so a result or approval would answer a call twice."""
+def _is_an_answer(content: Content) -> bool:
+    return content.type in ("function_result", "function_approval_response")
+
+
+def _without_answers(messages: Sequence[Message]) -> list[Message]:
+    remaining: list[Message] = []
     for message in messages:
-        for content in message.contents:
-            if content.type in ("function_result", "function_approval_response"):
-                raise ValueError(
-                    f"{content.type} content answers a call that's waiting for the app, and this conversation has "
-                    "none: its tool loop runs every call itself."
-                )
+        contents = [content for content in message.contents if not _is_an_answer(content)]
+        if contents:
+            remaining.append(copy.copy(message))
+            remaining[-1].contents = contents
+    return remaining
 
 
 def _is_audio_only(messages: Sequence[Message]) -> bool:

@@ -83,11 +83,18 @@ calls and word timestamps. For your own deployment, pass `profile="byom-azure-op
 - Audio, both ways, may be 8, 16 or 24 kHz PCM, or G.711. Voice Live rejects a change to the caller audio's
   sampling rate once the session has started.
 
+Voice Live can also run tools itself. `VoiceLiveClient.get_mcp_tool(...)` declares a hosted MCP server, and
+`VoiceLiveClient.get_foundry_agent_tool(...)` a Foundry agent the realtime model hands harder requests to. The agent never
+runs these tools. A hosted MCP tool that needs approval streams a `function_approval_request` whose `function_call` has
+`hosted=True`, and the app answers it through `send(...)`, as it answers a local tool's approval.
+
 See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py), and, for a realtime
 agent's live conversation, the [session update](../../samples/02-agents/providers/foundry/voice_live_session_update.py),
 [filler line](../../samples/02-agents/providers/foundry/voice_live_filler_line.py),
-[MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py) and
-[handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py) samples.
+[MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py),
+[handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py),
+[tool approval](../../samples/02-agents/providers/foundry/voice_live_tool_approval.py) and
+[app-run tool](../../samples/02-agents/providers/foundry/voice_live_app_tool.py) samples.
 
 ## Embeddings
 

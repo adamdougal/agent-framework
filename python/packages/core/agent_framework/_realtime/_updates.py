@@ -21,6 +21,8 @@ _ASSISTANT_KINDS = frozenset({
     "output_text",
     "output_audio",
     "function_call",
+    "function_approval_request",
+    "hosted_call_done",
     "usage",
 })
 
@@ -62,6 +64,17 @@ def tool_result_update(result: Content, *, response_id: str, author: BaseAgent) 
     return AgentResponseUpdate(
         contents=[result],
         role="tool",
+        author_name=author.name,
+        agent_id=author.id,
+        response_id=response_id,
+    )
+
+
+def app_request_update(requests: list[Content], *, response_id: str, author: BaseAgent) -> AgentResponseUpdate:
+    """What a call asks of the app, such as an approval, credited like the call's result."""
+    return AgentResponseUpdate(
+        contents=requests,
+        role="assistant",
         author_name=author.name,
         agent_id=author.id,
         response_id=response_id,
