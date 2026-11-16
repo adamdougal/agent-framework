@@ -509,9 +509,11 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 - **Foundry voice agents.** A topology has at most one `FoundryVoiceAgent`, because each builds its own client and
   participants share one; the other participants use `foundry_agent.client`. Its instructions, tools, voice and tool
   choice are its agent definition's, read when it's entered, so they apply at start, on a handoff to it and on a handoff
-  back, as any participant's own settings do. Any tool in the call can implement a definition function, such as a
-  handoff tool. Definitions published by Semantic Kernel use tool names such as `<Plugin>-<function>` and
-  `Handoff-handoff_to_<name>`, so they must be republished to match Agent Framework's tool names.
+  back, as any participant's own settings do. Every session opens on the definition's settings, so another start agent
+  that sets no tool choice starts with `"auto"`, as after a handoff. Any tool in the call can implement a definition
+  function, such as a handoff tool. Definitions published by Semantic Kernel use tool names such as
+  `<Plugin>-<function>` and `Handoff-handoff_to_<name>`, so they must be republished to match Agent Framework's tool
+  names.
 
 ## Middleware
 
