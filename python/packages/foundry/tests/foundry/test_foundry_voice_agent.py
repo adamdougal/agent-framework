@@ -549,6 +549,28 @@ async def test_a_client_can_be_entered_again_after_it_exits_and_keeps_its_defini
     assert created[-1].connect_calls
 
 
+async def test_a_failed_definition_read_closes_the_project_client_it_created(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A client built from an endpoint and credential, entered with a version the agent doesn't have, raises the
+    lookup's error and closes the AIProjectClient it created."""
+    created: list[FakeProjectClient] = []
+
+    def create_project_client(**kwargs: Any) -> FakeProjectClient:
+        created.append(FakeProjectClient())
+        return created[-1]
+
+    monkeypatch.setattr(voice_client_module, "AIProjectClient", create_project_client)
+    client = FoundryVoiceAgentClient(
+        project_endpoint=ENDPOINT, credential=StaticTokenCredential(), agent_name="receptionist", agent_version="9"
+    )
+
+    with pytest.raises(KeyError):
+        async with client:
+            pass
+
+    [project] = created
+    assert project.closed
+
+
 # endregion
 
 # region The handshake
@@ -1099,6 +1121,20 @@ async def test_the_apps_default_voice_and_tool_choice_win_over_the_definitions()
 
     async with agent:
         assert (agent.default_options["voice"], agent.default_options["tool_choice"]) == (SONIA, "none")
+
+
+async def test_the_apps_default_instructions_win_over_the_definitions() -> None:
+    """An agent built with default_options instructions 'Always speak French.' keeps them after entering, though the
+    definition sets others."""
+    agent = FoundryVoiceAgent(
+        project_client=FakeProjectClient().as_project_client(),
+        agent_name="receptionist",
+        agent_version="3",
+        default_options={"instructions": "Always speak French."},
+    )
+
+    async with agent:
+        assert agent.instructions == "Always speak French."
 
 
 # endregion

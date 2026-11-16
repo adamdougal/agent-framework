@@ -161,7 +161,11 @@ class FoundryVoiceAgentClient:
             endpoint, credential = self._project_access
             self._project_client = AIProjectClient(endpoint=endpoint, credential=credential)
         if self.definition is None:
-            await self._read_definition()
+            try:
+                await self._read_definition()
+            except BaseException:
+                await self._close_owned_project_client()
+                raise
         return self
 
     async def __aexit__(
@@ -170,6 +174,9 @@ class FoundryVoiceAgentClient:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        await self._close_owned_project_client()
+
+    async def _close_owned_project_client(self) -> None:
         if self._project_access is not None and self._project_client is not None:
             await self._project_client.close()
             self._project_client = None

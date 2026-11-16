@@ -97,8 +97,8 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
                 version when the agent is first entered.
             credential: An async token credential for the ``https://ai.azure.com/.default`` scope.
             tools: Implementations of the definition's functions, matched by name, and any tools to add.
-            default_options: Session settings every conversation starts with. A voice or tool choice here replaces the
-                definition's.
+            default_options: Session settings every conversation starts with. Instructions, a voice or a tool choice
+                here replace the definition's.
             function_invocation_configuration: Limits and settings for the tool loop.
             id: The agent's id. A new one is generated when ``None``.
             name: The agent's name, which its updates carry as their author. Defaults to the agent name.
@@ -138,7 +138,8 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
         """Read the definition the first time the agent is entered, and connect its MCP tools."""
         await self._exit_stack.enter_async_context(self.client)
         definition = cast("Mapping[str, Any]", self.client.definition)
-        self.instructions = definition.get("instructions")
+        if self.instructions is None:
+            self.instructions = definition.get("instructions")
         self.default_options = {**_published_defaults(definition), **self.default_options}
         await super().__aenter__()
         return self
