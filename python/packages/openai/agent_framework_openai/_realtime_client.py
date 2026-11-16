@@ -67,6 +67,7 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
         *,
         api_key: str | SecretString | Callable[[], str | Awaitable[str]] | None = None,
         credential: AzureCredentialTypes | AzureTokenProvider | None = None,
+        org_id: str | None = None,
         azure_endpoint: str | None = None,
         base_url: str | None = None,
         async_client: AsyncOpenAI | None = None,
@@ -83,6 +84,7 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
                 ``OPENAI_API_KEY`` or ``AZURE_OPENAI_API_KEY`` when not passed.
             credential: An Azure credential or token provider, for the ``cognitiveservices`` scope. Passing it routes to
                 Azure OpenAI. The client never closes it.
+            org_id: The OpenAI organization ID, on OpenAI only. Read from ``OPENAI_ORG_ID`` when not passed.
             azure_endpoint: The Azure OpenAI resource endpoint, such as ``https://<resource>.openai.azure.com``. Read
                 from ``AZURE_OPENAI_ENDPOINT`` when not passed.
             base_url: A base URL: on OpenAI, in place of the default; on Azure OpenAI, the full ``.../openai/v1`` URL in
@@ -107,9 +109,11 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
             model=model,
             api_key=api_key,
             credential=credential,
-            org_id=None,
+            org_id=org_id,
             base_url=base_url,
             endpoint=azure_endpoint,
+            # Azure's GA realtime route, /openai/v1, takes no API version, and azure_v1_route keeps any set in
+            # AZURE_OPENAI_API_VERSION off the client too.
             api_version=None,
             default_azure_api_version="",
             client=async_client,
@@ -127,6 +131,11 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
         self.model: str = settings["model"]
         if use_azure:
             self.OTEL_PROVIDER_NAME = "azure.ai.openai"  # type: ignore[misc]
+        # Before 3.36, the SDK sends none of the client's default headers on the handshake, so these go explicitly.
+        # Azure routing never sends an OpenAI organization.
+        self._handshake_headers = prepend_agent_framework_to_user_agent()
+        if not use_azure and self._client.organization:
+            self._handshake_headers["OpenAI-Organization"] = self._client.organization
 
     async def start_session(
         self, *, options: OpenAIRealtimeOptionsT | None = None, tools: Sequence[ToolTypes] | None = None
@@ -154,8 +163,7 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
         try:
             sdk_connection = await self._client.realtime.connect(
                 model=self.model,
-                # Before 3.36, the SDK sends none of the client's default headers on the handshake.
-                extra_headers=prepend_agent_framework_to_user_agent(),
+                extra_headers=self._handshake_headers,
                 # openai 2.x negotiates permessage-deflate by default, which only costs CPU on compressed audio.
                 websocket_connection_options={"compression": None},
             ).enter()

@@ -412,6 +412,16 @@ async def test_openai_connects_to_the_realtime_path_with_its_model_and_key() -> 
     assert server.headers["Authorization"] == "Bearer sk-test"
 
 
+async def test_an_openai_organization_is_sent_on_the_handshake() -> None:
+    """With org_id "org-1" on OpenAI routing, the handshake carries OpenAI-Organization "org-1"."""
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", org_id="org-1", base_url=f"{server.url}/v1")
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert server.headers["OpenAI-Organization"] == "org-1"
+
+
 async def test_a_session_runs_over_the_connection() -> None:
     """start_session(options={"instructions": "Be brief."}) sends session.update with session {"type": "realtime",
     "instructions": "Be brief."} and returns on the server's session.updated; session.send(Message("user", ["Hi"]))
@@ -753,6 +763,17 @@ class TestVerification:
             await session.close()
 
         assert server.headers["Authorization"] == "Bearer token-6"
+
+    async def test_azure_routing_sends_no_openai_organization(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With OPENAI_ORG_ID "org-1" set, an Azure-routed handshake carries no OpenAI-Organization header."""
+        monkeypatch.setenv("OPENAI_ORG_ID", "org-1")
+
+        async with RealtimeServer() as server:
+            client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key="azure-key")
+            session = await asyncio.wait_for(client.start_session(), 5)
+            await session.close()
+
+        assert "OpenAI-Organization" not in server.headers
 
     def test_client_modules_import_without_websockets(self) -> None:
         """In a fresh interpreter, importing agent_framework_openai._realtime_client and
