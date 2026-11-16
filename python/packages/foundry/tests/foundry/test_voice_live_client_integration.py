@@ -21,6 +21,7 @@ from agent_framework.exceptions import (
     RealtimeControlException,
     RealtimeUnsupportedException,
 )
+from agent_framework.orchestrations import RealtimeHandoffBuilder
 from azure.identity.aio import AzureCliCredential
 
 from agent_framework_foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
@@ -35,6 +36,7 @@ pytestmark = [
 ]
 
 AVA: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
+ANDREW: AzureVoice = {"type": "azure-standard", "name": "en-US-AndrewNeural"}
 TURN_TIMEOUT = 60
 PCM_24K_BYTES_PER_SECOND = 48_000
 
@@ -241,6 +243,54 @@ async def test_cancel_and_truncate() -> None:
     truncated = next(event for event in reader.events if event.kind == "item_truncated")
     assert _core(truncated) == {"item_id": item_id, "content_index": 0, "audio_end_ms": 500, "truncated_by": "client"}
     assert caught.value.code == "response_cancel_not_active"
+
+
+async def test_a_handoff_tool_moves_the_call_to_its_target(caplog: pytest.LogCaptureFixture) -> None:
+    """A receptionist with voice en-US-AvaNeural, tool choice "required" and one handoff to billing, with voice
+    en-US-AndrewNeural, calls handoff_to_billing: handoff_completed streams from receptionist to billing, the reply
+    that follows is credited to billing, and no warning says the voice was dropped or ignored."""
+    async with asyncio.timeout(TURN_TIMEOUT), contextlib.AsyncExitStack() as stack:
+        credential = None
+        if not os.getenv("AZURE_VOICELIVE_API_KEY"):
+            credential = await stack.enter_async_context(AzureCliCredential())
+        client: VoiceLiveClient[VoiceLiveOptions] = VoiceLiveClient(credential=credential)
+        receptionist_options: VoiceLiveOptions = {"voice": AVA, "tool_choice": "required"}
+        billing_options: VoiceLiveOptions = {"voice": ANDREW}
+        call_options: VoiceLiveOptions = {"turn_detection": None}
+        receptionist = RealtimeAgent(
+            client,
+            name="receptionist",
+            instructions="Pass every caller to billing.",
+            default_options=receptionist_options,
+        )
+        billing = RealtimeAgent(
+            client, name="billing", instructions="Answer in one short sentence.", default_options=billing_options
+        )
+        agent = (
+            RealtimeHandoffBuilder(participants=[receptionist, billing], default_options=call_options)
+            .with_start_agent(receptionist)
+            .add_handoff(receptionist, [billing])
+            .build()
+        )
+        handoffs: list[Any] = []
+        billing_finals: list[str] = []
+        with caplog.at_level(logging.WARNING):
+            async with agent.start_conversation() as conversation:
+                await conversation.send("I have a question about my bill.")
+                async for update in conversation:
+                    for content in update.contents:
+                        if content.type == "realtime_event" and content.kind == "handoff_completed":
+                            handoffs.append(content.additional_properties["core"])
+                        elif (
+                            content.type == "text" and content.status == "completed" and update.author_name == "billing"
+                        ):
+                            billing_finals.append(content.text or "")
+                    if update.finish_reason == "stop":
+                        break
+
+    assert handoffs == [{"source": "receptionist", "target": "billing"}]
+    assert billing_finals
+    assert not [record for record in caplog.records if "voice" in record.getMessage().lower()]
 
 
 async def test_bad_credentials_raise() -> None:

@@ -64,6 +64,27 @@ workflow = (
 )
 ```
 
+### RealtimeHandoffBuilder (experimental)
+
+The same topology API for realtime agents. `build()` returns a realtime agent whose live calls move between
+participants in the same realtime session: a handoff swaps instructions, tools, voice and tool choice without
+reconnecting. The built agent owns the call's history, context providers and tool-loop limits, and its instructions
+are appended to every participant's. Participants must share one realtime client instance.
+
+```python
+from agent_framework.orchestrations import RealtimeHandoffBuilder
+
+agent = (
+    RealtimeHandoffBuilder(participants=[receptionist, billing])
+    .with_start_agent(receptionist)
+    .add_handoff(receptionist, [billing])
+    .build()
+)
+```
+
+Each `agent.start_conversation()` starts with the start agent speaking. See the
+[Voice Live handoff sample](../../samples/02-agents/providers/foundry/voice_live_handoff.py).
+
 ### GroupChatBuilder
 
 Orchestrator-directed multi-agent conversations:

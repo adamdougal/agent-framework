@@ -116,14 +116,19 @@ the root package:
 - `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
   options, tools and function middleware over the agent's, and adds an `InMemoryHistoryProvider` for a session as
   `Agent` does. `async with agent` connects the agent's MCP tools that aren't connected yet and closes, on exit, every
-  MCP tool the agent connected; it never closes one the app connected.
-- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls and the close sequence. It
-  owns the acknowledgement timeout and deduplicates unclaimed errors, and its `_dispatch` hands each event kind to the
-  concern modules below. Opening runs context providers' `before_run` and replays the history they load. At start
-  and on `update_session(tools=...)` it resolves its tools through `append_tools_with_mcp_functions(...)` in
-  `_agents.py`, which `RawAgent` shares: each MCP tool is replaced by its current functions in a list the conversation
-  owns, connected on first use into the starting agent's exit stack, so server-side tool-list changes wait for the
-  next update.
+  MCP tool the agent connected; it never closes one the app connected. Two protected hooks let an agent that owns a
+  handoff topology start its calls with another participant speaking and add each participant's handoff tools.
+- `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice) and
+  `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both compute the session's
+  settings here.
+- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls, including `handoff(...)`,
+  and the close sequence. It owns the acknowledgement timeout and deduplicates unclaimed errors, tracks the active
+  agent, and its `_dispatch` hands each event kind to the concern modules below. Opening runs context providers'
+  `before_run`, whose instructions, tools and function middleware hold for the whole call, and replays the history
+  they load. At start, on `update_session(tools=...)` and on `handoff(...)` it resolves its tools through
+  `append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is replaced by its
+  current functions in a list the conversation owns, connected on first use into the starting agent's exit stack, so
+  server-side tool-list changes wait for the next update.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
   timeout and until close starts, and lets a cancelled session call finish unwinding.
 - `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
@@ -133,7 +138,8 @@ the root package:
 - `_tool_loop.py` - `ToolLoop`, which runs each finished response's calls through `_execute_function_calls(...)`,
   sends the results, requests one follow-up per batch, and settles unfinished calls on close. It keeps the tools it
   runs in step with the tools the provider declares: tool-list changes a call makes with `ctx.add_tools()` or
-  `ctx.remove_tools()` go out as a session update before that batch's results.
+  `ctx.remove_tools()` go out as a session update before that batch's results. Each call runs through the function
+  middleware of the agent active when it arrived.
 - `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
   a provider truncation into truncates. It remembers where each response was cut, so the conversation can delete the
   response's later text-only messages, which truncation can't reach.

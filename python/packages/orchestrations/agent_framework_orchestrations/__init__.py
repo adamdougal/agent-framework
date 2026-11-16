@@ -41,9 +41,9 @@ from ._handoff import (
     HandoffAgentExecutor,
     HandoffAgentUserRequest,
     HandoffBuilder,
-    HandoffConfiguration,
     HandoffSentEvent,
 )
+from ._handoff_topology import HandoffConfiguration
 from ._magentic import (
     MAGENTIC_MANAGER_NAME,
     ORCH_MSG_KIND_INSTRUCTION,
@@ -67,6 +67,7 @@ from ._magentic import (
 from ._orchestration_request_info import AgentRequestInfoResponse
 from ._orchestration_state import OrchestrationState
 from ._orchestrator_helpers import clean_conversation_for_handoff, create_completion_message
+from ._realtime_handoff import RealtimeHandoffBuilder
 from ._sequential import SequentialBuilder
 
 __all__ = [
@@ -105,6 +106,7 @@ __all__ = [
     "MagenticProgressLedgerItem",
     "MagenticResetSignal",
     "OrchestrationState",
+    "RealtimeHandoffBuilder",
     "SequentialBuilder",
     "StandardMagenticManager",
     "TerminationCondition",

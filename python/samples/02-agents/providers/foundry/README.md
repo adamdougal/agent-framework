@@ -41,6 +41,7 @@ These need the realtime extra: `pip install "agent-framework-foundry[realtime]" 
 | [`voice_live_filler_line.py`](voice_live_filler_line.py) | Say a filler line with `say()` from function middleware while a slow tool runs |
 | [`voice_live_history.py`](voice_live_history.py) | Keep a realtime agent's calls in an agent session: print `conversation.history` at hang-up, and replay it into the next call |
 | [`voice_live_mcp_tool.py`](voice_live_mcp_tool.py) | Give a realtime agent a local MCP tool: the conversation declares the MCP server's tools and runs them in the app. Also needs `mcp` and `tenacity` |
+| [`voice_live_handoff.py`](voice_live_handoff.py) | Hand a live call from a receptionist to a billing specialist in the same session with `RealtimeHandoffBuilder`, each in its own voice |
 
 ## FoundryLocalClient Samples
 

@@ -85,8 +85,9 @@ calls and word timestamps. For your own deployment, pass `profile="byom-azure-op
 
 See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py), and, for a realtime
 agent's live conversation, the [session update](../../samples/02-agents/providers/foundry/voice_live_session_update.py),
-[filler line](../../samples/02-agents/providers/foundry/voice_live_filler_line.py) and
-[MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py) samples.
+[filler line](../../samples/02-agents/providers/foundry/voice_live_filler_line.py),
+[MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py) and
+[handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py) samples.
 
 ## Embeddings
 

@@ -344,6 +344,40 @@ async def test_an_update_after_close_connects_no_mcp_tool() -> None:
 
 # endregion
 
+# region Handoffs
+
+
+async def test_a_handoff_connects_the_targets_mcp_tool_and_declares_its_functions() -> None:
+    """handoff(billing) connects billing's orders tool and sends get_delivery_slots and book_delivery_slot."""
+    orders = _InProcessMCPTool(_orders_server())
+    client = FakeRealtimeClient()
+    receptionist = RealtimeAgent(client)
+    billing = RealtimeAgent(client, tools=[orders])
+
+    async with receptionist, receptionist.start_conversation() as conversation:
+        await conversation.handoff(billing)
+
+        assert orders.is_connected
+        assert _names(client.session.calls[-1][2]) == ["get_delivery_slots", "book_delivery_slot"]
+
+
+async def test_a_targets_mcp_tool_connected_by_a_handoff_closes_with_the_agent_that_started_the_call() -> None:
+    """Billing's orders tool stays connected after the conversation and closes when the receptionist exits."""
+    orders = _InProcessMCPTool(_orders_server())
+    client = FakeRealtimeClient()
+    receptionist = RealtimeAgent(client)
+    billing = RealtimeAgent(client, tools=[orders])
+
+    async with receptionist:
+        async with receptionist.start_conversation() as conversation:
+            await conversation.handoff(billing)
+        assert orders.is_connected
+
+    assert not orders.is_connected
+
+
+# endregion
+
 
 class TestVerification:
     async def test_mcp_functions_are_declared_in_the_mcp_tools_place(self) -> None:
