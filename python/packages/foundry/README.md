@@ -89,6 +89,47 @@ agent's live conversation, the [session update](../../samples/02-agents/provider
 [MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py) and
 [handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py) samples.
 
+## Foundry voice agents (experimental)
+
+`FoundryVoiceAgent` is a realtime agent for an agent published in your Foundry project as a voice agent. The published
+agent definition supplies its instructions, voice, tool choice and tools, and your app supplies Python implementations
+for the definition's functions, matched by name. It needs the realtime extra, and reads `FOUNDRY_PROJECT_ENDPOINT`,
+`FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` when they aren't passed.
+
+```python
+from agent_framework import tool
+from agent_framework.foundry import FoundryVoiceAgent
+from azure.identity.aio import AzureCliCredential
+
+
+@tool(description="Get the current time.")
+def get_current_time() -> str:
+    return "It's twelve noon."
+
+
+async with AzureCliCredential() as credential:
+    agent = FoundryVoiceAgent(agent_name="receptionist-voice", credential=credential, tools=[get_current_time])
+    async with agent, agent.start_conversation() as conversation:
+        await conversation.send("What time is it?")
+        ...
+```
+
+- Enter the agent with `async with`, or enter the `RealtimeHandoffBuilder` agent it belongs to, before starting a
+  conversation. Entering reads the definition once, through Foundry's agents API, and every call is pinned to that
+  version. Pin `agent_version` to choose the version yourself.
+- Any tool in a call can implement a definition function, such as a handoff tool. The definition's published
+  declarations are the ones sent, and a function nothing implements gets an error result, with a warning when a
+  session starts. Definitions published by Semantic Kernel name their tools `<Plugin>-<function>`, so republish them
+  with your Agent Framework tool names.
+- Settings your options don't set, such as transcription, turn detection and audio formats, stay the definition's.
+- In a handoff topology, other participants are realtime agents on `foundry_agent.client`, and handing back restores
+  the definition. Foundry rejects a change from an Azure voice to an OpenAI voice, which the client drops with a
+  warning, so keep a topology's voices in one family.
+- Hosted tools in the definition are re-sent as the agents API returns them. Keep their authorization in project
+  connections rather than inline secrets.
+
+See [the Foundry voice agent sample](../../samples/02-agents/providers/foundry/foundry_voice_agent.py).
+
 ## Embeddings
 
 `FoundryEmbeddingClient` supports OpenAI text embedding deployments exposed through a Microsoft Foundry project.

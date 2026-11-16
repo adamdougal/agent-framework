@@ -71,6 +71,10 @@ _IMPORTS: dict[str, tuple[str, str]] = {
     "AzureVoice": ("agent_framework_foundry", "agent-framework-foundry"),
     "VoiceLiveClient": ("agent_framework_foundry", "agent-framework-foundry"),
     "VoiceLiveOptions": ("agent_framework_foundry", "agent-framework-foundry"),
+    "FoundryVoiceAgent": ("agent_framework_foundry", "agent-framework-foundry"),
+    "FoundryVoiceAgentClient": ("agent_framework_foundry", "agent-framework-foundry"),
+    "FoundryVoiceAgentOptions": ("agent_framework_foundry", "agent-framework-foundry"),
+    "RawFoundryVoiceAgent": ("agent_framework_foundry", "agent-framework-foundry"),
 }
 
 

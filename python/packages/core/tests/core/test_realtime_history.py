@@ -812,6 +812,20 @@ async def test_history_providers_without_transcription_log_one_warning(
     assert sum("without text" in record.getMessage() for record in caplog.records) == warnings
 
 
+async def test_the_transcription_warning_reads_the_started_sessions_settings(caplog: pytest.LogCaptureFixture) -> None:
+    """With a history provider and no transcription option, a session whose own options report transcription, as a
+    provider's published defaults can, logs no 'without text' warning."""
+    client = FakeRealtimeClient()
+    client.session_defaults = _TRANSCRIBED
+    agent = RealtimeAgent(client, context_providers=[InMemoryHistoryProvider()])
+
+    with caplog.at_level(logging.WARNING):
+        async with agent.start_conversation():
+            pass
+
+    assert not [record for record in caplog.records if "without text" in record.getMessage()]
+
+
 # endregion
 
 # region Replay

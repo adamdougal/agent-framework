@@ -222,6 +222,8 @@ class FakeRealtimeClient:
         self.session_holds: dict[str, asyncio.Event] = {}
         self.service_session_state_keys: tuple[str, ...] = ()
         self.send_error: BaseException | None = None
+        self.session_defaults: RealtimeOptions = {}
+        """Settings each session reports beyond its start options, as a provider applies its own defaults."""
 
     @property
     def session(self) -> FakeRealtimeSession:
@@ -238,7 +240,7 @@ class FakeRealtimeClient:
             await self.start_session_release.wait()
         if self.start_session_error is not None:
             raise self.start_session_error
-        session = FakeRealtimeSession(options, tools)
+        session = FakeRealtimeSession({**self.session_defaults, **(options or {})}, tools)
         session.send_error = self.send_error
         for method, release in self.session_holds.items():
             session._holds[method] = release  # pyright: ignore[reportPrivateUsage]

@@ -24,6 +24,8 @@ if TYPE_CHECKING:
         evaluate_foundry_target,
         evaluate_traces,
     )
+    from ._foundry_voice_agent import FoundryVoiceAgent, RawFoundryVoiceAgent
+    from ._foundry_voice_client import FoundryVoiceAgentClient
     from ._memory_provider import FoundryMemoryProvider
     from ._realtime_options import (
         AzureAnimation,
@@ -34,6 +36,7 @@ if TYPE_CHECKING:
         AzureTranscription,
         AzureTurnDetection,
         AzureVoice,
+        FoundryVoiceAgentOptions,
         VoiceLiveOptions,
     )
     from ._to_prompt_agent import to_prompt_agent
@@ -63,11 +66,15 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "FoundryEmbeddingSettings": "._embedding_client",
     "FoundryEvals": "._foundry_evals",
     "FoundryMemoryProvider": "._memory_provider",
+    "FoundryVoiceAgent": "._foundry_voice_agent",
+    "FoundryVoiceAgentClient": "._foundry_voice_client",
+    "FoundryVoiceAgentOptions": "._realtime_options",
     "GeneratedEvaluatorRef": "._foundry_evals",
     "RawFoundryAgent": "._agent",
     "RawFoundryAgentChatClient": "._agent",
     "RawFoundryChatClient": "._chat_client",
     "RawFoundryEmbeddingClient": "._embedding_client",
+    "RawFoundryVoiceAgent": "._foundry_voice_agent",
     "VoiceLiveClient": "._voice_live",
     "VoiceLiveOptions": "._realtime_options",
     "evaluate_foundry_target": "._foundry_evals",
@@ -94,11 +101,15 @@ __all__ = [
     "FoundryEmbeddingSettings",
     "FoundryEvals",
     "FoundryMemoryProvider",
+    "FoundryVoiceAgent",
+    "FoundryVoiceAgentClient",
+    "FoundryVoiceAgentOptions",
     "GeneratedEvaluatorRef",
     "RawFoundryAgent",
     "RawFoundryAgentChatClient",
     "RawFoundryChatClient",
     "RawFoundryEmbeddingClient",
+    "RawFoundryVoiceAgent",
     "VoiceLiveClient",
     "VoiceLiveOptions",
     "__version__",

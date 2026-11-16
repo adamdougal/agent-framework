@@ -506,10 +506,12 @@ that starts as close begins is closed rather than adopted. Close also ends any r
   tools take turns, so of two handoffs in one response the first wins and the others return that failure result.
 - **Lifetime.** A handoff lasts for its realtime session; each `start_conversation(...)` and `run(...)` starts with the
   start agent.
-- **Foundry voice agents.** Only the start agent can be a `FoundryVoiceAgent`; other participants use its client. Its
-  instructions, tools, voice and tool choice come from the captured agent definition, at start and on a handoff back.
-  Definitions published by Semantic Kernel use tool names such as `<Plugin>-<function>` and `Handoff-handoff_to_<name>`,
-  so they must be republished to match Agent Framework's tool names.
+- **Foundry voice agents.** A topology has at most one `FoundryVoiceAgent`, because each builds its own client and
+  participants share one; the other participants use `foundry_agent.client`. Its instructions, tools, voice and tool
+  choice are its agent definition's, read when it's entered, so they apply at start, on a handoff to it and on a handoff
+  back, as any participant's own settings do. Any tool in the call can implement a definition function, such as a
+  handoff tool. Definitions published by Semantic Kernel use tool names such as `<Plugin>-<function>` and
+  `Handoff-handoff_to_<name>`, so they must be republished to match Agent Framework's tool names.
 
 ## Middleware
 
@@ -609,7 +611,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 - **Azure SDKs.** Each Azure client warns once when its SDK's instrumentor is active, naming the duplicate spans and how
   to turn it off. `VoiceLiveInstrumentor` adds a span per outbound event, including each audio append, so a 30-second
   call produced 1,176 spans. `FoundryVoiceAgentClient` injects `traceparent` and `tracestate`, never baggage, from the
-  conversation span when it connects, unless the app's `AIProjectInstrumentor` already does.
+  conversation span when it connects. `AIProjectInstrumentor` keeps trace headers already present.
 
 ## Provider clients
 
@@ -646,14 +648,21 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   `AZURE_VOICELIVE_ENDPOINT`, `AZURE_VOICELIVE_API_KEY`, `AZURE_VOICELIVE_MODEL` and `AZURE_VOICELIVE_API_VERSION`.
 - **Foundry voice agents.** `FoundryVoiceAgent` takes `project_client`, or `project_endpoint`, `agent_name`,
   `agent_version` and a `credential` for the `https://ai.azure.com/.default` scope. It reads the same `FOUNDRY_*`
-  variables as `FoundryAgent`, and other participants use `foundry_agent.client`. The client sends `agent_version` only
-  as the `x-agent-version-override` header, and connects through `AIProjectClient.beta.voice_agents.realtime.connect()`
-  with `api-version=v1` and `Foundry-Features: VoiceAgents=V1Preview`. Before sending anything it waits for the agent
-  definition's unsolicited `session.updated`, raising if it doesn't arrive within the acknowledgement timeout, and keeps
-  the definition read-only. It restores the definition's voice as an `AzureVoice` from `voice` and `voice_type`.
-  `tools=` supplies implementations matched by name; a definition function without one gets an error result and a
-  warning at start. Added tools are declared alongside the definition's tools, re-sent as published; with nothing added,
-  no `tools` key is sent. Both `conversation.item.created` and `.added` map to `item_added`.
+  variables as `FoundryAgent`, and other participants use `foundry_agent.client`. Entering it, directly or through the
+  handoff agent it belongs to, reads the agent definition through Foundry's agents API, `agent_version` or else the
+  latest version, once for its lifetime, and a conversation can't start before then. The client keeps the definition
+  read-only, and pins every session to that version with the `x-agent-version-override` header, because
+  `azure-ai-projects` 2.7's `connect(agent_version=...)` forwards the keyword into the websocket handshake. It connects
+  through `AIProjectClient.beta.voice_agents.realtime.connect()` with `api-version=v1` and
+  `Foundry-Features: VoiceAgents=V1Preview`. Before sending anything, each session waits for the definition's
+  unsolicited `session.updated`, raising if it doesn't arrive within the acknowledgement timeout, and its `options`
+  start from the audio settings that definition applies. The agent restores the definition's voice as an `AzureVoice`
+  from `voice`, `voice_type` and every other voice field the definition stores. `tools=` supplies implementations
+  matched by name; any tool in the call can implement a definition function, its published declaration is the one
+  sent, and a definition function nothing implements gets an error result and a warning at start. Added tools are
+  declared alongside the definition's tools, re-sent as published; when the session already declares the definition's
+  tools and nothing is added, no `tools` key is sent. Both `conversation.item.created` and `.added` map to
+  `item_added`.
 - **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]`, with `websockets>=13,<16`.
   `agent-framework-foundry[realtime]` adds `azure-ai-voicelive[aiohttp]>=1.3.1,<2` and raises `azure-ai-projects` to
   `>=2.7,<2.10`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
