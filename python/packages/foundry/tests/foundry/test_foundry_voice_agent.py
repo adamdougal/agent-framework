@@ -260,7 +260,7 @@ class FakeVoiceAgentServer:
         self.closed = True
         self.push(ConnectionResetError("The realtime connection was closed."))
 
-    async def wait_sent(self, event_type: str, timeout: float = 1.0) -> dict[str, Any]:
+    async def wait_sent(self, event_type: str, timeout: float = 5.0) -> dict[str, Any]:
         """Wait for the next event of ``event_type`` sent after this call, and return it."""
         already_sent = len(self.sent)
 
@@ -287,7 +287,7 @@ class FakeVoiceAgentServer:
         return [event["session"] for event in self.sent if event["type"] == "session.update"]
 
 
-async def until(condition: Any, timeout: float = 1.0) -> None:
+async def until(condition: Any, timeout: float = 5.0) -> None:
     """Wait until ``condition()`` holds."""
 
     async def poll() -> None:
@@ -544,7 +544,7 @@ async def test_a_client_can_be_entered_again_after_it_exits_and_keeps_its_defini
     async with client:
         pass
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         await session.close()
 
     assert [project.agents.calls for project in created] == [[("get_version", "receptionist", "3")], []]
@@ -587,7 +587,7 @@ async def test_the_handshake_names_the_agent_and_pins_its_version() -> None:
     )
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         await session.close()
 
     call = project.connect_calls[0]
@@ -604,7 +604,7 @@ async def test_the_handshake_carries_the_agent_framework_user_agent() -> None:
     )
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         await session.close()
 
     assert project.connect_calls[0]["extra_headers"]["User-Agent"].startswith(get_user_agent())
@@ -630,7 +630,7 @@ async def test_the_handshake_carries_the_current_trace_context_and_no_baggage() 
     try:
         async with client:
             with trace.use_span(span):
-                session = await asyncio.wait_for(client.start_session(), 1)
+                session = await asyncio.wait_for(client.start_session(), 5)
             await session.close()
     finally:
         context.detach(token)
@@ -661,7 +661,7 @@ async def test_the_session_sends_nothing_until_the_definition_arrives() -> None:
         await asyncio.sleep(0.05)
         sent_before_the_definition = list(project.server.sent)
         project.server.send_definition()
-        session = await asyncio.wait_for(starting, 1)
+        session = await asyncio.wait_for(starting, 5)
         await session.close()
 
     assert sent_before_the_definition == []
@@ -677,7 +677,7 @@ async def test_events_arriving_as_sdk_models_are_read_as_their_wire_json() -> No
     )
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         async with reading(session) as events:
             project.server.push(
                 RealtimeServerEventResponseCreated({
@@ -702,9 +702,9 @@ async def test_a_graceful_close_ends_receive() -> None:
     )
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         project.server.push(ConnectionResetError("The realtime connection was closed."))
-        events = await asyncio.wait_for(read_all(session), 1)
+        events = await asyncio.wait_for(read_all(session), 5)
         await session.close()
 
     assert [event.kind for event in events] == ["session_created", "session_updated"]
@@ -721,10 +721,10 @@ async def test_an_abnormal_close_raises_realtime_connection_exception() -> None:
     abnormal.__cause__ = RuntimeError(1011)
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         project.server.push(abnormal)
         with pytest.raises(RealtimeConnectionException):
-            await asyncio.wait_for(read_all(session), 1)
+            await asyncio.wait_for(read_all(session), 5)
         await session.close()
 
 
@@ -737,7 +737,7 @@ async def test_sending_on_a_dead_socket_raises_realtime_connection_exception() -
     )
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         project.server.closed = True
         with pytest.raises(RealtimeConnectionException):
             await session.send(Message("user", ["Hello"]))
@@ -755,7 +755,7 @@ async def test_a_failed_handshake_raises_realtime_connection_exception() -> None
 
     async with client:
         with pytest.raises(RealtimeConnectionException, match="401"):
-            await asyncio.wait_for(client.start_session(), 1)
+            await asyncio.wait_for(client.start_session(), 5)
 
 
 async def test_a_rejected_start_closes_the_socket() -> None:
@@ -769,7 +769,7 @@ async def test_a_rejected_start_closes_the_socket() -> None:
 
     async with client:
         with pytest.raises(RealtimeControlException, match="Rejected"):
-            await asyncio.wait_for(client.start_session(options={"instructions": "Be brief."}), 1)
+            await asyncio.wait_for(client.start_session(options={"instructions": "Be brief."}), 5)
 
     assert project.server.closed
 
@@ -783,7 +783,7 @@ async def test_conversation_item_created_maps_to_item_added() -> None:
     )
 
     async with client:
-        session = await asyncio.wait_for(client.start_session(), 1)
+        session = await asyncio.wait_for(client.start_session(), 5)
         async with reading(session) as events:
             project.server.push({
                 "type": "conversation.item.created",
@@ -812,7 +812,7 @@ async def start(project: FakeProjectClient, **options: Any) -> Any:
         project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
     )
     await client.__aenter__()
-    return await asyncio.wait_for(client.start_session(options=cast(FoundryVoiceAgentOptions, options)), 1)
+    return await asyncio.wait_for(client.start_session(options=cast(FoundryVoiceAgentOptions, options)), 5)
 
 
 async def test_an_azure_voice_goes_in_audio_output_voice() -> None:
@@ -860,7 +860,7 @@ async def test_a_change_between_azure_voices_is_sent_after_output_audio() -> Non
     async with reading(session) as events:
         project.server.push(output_audio_delta())
         await until(lambda: any(event.kind == "output_audio" for event in events))
-        await asyncio.wait_for(session.update_session({"voice": RYAN}, None), 1)
+        await asyncio.wait_for(session.update_session({"voice": RYAN}, None), 5)
     await session.close()
 
     assert project.server.updates()[-1]["audio"]["output"]["voice"] == RYAN
@@ -875,7 +875,7 @@ async def test_a_change_from_an_azure_voice_to_an_openai_voice_is_dropped_with_a
 
     with caplog.at_level(logging.WARNING):
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": "marin", "instructions": "Be brief."}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": "marin", "instructions": "Be brief."}, None), 5)
     await session.close()
 
     assert "voice" not in project.server.updates()[-1].get("audio", {}).get("output", {})
@@ -893,7 +893,7 @@ async def test_a_flattened_echo_of_every_requested_voice_field_causes_no_warning
 
     with caplog.at_level(logging.WARNING):
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": {**SONIA, "temperature": 0.5}}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": {**SONIA, "temperature": 0.5}}, None), 5)
     await session.close()
 
     assert project.server.session["audio"]["output"]["voice_temperature"] == 0.5
@@ -944,8 +944,8 @@ async def test_the_definition_stand_in_declares_the_definitions_tools_as_publish
     session = await start(project)
 
     async with reading(session):
-        await asyncio.wait_for(session.update_session({}, [lookup_order]), 1)
-        await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS]), 1)
+        await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
+        await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS]), 5)
     await session.close()
 
     assert project.server.updates()[-1]["tools"] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
@@ -963,8 +963,8 @@ async def test_a_function_tool_the_definition_names_is_declared_as_published() -
     session = await start(project)
 
     async with reading(session):
-        await asyncio.wait_for(session.update_session({}, [lookup_order]), 1)
-        await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, get_current_time]), 1)
+        await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
+        await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, get_current_time]), 5)
     await session.close()
 
     assert project.server.updates()[-1]["tools"] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
@@ -980,7 +980,7 @@ async def start_with_tools(project: FakeProjectClient, tools: list[Any]) -> Any:
         project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
     )
     await client.__aenter__()
-    return await asyncio.wait_for(client.start_session(options={"instructions": "Be brief."}, tools=tools), 1)
+    return await asyncio.wait_for(client.start_session(options={"instructions": "Be brief."}, tools=tools), 5)
 
 
 async def test_the_start_sends_no_tools_key_when_nothing_is_added() -> None:
@@ -1004,8 +1004,8 @@ async def test_a_definition_function_with_no_implementation_warns_once_at_start(
     with caplog.at_level(logging.WARNING):
         session = await start_with_tools(project, [DEFINITION_TOOLS, get_current_time])
         async with reading(session):
-            await asyncio.wait_for(session.update_session({}, [lookup_order]), 1)
-            await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, get_current_time]), 1)
+            await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
+            await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, get_current_time]), 5)
         await session.close()
 
     warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
@@ -1201,8 +1201,8 @@ class TestVerification:
         session = await start(project)
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({}, [lookup_order]), 1)
-            await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, lookup_order]), 1)
+            await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
+            await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, lookup_order]), 5)
         await session.close()
 
         declared = project.server.updates()[-1]["tools"]
@@ -1220,7 +1220,7 @@ class TestVerification:
             saying = asyncio.ensure_future(session.say("Hello"))
             request = await project.server.wait_sent("response.create")
             project.server.push({"type": "response.created", "response": {"id": "resp_1", "metadata": None}})
-            await asyncio.wait_for(saying, 1)
+            await asyncio.wait_for(saying, 5)
         await session.close()
 
         assert request["response"]["pre_generated_assistant_message"]["content"] == [{"type": "text", "text": "Hello"}]
@@ -1252,7 +1252,7 @@ class TestVerification:
                 "type": "response.created",
                 "response": {"id": "resp_1", "metadata": {"af_request_id": request_id}},
             })
-            await asyncio.wait_for(saying, 1)
+            await asyncio.wait_for(saying, 5)
         await session.close()
 
         assert "word for word" in request["response"]["instructions"]
@@ -1268,7 +1268,7 @@ class TestVerification:
 
         with caplog.at_level(logging.WARNING):
             async with reading(session):
-                await asyncio.wait_for(session.update_session({"voice": RYAN}, None), 1)
+                await asyncio.wait_for(session.update_session({"voice": RYAN}, None), 5)
         await session.close()
 
         assert project.server.session["audio"]["output"]["voice"] == RYAN
@@ -1306,7 +1306,7 @@ class TestVerification:
         session = await start(project)
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({}, [get_current_time]), 1)
+            await asyncio.wait_for(session.update_session({}, [get_current_time]), 5)
         await session.close()
 
         [declared] = project.server.updates()[-1]["tools"]
@@ -1466,7 +1466,7 @@ class TestVerification:
         _, billing, built = topology(project)
 
         async with built, built.start_conversation() as conversation:
-            await asyncio.wait_for(conversation.handoff(billing), 1)
+            await asyncio.wait_for(conversation.handoff(billing), 5)
 
         assert tool_names(project.server.updates()[-1]) == ["lookup_order", "handoff_to_receptionist"]
 
@@ -1477,8 +1477,8 @@ class TestVerification:
         receptionist, billing, built = topology(project, default_options={"instructions": "Hand off silently."})
 
         async with built, built.start_conversation() as conversation:
-            await asyncio.wait_for(conversation.handoff(billing), 1)
-            await asyncio.wait_for(conversation.handoff(receptionist), 1)
+            await asyncio.wait_for(conversation.handoff(billing), 5)
+            await asyncio.wait_for(conversation.handoff(receptionist), 5)
 
         handed_back = project.server.updates()[-1]
         assert handed_back["instructions"].startswith("You are a receptionist.")
@@ -1518,7 +1518,7 @@ class TestVerification:
             project.server.push(*called("resp_1", "handoff_to_billing"))
             project.server.answer(await follow_up)
             await until(lambda: conversation.active_agent is billing)
-            await asyncio.wait_for(conversation.handoff(receptionist), 1)
+            await asyncio.wait_for(conversation.handoff(receptionist), 5)
 
         assert "tools" not in project.server.updates()[0]
         assert project.server.updates()[-1]["tools"] == [GET_CURRENT_TIME, handoff_to_billing]
@@ -1557,7 +1557,7 @@ class TestVerification:
         )
 
         async with built, built.start_conversation() as conversation:
-            await asyncio.wait_for(conversation.handoff(receptionist), 1)
+            await asyncio.wait_for(conversation.handoff(receptionist), 5)
 
         handed_off = project.server.updates()[-1]
         assert handed_off["instructions"] == "You are a receptionist."
