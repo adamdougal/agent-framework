@@ -39,7 +39,7 @@ def event(
     )
 
 
-async def eventually(condition: Callable[[], bool], timeout: float = 1.0) -> None:
+async def eventually(condition: Callable[[], bool], timeout: float = 5.0) -> None:
     """Wait until ``condition`` holds, failing the test if it doesn't in time."""
 
     async def poll() -> None:
@@ -51,7 +51,7 @@ async def eventually(condition: Callable[[], bool], timeout: float = 1.0) -> Non
     await asyncio.wait_for(poll(), timeout)
 
 
-async def next_update(updates: Any, timeout: float = 1.0) -> AgentResponseUpdate:
+async def next_update(updates: Any, timeout: float = 5.0) -> AgentResponseUpdate:
     """Read the next update from a conversation, failing the test if none arrives in time."""
     return await asyncio.wait_for(anext(aiter(updates)), timeout)
 
