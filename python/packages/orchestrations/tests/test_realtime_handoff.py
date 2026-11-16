@@ -5,6 +5,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from types import TracebackType
 from typing import Any, cast
 
 import pytest
@@ -410,6 +411,39 @@ async def test_the_built_agents_function_middleware_wraps_every_call_outside_the
         await _eventually(lambda: bool(_results(client.session)))
 
     assert seen == ["built", "billing"]
+
+
+class _LifecycleRecordingAgent(RealtimeAgent):
+    def __init__(self, client: FakeRealtimeClient, name: str, events: list[str]) -> None:
+        super().__init__(client, name=name)  # type: ignore[arg-type]
+        self.events = events
+
+    async def __aenter__(self) -> "_LifecycleRecordingAgent":
+        self.events.append(f"enter {self.name}")
+        return await super().__aenter__()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.events.append(f"exit {self.name}")
+        await super().__aexit__(exc_type, exc_value, traceback)
+
+
+async def test_entering_the_built_agent_enters_every_participant_until_it_exits() -> None:
+    client = FakeRealtimeClient()
+    events: list[str] = []
+    receptionist = _LifecycleRecordingAgent(client, "receptionist", events)
+    billing = _LifecycleRecordingAgent(client, "billing", events)
+    agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+
+    async with agent:
+        entered = sorted(events)
+
+    assert entered == ["enter billing", "enter receptionist"]
+    assert sorted(events[2:]) == ["exit billing", "exit receptionist"]
 
 
 async def test_the_built_agents_function_invocation_configuration_limits_every_participants_tool_chains() -> None:

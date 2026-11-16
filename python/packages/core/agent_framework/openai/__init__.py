@@ -9,6 +9,7 @@ Supported classes include:
 - OpenAIChatClient (Responses API)
 - OpenAIChatCompletionClient (Chat Completions API)
 - OpenAIEmbeddingClient
+- OpenAIRealtimeClient (realtime; needs the realtime extra)
 """
 
 import importlib
@@ -29,7 +30,12 @@ _IMPORTS: dict[str, tuple[str, str]] = {
     "OpenAISettings": ("agent_framework_openai", "agent-framework-openai"),
     "ContentFilterResultSeverity": ("agent_framework_openai", "agent-framework-openai"),
     "OpenAIContentFilterException": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeClient": ("agent_framework_openai", "agent-framework-openai"),
     "OpenAIRealtimeConnection": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeOptions": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeTranscription": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeTruncation": ("agent_framework_openai", "agent-framework-openai"),
+    "OpenAIRealtimeTurnDetection": ("agent_framework_openai", "agent-framework-openai"),
     "OpenAIRealtimeSession": ("agent_framework_openai", "agent-framework-openai"),
 }
 

@@ -136,6 +136,11 @@ class RealtimeOptions(TypedDict, total=False):
   `AzureVoice`, `AzureTurnDetection`, `AzureTranscription` and `AzureNoiseReduction` add Azure's types and fields, and
   Azure-only settings such as echo cancellation, animation and interim response exist only on the Azure types. Avatar
   isn't typed, because avatar video needs WebRTC; a raw `session.update` still reaches it.
+  `OpenAIRealtimeOptions` adds the GA protocol's session settings a voice app tunes: output `speed`, `truncation`,
+  `reasoning_effort`, `parallel_tool_calls`, and, through `OpenAIRealtimeTurnDetection`,
+  `OpenAIRealtimeTranscription` and `OpenAIRealtimeTruncation`, semantic VAD `eagerness`, `idle_timeout_ms`, a
+  transcription `prompt` and retention-ratio truncation. They're session settings only; tracing, stored prompts and
+  logprobs stay raw.
   The Azure types widen `voice` to `str | AzureVoice`, as `AnthropicChatOptions` widens `instructions`. The agent, the
   conversation and the client protocols are generic over the options type, as `RawAgent` is, so a
   `RealtimeAgent[VoiceLiveOptions]` accepts an `AzureVoice`.
@@ -184,10 +189,12 @@ outside the topology, and app input for a call id the conversation isn't trackin
 | `send(..., create_response=True)` | Text and message input requests a response unless `create_response=False`. During an active response, the input is added and the request then raises `RealtimeActiveResponseException`. Audio leaves responses to turn detection. App tool results and approvals go to their [batch](#tool-loop). |
 
 - **Ordering.** Control calls are serialized in call order, and each waits for its acknowledgement before the next
-  starts. The acknowledgements are `session.updated`, the call's own `response.created`, `conversation.item.truncated`
-  and a cancelled response's `response.done`. `send(...)` never waits behind an acknowledgement, and writes never
-  interleave. A response requested after `update_session(...)` returns uses the new session, whatever requested it. A
-  response in flight doesn't change, and a turn-detection response racing the update has no guarantee.
+  starts. An update's MCP tools connect before it takes its place in line, so a slow MCP server never holds up other
+  control calls. The acknowledgements are `session.updated`, the call's own `response.created`,
+  `conversation.item.truncated` and a cancelled response's `response.done`. `send(...)` never waits behind an
+  acknowledgement, and writes never interleave. A response requested after `update_session(...)` returns uses the new
+  session, whatever requested it. A response in flight doesn't change, and a turn-detection response racing the update
+  has no guarantee.
 - **Timeout.** One acknowledgement timeout per conversation, set at start by `control_timeout`, defaults to 10
   seconds. An update with nothing left to send after dropped keys returns at once. The conversation enforces it,
   wrapping each session control call and `start_session(...)` in `asyncio.timeout()`, and raises
@@ -376,10 +383,14 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `Content.from_function_approval_response(...)` or a `Message(role="tool")`, which the conversation routes into its
   batch. In a live conversation an approval request streams as `function_approval_request`, the call stays open while
   the caller talks, and the response matches through the agent session.
-- **MCP tools.** `RawAgent`'s MCP lifecycle moves into a helper shared with `RawRealtimeAgent`. A tool connects through
-  `async with agent` or on first use and stays open for the agent's lifetime; Agent Framework never closes a tool the
-  app connected. The conversation copies MCP tools' functions into its executable set at start and on
-  `update_session(tools=...)`; server-side tool-list changes wait for the next update.
+- **MCP tools.** `RawAgent`'s per-run MCP handling, which prepares a tool with the caller's kwargs, connects it on
+  first use into the agent's exit stack and adds its functions, moves into a helper shared with the realtime
+  conversation. A tool connects through `async with agent` or on first use and stays open for the agent's lifetime.
+  A realtime agent's `async with` connects only tools that aren't connected, so Agent Framework never closes a tool
+  the app connected; chat's still enters every configured MCP tool. The conversation copies MCP tools' functions into
+  its declared and executable sets at start and on `update_session(tools=...)`; server-side tool-list changes wait
+  for the next update. Clashing function names raise `ValueError` when the conversation is entered, or from
+  `update_session(...)`, before anything is sent.
 - **Hosted tools.** Static helpers on the provider clients declare them, and the loop never runs them. Their call events
   pass through. Hosted approval requests become `function_approval_request` content with `hosted=True`; the app's
   response goes to the provider as `mcp_approval_response`, and the loop then requests a follow-up.
@@ -616,10 +627,13 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   wire JSON over an `OpenAIRealtimeConnection`, with `send`, `receive` and `close`, that each client opens through its
   service's SDK, with no other SDK models and compression off. `receive` returns one event, or `None` on a normal close.
   The connection maps transport errors and closes to the realtime exceptions. Voice Live's and Foundry's sessions
-  subclass it privately.
-- **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint`, `api_key` or a `credential` for the
-  `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks. It connects through
-  `AsyncOpenAI(websocket_base_url=".../openai/v1")` without an `api_version`, and raises when given an
+  subclass it privately. Where the protocol's `response.cancel` takes a `response_id`, as GA's does,
+  `cancel_response()` names the response it found active, so the cancel can't reach a response that started since;
+  Voice Live's preview cancel takes none.
+- **Azure OpenAI** is routing on `OpenAIRealtimeClient`: `azure_endpoint` or `base_url`, `api_key` or a `credential`
+  for the `cognitiveservices` scope, the deployment as `model`, and the `AZURE_OPENAI_*` fallbacks, resolved as the
+  chat clients resolve them. It connects through an `AsyncOpenAI` on the resource's `.../openai/v1` route without an
+  `api_version`, sending a key as a bearer token as Learn's GA realtime sample does, and raises when given an
   `AsyncAzureOpenAI` client. Model variables are `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`, falling back
   to `*_MODEL`.
 - **Voice Live.** `VoiceLiveClient` pins `api-version=2026-07-15`, whose session is flat, with `response.audio.*` events
@@ -684,8 +698,9 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   realtime exceptions; the `realtime.*` span names and the `agent_framework.realtime.error` and
   `agent_framework.realtime.item_truncated` events.
 - `agent-framework-orchestrations`: `RealtimeHandoffBuilder` and its built agent.
-- `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeSession`,
-  `OpenAIRealtimeConnection` and the `[realtime]` extra.
+- `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeTurnDetection`,
+  `OpenAIRealtimeTranscription`, `OpenAIRealtimeTruncation`, `OpenAIRealtimeSession`, `OpenAIRealtimeConnection` and
+  the `[realtime]` extra.
 - `agent-framework-foundry`: `VoiceLiveClient`, `VoiceLiveOptions`, the `Azure*` option types and the `[realtime]`
   extra; `FoundryVoiceAgent`, `RawFoundryVoiceAgent`, `FoundryVoiceAgentClient` and `FoundryVoiceAgentOptions` under
   `FOUNDRY_VOICE_AGENTS`.
@@ -694,7 +709,8 @@ On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields
 serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
 and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
 `ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys and their
-telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR;
+telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR; `OpenAISettings` and `AzureOpenAISettings`'
+`realtime_model`, read from `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.

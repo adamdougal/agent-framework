@@ -5,7 +5,7 @@
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Any, Generic
+from typing import Any, Generic, Self
 from weakref import WeakKeyDictionary
 
 from agent_framework import (
@@ -45,8 +45,9 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
     A participant brings who's speaking: its instructions, tools, voice, tool choice and function middleware. The
     built agent owns the rest of the call: its history and context providers, its tool-loop limits, its other session
     settings, and instructions appended to every participant's. Participants must share one realtime client instance.
-    On Voice Live, keep the participants' voices in one family, Azure or OpenAI, because Voice Live rejects a change
-    between them.
+    ``async with`` the built agent enters every participant, so their MCP tools connect with it and close when it
+    exits. On Voice Live, keep the participants' voices in one family, Azure or OpenAI, because Voice Live rejects a
+    change between them.
 
     Examples:
         .. code-block:: python
@@ -229,6 +230,16 @@ class _RealtimeHandoffAgent(RealtimeAgent[RealtimeOptionsT]):
         super().__init__(start.client, **settings)
         self._start = start
         self._handoff_tools = handoff_tools
+
+    async def __aenter__(self) -> Self:
+        await super().__aenter__()
+        try:
+            for participant in self._handoff_tools:
+                await self._exit_stack.enter_async_context(participant)
+        except BaseException:
+            await self._exit_stack.aclose()
+            raise
+        return self
 
     def _start_participant(self) -> RawRealtimeAgent[Any]:
         return self._start

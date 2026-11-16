@@ -130,7 +130,6 @@ class ToolLoop:
         self._own_middleware: dict[BaseAgent, Sequence[FunctionMiddlewareTypes]] = {}
         self._pipelines: dict[BaseAgent, FunctionMiddlewarePipeline] = {}
         if owner._start_participant() is owner:  # pyright: ignore[reportPrivateUsage]
-            # The owner's middleware was sorted when the conversation started, warning about any it skips.
             self._own_middleware[owner] = owner_middleware
         self._conversation = conversation
         self._responses = responses
