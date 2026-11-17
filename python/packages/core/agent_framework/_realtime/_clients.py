@@ -59,7 +59,6 @@ class RealtimeClientSessionProtocol(Protocol[RealtimeOptionsT]):
         - ``text`` becomes a message item with the message's role, and assistant text is replayed as output text;
         - ``function_call`` content becomes a function-call item;
         - ``function_result`` content becomes a function-call output item with the result as a string;
-        - a hosted ``function_approval_response`` becomes the provider's approval response;
         - any other content is dropped with a warning.
 
         Sending never requests a response; callers use ``create_response(...)`` for that.

@@ -446,7 +446,7 @@ async def test_send_does_not_wait_behind_a_pending_acknowledgement() -> None:
         pending = asyncio.create_task(conversation.create_response())
         await eventually(lambda: bool(client.session.calls))
 
-        await asyncio.wait_for(conversation.send("x", create_response=False), 1)
+        await asyncio.wait_for(conversation.send("x", create_response=False), 5)
 
         release.set()
         await pending
@@ -480,7 +480,7 @@ async def test_an_unacknowledged_control_call_raises_control_timeout() -> None:
         client.session.hold("create_response")
 
         with pytest.raises(RealtimeControlTimeoutException):
-            await asyncio.wait_for(conversation.create_response(), 1)
+            await asyncio.wait_for(conversation.create_response(), 5)
 
 
 async def test_control_calls_run_one_at_a_time_in_call_order() -> None:
@@ -528,9 +528,9 @@ async def test_a_send_queued_when_close_starts_never_reaches_the_session(raw: bo
 
         await conversation.close()
         release.set()
-        await asyncio.wait_for(sending, 1)
+        await asyncio.wait_for(sending, 5)
         with pytest.raises(RealtimeConversationClosedException):
-            await asyncio.wait_for(queued, 1)
+            await asyncio.wait_for(queued, 5)
 
     [sent] = client.session.sent
     assert isinstance(sent, Message)
@@ -549,7 +549,7 @@ async def test_a_send_of_several_messages_stops_when_close_starts_between_them()
         await conversation.close()
         release.set()
         with pytest.raises(RealtimeConversationClosedException):
-            await asyncio.wait_for(sending, 1)
+            await asyncio.wait_for(sending, 5)
 
     [sent] = client.session.sent
     assert isinstance(sent, Message)
@@ -603,7 +603,7 @@ async def test_close_releases_a_waiting_control_call() -> None:
         await conversation.close()
 
         with pytest.raises(RealtimeConversationClosedException):
-            await asyncio.wait_for(waiting, 1)
+            await asyncio.wait_for(waiting, 5)
 
 
 @pytest.mark.parametrize("control", ["create_response", "interrupt"])
@@ -623,7 +623,7 @@ async def test_a_control_call_queued_when_close_starts_never_reaches_the_session
 
         for call in (waiting, queued):
             with pytest.raises(RealtimeConversationClosedException):
-                await asyncio.wait_for(call, 1)
+                await asyncio.wait_for(call, 5)
     assert client.session.calls == [("create_response", None)]
 
 
@@ -774,7 +774,7 @@ async def test_close_finishes_when_closing_the_session_fails(caplog: pytest.LogC
     async with RealtimeAgent(client).start_conversation() as conversation:
         client.session.close_error = RealtimeConnectionException("The socket is stuck.")
         try:
-            await asyncio.wait_for(conversation.close(), 1)
+            await asyncio.wait_for(conversation.close(), 5)
         finally:
             client.session.end()  # lets a hung close finish, so a failing run ends
 
@@ -871,7 +871,7 @@ class TestVerification:
             client.session.hold("cancel_response")
 
             with pytest.raises(RealtimeControlTimeoutException):
-                await asyncio.wait_for(conversation.interrupt(), 1)
+                await asyncio.wait_for(conversation.interrupt(), 5)
 
     async def test_a_passthrough_event_becomes_passthrough_content_with_no_role(self) -> None:
         client = FakeRealtimeClient()

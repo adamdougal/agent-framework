@@ -68,6 +68,17 @@ def tool_result_update(result: Content, *, response_id: str, author: BaseAgent) 
     )
 
 
+def app_request_update(requests: list[Content], *, response_id: str, author: BaseAgent) -> AgentResponseUpdate:
+    """What a call asks of the app, such as an approval, credited like the call's result."""
+    return AgentResponseUpdate(
+        contents=requests,
+        role="assistant",
+        author_name=author.name,
+        agent_id=author.id,
+        response_id=response_id,
+    )
+
+
 def core_attributes(event: RealtimeEvent) -> dict[str, Any]:
     return dict(event.additional_properties.get("core") or {})
 

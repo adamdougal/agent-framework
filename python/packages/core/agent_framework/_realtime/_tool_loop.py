@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import groupby
 from operator import attrgetter
 from typing import TYPE_CHECKING, Any, cast
@@ -23,6 +24,7 @@ from .._tools import (
     _execute_function_calls,  # pyright: ignore[reportPrivateUsage]
     _generate_function_call_occurrence_id,  # pyright: ignore[reportPrivateUsage]
     _get_tool_map,  # pyright: ignore[reportPrivateUsage]
+    approval_rejection_result,
 )
 from .._types import Content, Message
 from ..exceptions import (
@@ -34,7 +36,7 @@ from ..exceptions import (
     ToolExecutionException,
 )
 from ._events import RealtimeEvent
-from ._updates import core_attributes
+from ._updates import app_request_update, core_attributes
 
 logger = logging.getLogger("agent_framework")
 
@@ -46,7 +48,9 @@ if TYPE_CHECKING:
     from .._middleware import FunctionMiddlewareTypes
     from .._sessions import AgentSession
     from .._tools import FunctionInvocationConfiguration, ToolTypes
+    from .._types import AgentResponseUpdate
     from ._agent import RawRealtimeAgent
+    from ._app_input import AppInput
     from ._conversation import RealtimeConversation
     from ._handoffs import CallSettings
     from ._responses import ResponseLedger
@@ -62,6 +66,15 @@ class _Call:
     middleware_pipeline: FunctionMiddlewarePipeline
     result: Content | None = None
     reported: bool = False
+    approval: Content | None = None
+    decision: asyncio.Future[bool] | None = None
+    app_result: asyncio.Future[Content] | None = None
+    input_requests: list[Content] = field(default_factory=list[Content])
+
+    @property
+    def executed_as(self) -> Content:
+        """An approved call runs as its approval, so the executor knows the app allowed it."""
+        return self.approval or self.content
 
 
 class _ToolChain:
@@ -120,6 +133,8 @@ class ToolLoop:
         conversation: RealtimeConversation[Any],
         owner: RawRealtimeAgent[Any],
         responses: ResponseLedger,
+        emit: Callable[[AgentResponseUpdate], None],
+        app_input: AppInput,
     ) -> None:
         self._tools = tools
         self._declared: list[ToolTypes] = []
@@ -133,6 +148,8 @@ class ToolLoop:
             self._own_middleware[owner] = owner_middleware
         self._conversation = conversation
         self._responses = responses
+        self._emit = emit
+        self._app_input = app_input
         self._results_marker = 0
         self._follow_up_task: asyncio.Task[Any] | None = None
         # Each batch's own chain is kept, so a merged follow-up respects every chain's limits.
@@ -161,7 +178,11 @@ class ToolLoop:
         response_id = core_attributes(event)["response_id"]
         tool = _get_tool_map(self._tools).get(event.content.name or "")
         pipeline = self.pipeline_for(self._conversation.active_agent)
-        self._calls_by_response.setdefault(response_id, []).append(_Call(event.content, response_id, tool, pipeline))
+        call = _Call(event.content, response_id, tool, pipeline)
+        if tool is not None and self._answered_by_the_app(tool):
+            # The app can answer as soon as it sees the call, before its response finishes.
+            call.app_result = self._app_input.result(event.content)
+        self._calls_by_response.setdefault(response_id, []).append(call)
 
     def pipeline_for(self, agent: BaseAgent) -> FunctionMiddlewarePipeline:
         """The host's function middleware wraps the agent's own, which wraps the conversation's.
@@ -180,16 +201,9 @@ class ToolLoop:
             pipeline = self._pipelines[agent] = FunctionMiddlewarePipeline(*middleware)
         return pipeline
 
-    def _would_pause(self, tool: FunctionTool) -> bool:
+    def _answered_by_the_app(self, tool: FunctionTool) -> bool:
         app_answered = {additional.name for additional in self._configuration.get("additional_tools") or ()}
-        return tool.approval_mode == "always_require" or tool.declaration_only or tool.name in app_answered
-
-    def _warn_about_pausing_tool(self, tool: FunctionTool) -> None:
-        logger.warning(
-            "A realtime conversation got a call to %r, which needs approval or the app's answer; realtime agents "
-            "don't support that yet, so the call gets an error result.",
-            tool.name,
-        )
+        return tool.declaration_only or tool.name in app_answered
 
     def on_tools_declared(self, tools: Sequence[ToolTypes]) -> None:
         """The provider declares exactly ``tools`` now, at start or after an acknowledged update.
@@ -257,12 +271,20 @@ class ToolLoop:
         self._calls_by_response.clear()
         for call in unfinished:
             if call.result is None:
-                call.result = _settled_with_error(
-                    call.content, "the conversation closed before the tool finished", _CONVERSATION_CLOSED_REASON
+                # The app may have answered while the batch still waited on something else.
+                call.result = (
+                    _accepted_app_result(call)
+                    or _rejection_sent(call)
+                    or _settled_with_error(
+                        call.content, "the conversation closed before the tool finished", _CONVERSATION_CLOSED_REASON
+                    )
                 )
             self._report(call)
 
     def _report(self, call: _Call) -> None:
+        if call.app_result is not None:
+            # Settled without the app, so a late answer for it answers nothing.
+            self._app_input.withdraw(call.content.id or "")
         if call.result is not None and not call.reported:
             call.reported = True
             self._conversation._report_tool_result(call.result, call.response_id)  # pyright: ignore[reportPrivateUsage]
@@ -304,28 +326,38 @@ class ToolLoop:
         # A filler response can be created, and finish, before its request returns and marks it as filler, so the
         # follow-up count waits for requests in flight.
         await self._responses.wait_until_requests_settle()
+        # Started before any wait for the app, so the duration limit counts approval waits.
+        chain.batch_started()
         chain_ends = chain.tripped or self._follow_ups(chain) >= chain.max_iterations
         _bind_namesakes_to_the_first(calls)
         invocation_disabled = not self._configuration.get("enabled", True)
         if invocation_disabled:
             chain.tripped = True  # whatever the calls were, the follow-up turns tools off
+        awaiting_approval: list[_Call] = []
+        awaiting_result: list[_Call] = []
         for call in calls:
             if call.tool is None:
                 call.result = _not_found_result(call.content)
-            elif self._would_pause(call.tool):
-                call.result = _settled_with_error(
-                    call.content,
-                    "this tool needs approval or the app's answer, which this agent can't wait for",
-                    "unsupported",
-                )
-                self._warn_about_pausing_tool(call.tool)
             elif invocation_disabled:
                 call.result = _settled_with_error(call.content, "function invocation is disabled", "disabled")
             elif chain_ends:
                 call.result = _settled_with_error(
                     call.content, "this tool chain reached its limit, so the tool didn't run", "limit_reached"
                 )
-        terminated, executed = await self._execute([call for call in calls if call.result is None], chain)
+            elif call.tool.approval_mode == "always_require":
+                awaiting_approval.append(call)
+            elif call.app_result is not None:
+                awaiting_result.append(call)
+        await self._await_approvals(awaiting_approval)
+        # An approved call to a tool the app runs still needs the app's result, which it may already have sent.
+        awaiting_result += [call for call in awaiting_approval if call.result is None and call.app_result is not None]
+        runnable = [call for call in calls if call.result is None and call not in awaiting_result]
+        terminated, executed = await self._execute(runnable)
+        for call in runnable:
+            if call.input_requests:
+                self._request_input(call)
+                awaiting_result.append(call)
+        await self._await_results(awaiting_result)
         # Count synthetic errors too, so unknown calls can't evade the consecutive-error limit.
         chain.count(
             executed,
@@ -342,6 +374,37 @@ class ToolLoop:
             self._report(call)
         if not terminated:
             self._follow_up_due(chain)
+
+    async def _await_approvals(self, calls: Sequence[_Call]) -> None:
+        decisions = await asyncio.gather(*(self._request_approval(call) for call in calls))
+        for call, approved in zip(calls, decisions, strict=True):
+            if approved:
+                call.approval = Content.from_function_approval_response(
+                    approved=True, id=call.content.id or "", function_call=call.content
+                )
+            else:
+                call.result = approval_rejection_result(call.content, id=call.content.id)
+
+    async def _await_results(self, calls: Sequence[_Call]) -> None:
+        await asyncio.gather(*(call.app_result for call in calls if call.app_result is not None))
+        for call in calls:
+            call.result = _accepted_app_result(call)
+
+    def _request_approval(self, call: _Call) -> asyncio.Future[bool]:
+        """The request carries the call's occurrence id, which the app's answer must name."""
+        request = Content.from_function_approval_request(id=call.content.id or "", function_call=call.content)
+        call.decision = self._app_input.approval(request.id or "")
+        self._ask_the_app(call, [request])
+        return call.decision
+
+    def _request_input(self, call: _Call) -> None:
+        """A tool that raised UserInputRequiredException is answered with a result for its call."""
+        call.app_result = self._app_input.result(call.content)
+        self._ask_the_app(call, call.input_requests)
+
+    def _ask_the_app(self, call: _Call, requests: list[Content]) -> None:
+        author = self._responses.agent_of(call.response_id, default=self._conversation.active_agent)
+        self._emit(app_request_update(requests, response_id=call.response_id, author=author))
 
     async def _declare_tool_changes(self) -> None:
         """Tools a call added or removed must reach the provider before the results the model acts on.
@@ -439,7 +502,7 @@ class ToolLoop:
             # response.created arrives here. Request another.
             self._responses.answers_only_earlier_results(response_id)
 
-    async def _execute(self, calls: Sequence[_Call], chain: _ToolChain) -> tuple[bool, int]:
+    async def _execute(self, calls: Sequence[_Call]) -> tuple[bool, int]:
         """Return whether function middleware ended the loop, and how many calls ran.
 
         A response's calls only mix agents when the app hands off while they're arriving, so each agent's calls run in
@@ -447,7 +510,6 @@ class ToolLoop:
         """
         if not calls:
             return False, 0
-        chain.batch_started()
         terminated, executed = False, 0
         requested_by_tools = _CALLING_CONVERSATION.set(self._conversation)
         try:
@@ -463,7 +525,7 @@ class ToolLoop:
         finally:
             _CALLING_CONVERSATION.reset(requested_by_tools)
         for call in calls:
-            if call.result is None:
+            if call.result is None and not call.input_requests:
                 call.result = _settled_with_error(
                     call.content, "the call paused for an answer it can't get", "unsupported"
                 )
@@ -472,7 +534,7 @@ class ToolLoop:
     async def _run_executor(self, calls: Sequence[_Call], middleware_pipeline: FunctionMiddlewarePipeline) -> Any:
         return await _execute_function_calls(
             custom_args=dict(self._invocation_kwargs),
-            function_calls=[call.content for call in calls],
+            function_calls=[call.executed_as for call in calls],
             # Keep the arrival-time bindings apart from the live list that tools mutate.
             options={"tools": [call.tool for call in calls]},
             live_tools=self._tools,
@@ -485,13 +547,38 @@ class ToolLoop:
 
 
 def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, list[Content]], None]:
-    by_content = {id(call.content): call for call in calls}
+    by_content = {id(call.executed_as): call for call in calls}
 
     def keep(function_call: Content, results: list[Content]) -> None:
         call = by_content[id(function_call)]
         call.result = next((content for content in results if content.type == "function_result"), call.result)
+        # Middleware's approval requests can't be resumed here; the call settles with an error instead.
+        if call.result is None and not any(content.type == "function_approval_request" for content in results):
+            call.input_requests = results
 
     return keep
+
+
+def _accepted_app_result(call: _Call) -> Content | None:
+    if call.app_result is None or not call.app_result.done() or call.app_result.cancelled():
+        return None
+    if call.decision is not None and _decided(call.decision) is not True:
+        # An early result for a call that needs approval stands only once the app approves the call.
+        return None
+    # The result carries the call's occurrence id, as a result the loop produced would.
+    result = copy.copy(call.app_result.result())
+    result.id = call.content.id
+    return result
+
+
+def _rejection_sent(call: _Call) -> Content | None:
+    if call.decision is None or _decided(call.decision) is not False:
+        return None
+    return approval_rejection_result(call.content, id=call.content.id)
+
+
+def _decided(decision: asyncio.Future[bool]) -> bool | None:
+    return decision.result() if decision.done() and not decision.cancelled() else None
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:

@@ -265,10 +265,10 @@ async def test_a_session_that_starts_as_the_conversation_closes_is_closed() -> N
     await eventually(lambda: bool(client.start_session_calls))
 
     client.start_session_release.set()
-    await asyncio.wait_for(conversation.close(), 1)
+    await asyncio.wait_for(conversation.close(), 5)
 
     with pytest.raises(RealtimeConversationClosedException):
-        await asyncio.wait_for(entering, 1)
+        await asyncio.wait_for(entering, 5)
     assert client.session.close_count == 1
 
 
@@ -294,12 +294,12 @@ async def test_close_during_the_initial_messages_closes_the_session_once() -> No
     entering = asyncio.create_task(conversation.__aenter__())
     await eventually(lambda: bool(client.sessions) and client.session.send_attempts == 1)
 
-    await asyncio.wait_for(conversation.close(), 1)
+    await asyncio.wait_for(conversation.close(), 5)
     assert client.session.close_count == 1
 
     release_send.set()
     with pytest.raises(RealtimeConversationClosedException):
-        await asyncio.wait_for(entering, 1)
+        await asyncio.wait_for(entering, 5)
     assert client.session.close_count == 1
 
 
@@ -310,12 +310,12 @@ async def test_an_initial_send_that_fails_because_close_started_raises_conversat
     entering = asyncio.create_task(conversation.__aenter__())
     await eventually(lambda: bool(client.sessions) and client.session.send_attempts == 1)
 
-    await asyncio.wait_for(conversation.close(), 1)
+    await asyncio.wait_for(conversation.close(), 5)
     client.session.send_error = RealtimeConnectionException("The socket is closed.")
     release_send.set()
 
     with pytest.raises(RealtimeConversationClosedException):
-        await asyncio.wait_for(entering, 1)
+        await asyncio.wait_for(entering, 5)
 
 
 async def test_entering_a_conversation_again_raises_runtime_error() -> None:

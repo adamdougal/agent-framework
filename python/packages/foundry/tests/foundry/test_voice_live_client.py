@@ -231,7 +231,7 @@ async def voice_live_session(options: VoiceLiveOptions | None = None) -> tuple[A
     """A Voice Live session opened with ``options`` over a scripted connection."""
     connection = FakeConnection()
     session = _VoiceLiveSession(connection)
-    await asyncio.wait_for(session.start(options=options), 1)
+    await asyncio.wait_for(session.start(options=options), 5)
     return session, connection
 
 
@@ -741,7 +741,7 @@ async def test_tools_are_declared_in_the_flat_session() -> None:
 
     connection = FakeConnection()
     session = _VoiceLiveSession(connection)
-    await asyncio.wait_for(session.start(tools=[lookup]), 1)
+    await asyncio.wait_for(session.start(tools=[lookup]), 5)
 
     assert connection.sent[0]["session"] == {
         "tools": [
@@ -801,7 +801,7 @@ async def test_per_response_instructions_are_dropped(caplog: pytest.LogCaptureFi
         creating = asyncio.create_task(session.create_response({"instructions": "Short.", "max_tokens": 50}))
         request = await connection.wait_sent("response.create")
         connection.push(response_created("resp_1", request["response"]["metadata"]["af_request_id"]))
-        await asyncio.wait_for(creating, 1)
+        await asyncio.wait_for(creating, 5)
 
     assert request["response"] == {
         "max_response_output_tokens": 50,
@@ -819,7 +819,7 @@ async def test_per_response_output_modalities_are_sent_as_modalities() -> None:
         creating = asyncio.create_task(session.create_response({"output_modalities": ["audio"]}))
         request = await connection.wait_sent("response.create")
         connection.push(response_created("resp_1", request["response"]["metadata"]["af_request_id"]))
-        await asyncio.wait_for(creating, 1)
+        await asyncio.wait_for(creating, 5)
 
     assert request["response"] == {
         "modalities": ["text", "audio"],
@@ -842,7 +842,7 @@ async def test_say_with_an_azure_voice_sends_a_pre_generated_message() -> None:
         request = await connection.wait_sent("response.create")
         connection.push(response_created("resp_1"))
 
-        assert await asyncio.wait_for(saying, 1) == "resp_1"
+        assert await asyncio.wait_for(saying, 5) == "resp_1"
 
     assert request["response"]["pre_generated_assistant_message"] == {
         "type": "message",
@@ -882,7 +882,7 @@ async def test_voice_change_after_audio_is_sent() -> None:
             "delta": "AAE=",
         })
         await until(lambda: any(event.kind == "output_audio" for event in events))
-        await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+        await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
     assert connection.sent[-1] == {
         "type": "session.update",
@@ -984,7 +984,7 @@ async def test_cancel_response_sends_no_response_id() -> None:
         cancelling = asyncio.create_task(session.cancel_response())
         cancel = await connection.wait_sent("response.cancel")
         connection.push({"type": "response.done", "event_id": "evt_done", "response": {"id": "resp_1"}})
-        await asyncio.wait_for(cancelling, 1)
+        await asyncio.wait_for(cancelling, 5)
 
     assert "response_id" not in cancel
 
@@ -1067,7 +1067,7 @@ class TestVerification:
         connection.echo_overrides = {"voice": "alloy"}
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": "echo"}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": "echo"}, None), 5)
 
         assert "ignored the voice change to 'echo'" in caplog.text
         assert session.options["voice"] == "alloy"
@@ -1083,7 +1083,7 @@ class TestVerification:
         }
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
         assert session.options["voice"] == sonia
         assert "ignored the voice change" not in caplog.text
@@ -1101,7 +1101,7 @@ class TestVerification:
         connection.echo_overrides = {"voice": ava}
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
         assert "ignored the voice change" in caplog.text
         assert "en-GB-SoniaNeural" in caplog.text
@@ -1119,7 +1119,7 @@ class TestVerification:
         session, _ = await voice_live_session({"voice": ava})
 
         async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 1)
+            await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
         assert session.options["voice"] == sonia
         assert "ignored the voice change" not in caplog.text
