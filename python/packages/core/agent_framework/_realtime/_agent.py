@@ -195,7 +195,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             ValueError: If ``control_timeout`` isn't positive, ``max_queued_updates`` is less than 1, or the
                 function invocation configuration is invalid. Entering the conversation raises ``ValueError``, before
                 anything is sent, if two of its tools share a name, counting MCP tools' functions and context
-                providers' tools.
+                providers' tools, or a hosted MCP tool doesn't set ``require_approval`` to ``"never"``.
         """
         if control_timeout <= 0:
             raise ValueError("control_timeout must be greater than 0.")

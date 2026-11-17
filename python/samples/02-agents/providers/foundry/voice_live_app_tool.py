@@ -53,7 +53,9 @@ async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions], reply
                 reply_audio.extend(content.get_data_bytes())
             elif content.type == "function_call" and content.name == get_caller_account.name:
                 print(f"App answers {content.name}: {CALLER_ACCOUNT}")
-                await conversation.send(Content.from_function_result(call_id=content.call_id or "", result=CALLER_ACCOUNT))
+                await conversation.send(
+                    Content.from_function_result(call_id=content.call_id or "", result=CALLER_ACCOUNT)
+                )
             elif content.type == "function_result":
                 has_result = True
             elif content.type == "error":

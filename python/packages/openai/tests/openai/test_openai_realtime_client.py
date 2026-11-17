@@ -597,56 +597,8 @@ async def test_cancelled_start_closes_the_socket() -> None:
 
 # endregion
 
-# region Hosted tools
-
-
-def test_get_mcp_tool_declares_a_hosted_mcp_server() -> None:
-    """get_mcp_tool(name="ms learn", url="https://learn.microsoft.com/api/mcp", description="Docs", headers={"X": "1"},
-    allowed_tools=["microsoft_docs_search"]) returns {"type": "mcp", "server_label": "ms_learn", "server_url": ...,
-    "server_description": "Docs", "headers": {"X": "1"}, "allowed_tools": [...]}; with only name and url, only those
-    keys and "type"."""
-    url = "https://learn.microsoft.com/api/mcp"
-
-    full = OpenAIRealtimeClient.get_mcp_tool(
-        name="ms learn", url=url, description="Docs", headers={"X": "1"}, allowed_tools=["microsoft_docs_search"]
-    )
-    bare = OpenAIRealtimeClient.get_mcp_tool(name="ms learn", url=url)
-
-    assert full == {
-        "type": "mcp",
-        "server_label": "ms_learn",
-        "server_url": url,
-        "server_description": "Docs",
-        "headers": {"X": "1"},
-        "allowed_tools": ["microsoft_docs_search"],
-    }
-    assert bare == {"type": "mcp", "server_label": "ms_learn", "server_url": url}
-
-
-# endregion
-
 
 class TestVerification:
-    @pytest.mark.parametrize(
-        ("approval_mode", "require_approval"),
-        [
-            ("always_require", "always"),
-            ("never_require", "never"),
-            (
-                {"always_require_approval": ["a"], "never_require_approval": ["b"]},
-                {"always": {"tool_names": ["a"]}, "never": {"tool_names": ["b"]}},
-            ),
-        ],
-    )
-    def test_get_mcp_tool_translates_each_approval_mode(self, approval_mode: Any, require_approval: Any) -> None:
-        """ "always_require" -> "always", "never_require" -> "never", and the per-tool dict -> {"always": {"tool_names":
-        [...]}, "never": {"tool_names": [...]}}, as the chat helper. Relies on the hosted MCP declaration test."""
-        tool = OpenAIRealtimeClient.get_mcp_tool(
-            name="learn", url="https://example.com/mcp", approval_mode=approval_mode
-        )
-
-        assert tool["require_approval"] == require_approval
-
     async def test_an_injected_openai_client_with_a_credential_is_used_as_it_is(self) -> None:
         """With async_client=AsyncOpenAI(api_key="sk-injected", base_url="<server>/openai/v1"), a credential and model
         "realtime-deployment", the client reports "azure.ai.openai" and connects through the injected client: path

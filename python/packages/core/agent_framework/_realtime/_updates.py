@@ -21,8 +21,6 @@ _ASSISTANT_KINDS = frozenset({
     "output_text",
     "output_audio",
     "function_call",
-    "function_approval_request",
-    "hosted_call_done",
     "usage",
 })
 

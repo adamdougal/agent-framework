@@ -16,7 +16,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import date
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Self, TypedDict, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypedDict, cast
 
 from agent_framework import SecretString, load_settings, prepend_agent_framework_to_user_agent
 from agent_framework._feature_stage import ExperimentalFeature, experimental
@@ -263,119 +263,6 @@ class VoiceLiveClient(Generic[VoiceLiveOptionsT]):
             await session.close()
             raise
         return cast("RealtimeClientSessionProtocol[VoiceLiveOptionsT]", session)
-
-    @staticmethod
-    def get_mcp_tool(
-        *,
-        name: str,
-        url: str,
-        approval_mode: Literal["always_require", "never_require"] | dict[str, list[str]] | None = None,
-        allowed_tools: list[str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        """Declare a hosted MCP server, which Voice Live calls itself.
-
-        The agent never runs these tools. When a tool needs approval, the conversation streams a
-        ``function_approval_request`` whose ``function_call`` has ``hosted=True``; answer it with
-        ``request.to_function_approval_response(approved)`` through ``send(...)``. Voice Live lists the server's tools
-        once the session starts, so a question sent in its first moment can be answered without them. For an MCP
-        server the app runs itself, pass an ``MCPTool`` instead.
-
-        Keyword Args:
-            name: A label for the server; spaces become underscores.
-            url: The server's URL, which Voice Live must be able to reach.
-            approval_mode: ``"always_require"`` or ``"never_require"`` for every tool, or a dict with
-                ``"always_require_approval"`` and ``"never_require_approval"`` lists of tool names. Voice Live requires
-                approval for every tool when this isn't set.
-            allowed_tools: The server's tools the model may call. ``None`` allows them all.
-            headers: HTTP headers for Voice Live to send to the server.
-
-        Returns:
-            The tool declaration, to pass in ``tools=``.
-
-        Examples:
-            .. code-block:: python
-
-                from agent_framework import RealtimeAgent
-                from agent_framework.foundry import VoiceLiveClient
-
-                learn = VoiceLiveClient.get_mcp_tool(
-                    name="mslearn", url="https://learn.microsoft.com/api/mcp", approval_mode="always_require"
-                )
-                agent = RealtimeAgent(VoiceLiveClient(), tools=[learn])
-        """
-        mcp: dict[str, Any] = {"type": "mcp", "server_label": name.replace(" ", "_"), "server_url": url}
-        if headers:
-            mcp["headers"] = headers
-        if allowed_tools is not None:
-            mcp["allowed_tools"] = allowed_tools
-        if isinstance(approval_mode, str):
-            mcp["require_approval"] = "always" if approval_mode == "always_require" else "never"
-        elif approval_mode:
-            # Voice Live takes plain lists of tool names, not the Responses API's {"tool_names": [...]} filters.
-            require_approval: dict[str, list[str]] = {}
-            if always_require := approval_mode.get("always_require_approval"):
-                require_approval["always"] = always_require
-            if never_require := approval_mode.get("never_require_approval"):
-                require_approval["never"] = never_require
-            mcp["require_approval"] = require_approval
-        return mcp
-
-    @staticmethod
-    def get_foundry_agent_tool(
-        *,
-        agent_name: str,
-        project_name: str,
-        agent_version: str | None = None,
-        description: str | None = None,
-        client_id: str | None = None,
-        foundry_resource_override: str | None = None,
-        agent_context_type: Literal["no_context", "agent_context"] | None = None,
-        return_agent_response_directly: bool | None = None,
-    ) -> dict[str, Any]:
-        """Declare a Foundry agent as a tool, which Voice Live calls itself.
-
-        The realtime model handles the conversation and hands harder requests to the Foundry agent. The agent never
-        runs this tool, and its calls stream as passthrough updates.
-
-        Keyword Args:
-            agent_name: The Foundry agent to call.
-            project_name: The Foundry project that holds the agent.
-            agent_version: The agent's version. Voice Live uses the latest when this isn't set.
-            description: Overrides the agent's description in the Foundry portal, to tell the model when to call it.
-            client_id: The client id associated with the agent.
-            foundry_resource_override: The Foundry resource that runs the agent, when it isn't Voice Live's.
-            agent_context_type: ``"agent_context"``, Voice Live's default, lets the agent keep its own thread;
-                ``"no_context"`` sends it only the current input.
-            return_agent_response_directly: Whether Voice Live speaks the agent's answer as it is, its default, or
-                has the realtime model rephrase it.
-
-        Returns:
-            The tool declaration, to pass in ``tools=``.
-
-        Examples:
-            .. code-block:: python
-
-                from agent_framework import RealtimeAgent
-                from agent_framework.foundry import VoiceLiveClient
-
-                billing = VoiceLiveClient.get_foundry_agent_tool(agent_name="billing", project_name="contoso")
-                agent = RealtimeAgent(VoiceLiveClient(), tools=[billing])
-        """
-        optional = {
-            "agent_version": agent_version,
-            "description": description,
-            "client_id": client_id,
-            "foundry_resource_override": foundry_resource_override,
-            "agent_context_type": agent_context_type,
-            "return_agent_response_directly": return_agent_response_directly,
-        }
-        return {
-            "type": "foundry_agent",
-            "agent_name": agent_name,
-            "project_name": project_name,
-            **{field: value for field, value in optional.items() if value is not None},
-        }
 
     def _handshake_query(self) -> dict[str, str]:
         """BYOM's query parameters. The SDK ignores a ``profile=`` keyword, so they go through its ``query``."""

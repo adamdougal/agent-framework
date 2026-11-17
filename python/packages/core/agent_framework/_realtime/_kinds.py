@@ -25,7 +25,6 @@ RealtimeKindLiteral = Literal[
     "function_call",
     "function_result",
     "function_approval_request",
-    "hosted_call_done",
     "handoff_completed",
     "usage",
     "error",
@@ -232,22 +231,6 @@ class RealtimeFunctionCallAttributes(TypedDict, total=False):
 
     response_id: Required[str]
     item_id: Required[str]
-
-
-@experimental(feature_id=ExperimentalFeature.REALTIME)
-class RealtimeHostedCallDoneAttributes(TypedDict, total=False):
-    """Neutral attributes of ``hosted_call_done``, under ``additional_properties["core"]``.
-
-    The provider finished running a hosted tool's call, such as one on a provider-run MCP server, so its result is in
-    the provider's conversation.
-
-    Keys:
-        item_id: The hosted call's item, which a hosted approval request's ``function_call.call_id`` names. Required.
-        status: ``"completed"`` or ``"failed"``. Required.
-    """
-
-    item_id: Required[str]
-    status: Required[str]
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)

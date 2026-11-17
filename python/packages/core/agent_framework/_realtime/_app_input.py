@@ -23,7 +23,6 @@ class AppInput:
         self._approvals: dict[str, asyncio.Future[bool]] = {}
         # Keyed by the call's occurrence id, since a provider can reuse a call id.
         self._results: dict[str, _AppRunCall] = {}
-        self._hosted: dict[str, Content] = {}
 
     def approval(self, request_id: str) -> asyncio.Future[bool]:
         decision: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
@@ -35,21 +34,16 @@ class AppInput:
         self._results[call.id or ""] = _AppRunCall(call.call_id or "", answer)
         return answer
 
-    def hosted_request(self, request: Content) -> None:
-        self._hosted[request.id or ""] = request
-
-    def withdraw(self, answer: asyncio.Future[Content]) -> None:
-        self._results = {
-            occurrence_id: waiting for occurrence_id, waiting in self._results.items() if waiting.answer is not answer
-        }
-        answer.cancel()
+    def withdraw(self, occurrence_id: str) -> None:
+        if (waiting := self._results.pop(occurrence_id, None)) is not None:
+            waiting.answer.cancel()
 
     def _request_answered_by(self, answer: Content) -> tuple[str, str] | None:
         """Keyed by kind as well, since a call can wait for both its approval and its result."""
         if answer.type == "function_result":
             occurrence_id = self._waiting_call(answer)
             return None if occurrence_id is None else ("result", occurrence_id)
-        if answer.id in self._approvals or answer.id in self._hosted:
+        if answer.id in self._approvals:
             return ("approval", answer.id or "")
         return None
 
@@ -62,12 +56,8 @@ class AppInput:
             None,
         )
 
-    def route(self, answers: Sequence[Content]) -> list[Content]:
+    def route(self, answers: Sequence[Content]) -> None:
         """Every answer is checked before any is applied, so a bad one leaves the others unanswered.
-
-        Returns:
-            The answers to hosted requests, for the provider. Each is rebuilt from the request the provider sent, so it
-            names that request's call.
 
         Raises:
             ValueError: If an answer matches no request the conversation is waiting on.
@@ -80,21 +70,8 @@ class AppInput:
                     f"{answer.type} content with id {answer.id!r} answers nothing this conversation is waiting for."
                 )
             claimed.add(request)
-        hosted_answers: list[Content] = []
         for answer in answers:
-            approved = answer.approved is True
             if answer.type == "function_result":
                 self._results.pop(self._waiting_call(answer) or "").answer.set_result(answer)
-            elif answer.id in self._approvals:
-                self._approvals.pop(answer.id or "").set_result(approved)
             else:
-                hosted_answers.append(self._hosted.pop(answer.id or "").to_function_approval_response(approved))
-        return hosted_answers
-
-
-def declined_note(answer: Content) -> str:
-    """Providers tell the model nothing when a hosted call is declined, so it would say the call is still running."""
-    call = answer.function_call
-    name = call.name if call is not None else None
-    server = call.server_name if call is not None else None
-    return f"The user declined the call to {name} on {server}, so it did not run."
+                self._approvals.pop(answer.id or "").set_result(answer.approved is True)

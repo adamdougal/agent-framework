@@ -9,7 +9,7 @@ import importlib.util
 import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, cast
 
 from agent_framework._feature_stage import ExperimentalFeature, experimental
 from agent_framework._settings import SecretString
@@ -17,7 +17,6 @@ from agent_framework._telemetry import prepend_agent_framework_to_user_agent
 from agent_framework.exceptions import RealtimeConnectionException, SettingNotFoundError
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
-from ._chat_client import OpenAIChatClient
 from ._realtime_options import OpenAIRealtimeOptionsT
 from ._realtime_session import OpenAIRealtimeSession, _audio_format  # pyright: ignore[reportPrivateUsage]
 from ._shared import (
@@ -179,56 +178,6 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
             await session.close()
             raise
         return session
-
-    @staticmethod
-    def get_mcp_tool(
-        *,
-        name: str,
-        url: str,
-        description: str | None = None,
-        approval_mode: Literal["always_require", "never_require"] | dict[str, list[str]] | None = None,
-        allowed_tools: list[str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> Any:
-        """Declare a hosted MCP server, which the realtime service calls itself.
-
-        The agent never runs these tools. When a tool needs approval, the conversation streams a
-        ``function_approval_request`` whose ``function_call`` has ``hosted=True``; answer it with
-        ``request.to_function_approval_response(approved)`` through ``send(...)``. For an MCP server the app runs
-        itself, pass an ``MCPTool`` instead.
-
-        Keyword Args:
-            name: A label for the server; spaces become underscores.
-            url: The server's URL, which the service must be able to reach.
-            description: What the server offers.
-            approval_mode: ``"always_require"`` or ``"never_require"`` for every tool, or a dict with
-                ``"always_require_approval"`` and ``"never_require_approval"`` lists of tool names.
-            allowed_tools: The server's tools the model may call. ``None`` allows them all.
-            headers: HTTP headers for the service to send to the server.
-
-        Returns:
-            The tool declaration, to pass in ``tools=``.
-
-        Examples:
-            .. code-block:: python
-
-                from agent_framework import RealtimeAgent
-                from agent_framework.openai import OpenAIRealtimeClient
-
-                learn = OpenAIRealtimeClient.get_mcp_tool(
-                    name="mslearn", url="https://learn.microsoft.com/api/mcp", approval_mode="never_require"
-                )
-                agent = RealtimeAgent(OpenAIRealtimeClient(), tools=[learn])
-        """
-        # The realtime service declares MCP servers with the Responses API's fields.
-        return OpenAIChatClient.get_mcp_tool(
-            name=name,
-            url=url,
-            description=description,
-            approval_mode=approval_mode,
-            allowed_tools=allowed_tools,
-            headers=headers,
-        )
 
 
 class _OpenAIRealtimeConnection:

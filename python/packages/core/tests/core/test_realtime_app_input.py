@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Calls that wait for the app in a live realtime conversation: approvals, app-run tools and hosted approvals."""
+"""Calls that wait for the app in a live realtime conversation: approvals and app-run tools."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -200,7 +200,6 @@ async def test_an_approval_runs_the_recorded_call_whatever_the_answer_embeds() -
 
 
 async def test_answering_a_call_twice_raises() -> None:
-    """After an approval is answered, a second answer for the same request raises ValueError."""
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
@@ -607,184 +606,23 @@ async def test_approval_waits_count_toward_max_duration() -> None:
     assert client.session.calls == [("create_response", {"tool_choice": "none"})]
 
 
-# region Hosted approvals
-
-
-def _hosted_request(request_id: str = "mcpr_1", call_item_id: str = "mcp_1") -> RealtimeEvent:
-    """A provider's approval request for a hosted MCP call, linked to the call item the provider runs."""
-    call = Content.from_function_call(
-        call_id=call_item_id,
-        name="microsoft_docs_search",
-        arguments={"query": "Voice Live"},
-        hosted=True,
-        server_name="mslearn",
-    )
-    return event(
-        "function_approval_request",
-        content=Content.from_function_approval_request(id=request_id, function_call=call),
-    )
-
-
-async def test_a_hosted_approval_request_streams_as_an_assistant_update() -> None:
-    """A function_approval_request event whose function_call is hosted streams with role "assistant", and nothing is
-    sent or run."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client, name="researcher").start_conversation() as conversation:
-        updates = _collect(conversation)
-        client.session.emit(_hosted_request())
-        await eventually(lambda: bool(_of_type(updates, "function_approval_request")))
-
-    [request_update] = _of_type(updates, "function_approval_request")
-    assert (request_update.role, request_update.author_name) == ("assistant", "researcher")
-    assert client.session.sent == []
-    assert client.session.calls == []
-
-
-async def _hosted_request_streamed(client: FakeRealtimeClient, updates: list[AgentResponseUpdate]) -> Content:
-    client.session.emit(_hosted_request())
-    return await _approval_request(updates)
-
-
-def _hosted_answers(session: FakeRealtimeSession) -> list[tuple[str | None, bool | None]]:
-    return [
-        (content.id, content.approved)
-        for message in session.sent
-        if isinstance(message, Message)
-        for content in message.contents
-        if content.type == "function_approval_response"
-    ]
-
-
-async def test_approving_a_hosted_request_sends_the_answer_to_the_session() -> None:
-    """The app's hosted function_approval_response goes to the session, as sent."""
+async def test_a_hosted_mcp_tool_that_may_ask_for_approval_is_refused_before_anything_is_sent() -> None:
+    """A running conversation's update_session(tools=...) with a hosted MCP dict that doesn't set require_approval
+    raises ValueError, and the session is sent nothing."""
+    learn = {"type": "mcp", "server_label": "mslearn", "server_url": "https://learn.microsoft.com/api/mcp"}
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        request = await _hosted_request_streamed(client, updates)
-
-        await conversation.send(request.to_function_approval_response(approved=True))
-
-    assert _hosted_answers(client.session) == [("mcpr_1", True)]
-
-
-async def test_a_hosted_approvals_follow_up_waits_for_its_call_to_finish() -> None:
-    """After approving a request whose function_call.call_id is "mcp_1", no response is requested until a
-    hosted_call_done for item "mcp_1" arrives; then one follow-up is requested."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        request = await _hosted_request_streamed(client, updates)
-        await conversation.send(request.to_function_approval_response(approved=True))
-        await asyncio.sleep(0.02)
-
-        assert client.session.calls == []
-
-        client.session.emit(event("hosted_call_done", item_id="mcp_1", status="completed"))
-        await eventually(lambda: bool(client.session.calls))
-
-    assert client.session.calls == [("create_response", None)]
-
-
-async def test_a_hosted_call_done_streams_as_an_assistant_update() -> None:
-    """A hosted_call_done event streams with role "assistant", like the response that made the call."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        client.session.emit(event("hosted_call_done", item_id="mcp_1", status="completed"))
-        await eventually(lambda: bool(updates))
-
-    assert updates[0].role == "assistant"
-
-
-async def test_hosted_calls_approved_together_get_one_follow_up_once_all_are_done() -> None:
-    """One send approves requests for "mcp_1" and "mcp_2". The first hosted_call_done requests nothing; the second
-    requests one follow-up."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        client.session.emit(_hosted_request("mcpr_1", "mcp_1"), _hosted_request("mcpr_2", "mcp_2"))
-        first = await _approval_request(updates)
-        second = await _approval_request(updates, 1)
-        await conversation.send([
-            first.to_function_approval_response(approved=True),
-            second.to_function_approval_response(approved=True),
-        ])
-
-        client.session.emit(event("hosted_call_done", item_id="mcp_1", status="completed"))
-        await asyncio.sleep(0.02)
-
-        assert client.session.calls == []
-
-        client.session.emit(event("hosted_call_done", item_id="mcp_2", status="completed"))
-        await eventually(lambda: bool(client.session.calls))
-        await asyncio.sleep(0.02)
-
-    assert client.session.calls == [("create_response", None)]
-
-
-async def test_another_hosted_calls_completion_does_not_release_the_follow_up() -> None:
-    """After approving the call "mcp_1", a hosted_call_done for "mcp_2" requests nothing."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        request = await _hosted_request_streamed(client, updates)
-        await conversation.send(request.to_function_approval_response(approved=True))
-
-        client.session.emit(event("hosted_call_done", item_id="mcp_2", status="completed"))
-        await eventually(lambda: len(_of_type(updates, "realtime_event")) >= 1)
-        await asyncio.sleep(0.02)
+        with pytest.raises(ValueError, match="require_approval"):
+            await conversation.update_session(tools=[learn])
 
     assert client.session.calls == []
-
-
-async def test_approving_an_unlinked_hosted_request_follows_up_at_once() -> None:
-    """When the request's function_call.call_id is the request's own id, approving it requests the follow-up without
-    waiting."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        client.session.emit(_hosted_request(request_id="mcpr_1", call_item_id="mcpr_1"))
-        request = await _approval_request(updates)
-
-        await conversation.send(request.to_function_approval_response(approved=True))
-        await eventually(lambda: bool(client.session.calls))
-
-    assert client.session.calls == [("create_response", None)]
-
-
-async def test_rejecting_a_hosted_request_sends_a_note_then_follows_up() -> None:
-    """Rejecting microsoft_docs_search on mslearn sends the rejection, then a system message reading "The user declined
-    the call to microsoft_docs_search on mslearn, so it did not run.", then requests the follow-up."""
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        updates = _collect(conversation)
-        request = await _hosted_request_streamed(client, updates)
-
-        await conversation.send(request.to_function_approval_response(approved=False))
-        await eventually(lambda: bool(client.session.calls))
-
-    sent = [message for message in client.session.sent if isinstance(message, Message)]
-    assert [(message.role, message.contents[0].type) for message in sent] == [
-        ("user", "function_approval_response"),
-        ("system", "text"),
-    ]
-    assert sent[1].text == "The user declined the call to microsoft_docs_search on mslearn, so it did not run."
-    assert client.session.calls == [("create_response", None)]
 
 
 class TestVerification:
     async def test_approved_and_other_calls_run_in_model_order_without_concurrent_invocation(self) -> None:
         """With allow_concurrent_invocation=False, a response calls look_up (no approval), then issue_refund
-        (approval). After the approval, they run in that order: look_up, then issue_refund. Relies on the existing
-        model-order test and on approved calls joining the batch's execution list (approving a call)."""
+        (approval). After the approval, they run in that order: look_up, then issue_refund."""
         runs: list[Any] = []
 
         @tool
@@ -815,7 +653,7 @@ class TestVerification:
 
     async def test_an_answer_does_not_restart_the_tool_chain(self) -> None:
         """With max_function_calls=1, the approved call uses the chain's budget. A call in the follow-up's response
-        doesn't run. Relies on approving a call."""
+        doesn't run."""
         runs: list[Any] = []
 
         @tool
@@ -842,7 +680,7 @@ class TestVerification:
         assert str(_results(client.session)[1][1]).startswith("Error:")
 
     async def test_answering_while_a_response_is_active_does_not_raise(self) -> None:
-        """An answer requests no response of its own. Relies on approving a call."""
+        """An answer requests no response of its own."""
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
@@ -863,7 +701,7 @@ class TestVerification:
 
     async def test_a_local_mcp_function_that_needs_approval_asks_for_it(self) -> None:
         """An MCPTool with approval_mode="always_require" makes its function's call stream an approval request, and
-        run once approved. Relies on the approval tests."""
+        run once approved."""
         server = MCPServer("orders")
 
         @server.tool()
@@ -887,7 +725,6 @@ class TestVerification:
         assert "Cancelled order 42" in str(_results(client.session)[0][1])
 
     async def test_an_additional_tools_call_waits_for_the_apps_result(self) -> None:
-        """A tool named in additional_tools is answered by the app. Relies on the app-run tests."""
         runs: list[str] = []
 
         @tool
@@ -935,7 +772,6 @@ class TestVerification:
         assert str(_results(client.session)[0][1]).startswith("Error:")
 
     async def test_a_response_created_while_a_batch_waits_is_not_its_follow_up(self) -> None:
-        """Relies on approving a call."""
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
@@ -950,7 +786,6 @@ class TestVerification:
         assert client.session.calls == [("create_response", None)]
 
     async def test_the_caller_speaking_leaves_an_approval_request_open(self) -> None:
-        """Relies on approving a call."""
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
@@ -968,7 +803,6 @@ class TestVerification:
         assert _results(client.session) == [("call_1", "refunded 5")]
 
     async def test_removing_a_waiting_calls_tool_does_not_stop_it(self) -> None:
-        """Relies on approving a call."""
         runs: list[int] = []
         client = FakeRealtimeClient()
 
@@ -984,8 +818,8 @@ class TestVerification:
         assert runs == [5]
 
     async def test_close_settles_waiting_calls_as_conversation_closed(self) -> None:
-        """An approval call and an app-run call wait. Each streams a result whose exception is
-        "conversation_closed", and none is sent. Relies on the approval and app-run tests."""
+        """An approval call and an app-run call wait. Each streams a result whose exception is "conversation_closed",
+        and none is sent."""
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(
@@ -1006,7 +840,6 @@ class TestVerification:
         assert _tool_messages(client.session) == []
 
     async def test_an_answer_after_close_raises(self) -> None:
-        """Relies on approving a call."""
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
@@ -1019,7 +852,6 @@ class TestVerification:
                 await conversation.send(request.to_function_approval_response(approved=True))
 
     async def test_history_holds_a_waiting_call_with_its_result_and_no_approval_contents(self) -> None:
-        """Relies on approving a call."""
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
@@ -1038,57 +870,15 @@ class TestVerification:
         assert [content.type for content in contents] == ["function_call", "function_result"]
         assert contents[1].result == "refunded 5"
 
-    async def test_a_response_before_the_hosted_call_is_done_is_not_its_follow_up(self) -> None:
-        """Relies on the hosted follow-up waiting for its call."""
-        client = FakeRealtimeClient()
-
-        async with RealtimeAgent(client).start_conversation() as conversation:
-            updates = _collect(conversation)
-            request = await _hosted_request_streamed(client, updates)
-            await conversation.send(request.to_function_approval_response(approved=True))
-            client.session.emit(*_response("resp_2"))
-            client.session.emit(event("hosted_call_done", item_id="mcp_1", status="completed"))
-            await eventually(lambda: bool(client.session.calls))
-
-        assert client.session.calls == [("create_response", None)]
-
-    async def test_an_answer_for_an_unknown_hosted_request_raises(self) -> None:
-        """Relies on hosted answers and on routing that refuses unknown ids."""
-        client = FakeRealtimeClient()
-        call = Content.from_function_call(call_id="mcp_9", name="microsoft_docs_search", hosted=True)
-
-        async with RealtimeAgent(client).start_conversation() as conversation:
-            with pytest.raises(ValueError):
-                await conversation.send(Content.from_function_approval_response(True, "mcpr_9", call))
-
-        assert client.session.sent == []
-
-    async def test_answering_a_hosted_request_twice_raises(self) -> None:
-        """Relies on answering twice and hosted answers."""
-        client = FakeRealtimeClient()
-
-        async with RealtimeAgent(client).start_conversation() as conversation:
-            updates = _collect(conversation)
-            request = await _hosted_request_streamed(client, updates)
-            await conversation.send(request.to_function_approval_response(approved=True))
-
-            with pytest.raises(ValueError):
-                await conversation.send(request.to_function_approval_response(approved=True))
-
-    async def test_close_drops_an_owed_hosted_follow_up(self) -> None:
-        """Relies on the hosted follow-up waiting for its call."""
-        client = FakeRealtimeClient()
-
-        async with RealtimeAgent(client).start_conversation() as conversation:
-            updates = _collect(conversation)
-            request = await _hosted_request_streamed(client, updates)
-            await conversation.send(request.to_function_approval_response(approved=True))
-
-        assert client.session.calls == []
-
-    async def test_hosted_declarations_pass_entry_and_updates_untouched(self) -> None:
-        """A hosted MCP dict reaches start_session and update_session as given, beside a function tool."""
-        learn = {"type": "mcp", "server_label": "mslearn", "server_url": "https://learn.microsoft.com/api/mcp"}
+    async def test_hosted_declarations_that_never_ask_for_approval_pass_entry_and_updates_untouched(self) -> None:
+        """A hosted MCP dict with require_approval "never" reaches start_session and update_session as given, beside a
+        function tool."""
+        learn = {
+            "type": "mcp",
+            "server_label": "mslearn",
+            "server_url": "https://learn.microsoft.com/api/mcp",
+            "require_approval": "never",
+        }
         account = _account_tool()
         client = FakeRealtimeClient()
 
@@ -1098,21 +888,7 @@ class TestVerification:
         assert client.start_session_calls[0]["tools"] == [account, learn]
         assert client.session.calls == [("update_session", {}, [learn])]
 
-    async def test_a_hosted_rejections_note_stays_out_of_history(self) -> None:
-        """Relies on the hosted rejection test."""
-        client = FakeRealtimeClient()
-
-        async with RealtimeAgent(client).start_conversation() as conversation:
-            updates = _collect(conversation)
-            request = await _hosted_request_streamed(client, updates)
-            await conversation.send(request.to_function_approval_response(approved=False))
-            await eventually(lambda: bool(client.session.calls))
-
-        assert not [message for message in conversation.history if "declined" in message.text]
-
     async def test_a_call_needing_approval_in_a_disabled_loop_gets_the_disabled_error_without_asking(self) -> None:
-        """With function invocation disabled, a call to an always_require tool settles with the disabled error, and no
-        approval request streams. Relies on approvals being asked only for calls that can run."""
         client = FakeRealtimeClient()
         agent = RealtimeAgent(client, tools=[_refund_tool([])], function_invocation_configuration={"enabled": False})
 

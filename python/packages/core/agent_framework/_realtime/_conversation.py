@@ -20,13 +20,7 @@ from .._mcp import MCPTool
 from .._middleware import categorize_middleware
 from .._sessions import AgentSession, HistoryProvider, SessionContext
 from .._tools import normalize_tools
-from .._types import (
-    AgentResponseUpdate,
-    Content,
-    Message,
-    _append_instructions,  # pyright: ignore[reportPrivateUsage]
-    normalize_messages,
-)
+from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
 from ..exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -35,7 +29,7 @@ from ..exceptions import (
     RealtimeException,
 )
 from ._acknowledgements import AcknowledgedT, await_acknowledgement
-from ._app_input import AppInput, declined_note
+from ._app_input import AppInput
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._handoffs import CallSettings, handoff_completed, participant_update, start_settings
@@ -56,7 +50,7 @@ CALLER_TRANSCRIPT_WAIT_SECONDS = 3.0
 if TYPE_CHECKING:
     from .._middleware import FunctionMiddlewareTypes
     from .._tools import FunctionInvocationConfiguration, ToolTypes
-    from .._types import AgentRunInputs
+    from .._types import AgentRunInputs, Message
     from ._agent import RawRealtimeAgent
     from ._clients import RealtimeClientSessionProtocol
 
@@ -228,6 +222,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         abandoned, so a hung server can't hold up close, and the connection never joins an agent that has already
         exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
         """
+        _refuse_hosted_approvals(tools)
         resolving = append_tools_with_mcp_functions(
             [], tools, exit_stack=self._mcp_exit_stack, connection_kwargs=self._mcp_connection_kwargs
         )
@@ -359,10 +354,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             truncations = self._audio.on_item_truncated(event)
             self._cut_unheard(truncations, self._mark_unheard_text(self._audio.response_cut_at(core["item_id"])))
             self._history.on_item_truncated(event, self._audio.generated_ms(core["item_id"], core["content_index"]))
-        elif event.kind == "function_approval_request" and event.content is not None:
-            self._app_input.hosted_request(event.content)
-        elif event.kind == "hosted_call_done":
-            self._tool_loop.on_hosted_call_done(core["item_id"])
         elif event.kind == "input_transcription":
             self._history.on_input_transcription(event)
         elif event.kind == "input_transcription_failed":
@@ -450,8 +441,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         messages = normalize_messages(value)
         answers = [content for message in messages for content in message.contents if _is_an_answer(content)]
         if answers:
-            if hosted_answers := self._app_input.route(answers):
-                await self._send_hosted_answers(hosted_answers)
+            self._app_input.route(answers)
             messages = _without_answers(messages)
             if not messages:
                 return
@@ -464,16 +454,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._tool_loop.on_new_input()
         if create_response:
             await self.create_response()
-
-    async def _send_hosted_answers(self, answers: list[Content]) -> None:
-        """The provider runs or skips the hosted call itself; the loop only follows up."""
-        declined = [declined_note(answer) for answer in answers if not answer.approved]
-        async with self._write_lock:
-            session = self._require_open_session()
-            await session.send(Message("user", answers))
-            if declined:
-                await session.send(Message("system", declined))
-        self._tool_loop.on_hosted_answers(answers)
 
     async def _add_app_input(self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], message: Message) -> None:
         await session.send(message)
@@ -547,7 +527,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             tools: The tools to use instead of the current ones, or ``None`` to keep them.
 
         Raises:
-            ValueError: If two tools share a name, including an MCP tool's functions; nothing is sent.
+            ValueError: If two tools share a name, including an MCP tool's functions, or a hosted MCP tool doesn't set
+                ``require_approval`` to ``"never"``; nothing is sent.
             ToolException: If an MCP tool fails to connect; nothing is sent.
             RealtimeConversationClosedException: If the conversation has started closing.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the update in time; it may still apply
@@ -602,8 +583,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             tools: More tools for ``agent``, until the next handoff.
 
         Raises:
-            ValueError: If ``agent`` uses another client instance or is outside the owner's handoff topology, or two
-                tools share a name, including an MCP tool's functions; nothing is sent.
+            ValueError: If ``agent`` uses another client instance or is outside the owner's handoff topology, two
+                tools share a name, including an MCP tool's functions, or a hosted MCP tool doesn't set
+                ``require_approval`` to ``"never"``; nothing is sent.
             MiddlewareException: If ``agent``'s middleware includes a bundle with middleware a realtime conversation
                 can't run, such as agent middleware; nothing is sent.
             ToolException: If an MCP tool fails to connect; nothing is sent.
@@ -921,6 +903,19 @@ async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any])
         await session.close()
     except Exception as error:
         logger.warning("Closing the realtime session after entry failed also failed: %s", error)
+
+
+def _refuse_hosted_approvals(tools: Sequence[ToolTypes]) -> None:
+    """Nothing answers a hosted tool's approval request yet, so its call would wait forever."""
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            continue
+        declaration = cast(Mapping[str, Any], tool)
+        if declaration.get("type") == "mcp" and declaration.get("require_approval") != "never":
+            raise ValueError(
+                f"The hosted MCP tool {declaration.get('server_label')!r} may ask for approval, which realtime "
+                "agents don't support yet. Set its require_approval to 'never'."
+            )
 
 
 def _is_an_answer(content: Content) -> bool:

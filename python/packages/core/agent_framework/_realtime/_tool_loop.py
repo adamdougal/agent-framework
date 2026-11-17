@@ -77,14 +77,6 @@ class _Call:
         return self.approval or self.content
 
 
-@dataclass
-class _HostedFollowUp:
-    """One send's hosted answers get one follow-up, once every call they approved is done."""
-
-    chain: _ToolChain
-    running: set[str]
-
-
 class _ToolChain:
     """The responses and calls driven by one caller turn or app input, which the loop's limits count.
 
@@ -168,8 +160,6 @@ class ToolLoop:
         self._calls_left_for_close: list[_Call] = []
         self._closing = False
         self._calls_by_response: dict[str, list[_Call]] = {}
-        # Approved hosted calls the provider is running, by call item, each with the follow-up it holds back.
-        self._hosted_calls_running: dict[str, _HostedFollowUp] = {}
 
     def use_call(self, call: CallSettings) -> None:
         """Context providers add to the call's settings once they've run, before any call arrives."""
@@ -229,31 +219,6 @@ class ToolLoop:
         Batches still running count toward their own chain.
         """
         self._chain = _ToolChain(self._configuration)
-
-    def on_hosted_answers(self, answers: Sequence[Content]) -> None:
-        """The provider runs an approved hosted call only after the approval, and starts no response for it.
-
-        A request the provider client couldn't link to its call names itself instead, and no completion will ever name
-        it, so its follow-up can't wait.
-        """
-        follow_up = _HostedFollowUp(self._chain, set())
-        for answer in answers:
-            call_item_id = answer.function_call.call_id if answer.function_call is not None else None
-            if answer.approved and call_item_id and call_item_id != answer.id:
-                follow_up.running.add(call_item_id)
-                self._hosted_calls_running[call_item_id] = follow_up
-        if not follow_up.running:
-            self._results_are_out(follow_up.chain)
-            self._follow_up_due(follow_up.chain)
-
-    def on_hosted_call_done(self, item_id: str) -> None:
-        """A follow-up requested before the hosted call finishes can't see its result, so it waits for this."""
-        if (follow_up := self._hosted_calls_running.pop(item_id, None)) is None:
-            return
-        follow_up.running.discard(item_id)
-        if not follow_up.running:
-            self._results_are_out(follow_up.chain)
-            self._follow_up_due(follow_up.chain)
 
     def on_response_done(self, response_id: str, status: str) -> None:
         if self._closing:
@@ -317,9 +282,9 @@ class ToolLoop:
             self._report(call)
 
     def _report(self, call: _Call) -> None:
-        if call.app_result is not None and not call.app_result.done():
+        if call.app_result is not None:
             # Settled without the app, so a late answer for it answers nothing.
-            self._app_input.withdraw(call.app_result)
+            self._app_input.withdraw(call.content.id or "")
         if call.result is not None and not call.reported:
             call.reported = True
             self._conversation._report_tool_result(call.result, call.response_id)  # pyright: ignore[reportPrivateUsage]
@@ -387,7 +352,7 @@ class ToolLoop:
         # An approved call to a tool the app runs still needs the app's result, which it may already have sent.
         awaiting_result += [call for call in awaiting_approval if call.result is None and call.app_result is not None]
         runnable = [call for call in calls if call.result is None and call not in awaiting_result]
-        terminated, executed = await self._execute(runnable, chain)
+        terminated, executed = await self._execute(runnable)
         for call in runnable:
             if call.input_requests:
                 self._request_input(call)
@@ -402,7 +367,9 @@ class ToolLoop:
         results = [call.result for call in calls if call.result is not None]
         await self._declare_tool_changes()
         await self._conversation._send_tool_results(Message("tool", results))  # pyright: ignore[reportPrivateUsage]
-        self._results_are_out(chain)
+        self._results_marker = self._responses.created_count
+        if chain.first_results_marker is None:
+            chain.first_results_marker = self._results_marker
         for call in calls:
             self._report(call)
         if not terminated:
@@ -419,12 +386,8 @@ class ToolLoop:
                 call.result = approval_rejection_result(call.content, id=call.content.id)
 
     async def _await_results(self, calls: Sequence[_Call]) -> None:
-        # Each result is kept as it arrives, so one the app already sent survives a close while others still wait.
-        await asyncio.gather(*(self._take_app_result(call) for call in calls))
-
-    async def _take_app_result(self, call: _Call) -> None:
-        if call.app_result is not None:
-            await call.app_result
+        await asyncio.gather(*(call.app_result for call in calls if call.app_result is not None))
+        for call in calls:
             call.result = _accepted_app_result(call)
 
     def _request_approval(self, call: _Call) -> asyncio.Future[bool]:
@@ -470,12 +433,6 @@ class ToolLoop:
             else:
                 # Another batch may have changed the live list while this update waited; that change goes out next.
                 self._declared = declaring
-
-    def _results_are_out(self, chain: _ToolChain) -> None:
-        """Only responses created from here on can act on the results, so only they count as the follow-up."""
-        self._results_marker = self._responses.created_count
-        if chain.first_results_marker is None:
-            chain.first_results_marker = self._results_marker
 
     def _follow_up_due(self, chain: _ToolChain) -> None:
         """Follow-ups due together merge into one request."""
@@ -545,7 +502,7 @@ class ToolLoop:
             # response.created arrives here. Request another.
             self._responses.answers_only_earlier_results(response_id)
 
-    async def _execute(self, calls: Sequence[_Call], chain: _ToolChain) -> tuple[bool, int]:
+    async def _execute(self, calls: Sequence[_Call]) -> tuple[bool, int]:
         """Return whether function middleware ended the loop, and how many calls ran.
 
         A response's calls only mix agents when the app hands off while they're arriving, so each agent's calls run in
