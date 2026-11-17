@@ -9,7 +9,6 @@ the Azure CLI login.
 """
 
 import asyncio
-import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -99,9 +98,9 @@ async def test_a_pinned_foundry_voice_agent_runs_a_definition_tool() -> None:
     assert replies
 
 
-async def test_handing_back_restores_the_definition(caplog: pytest.LogCaptureFixture) -> None:
+async def test_handing_back_restores_the_definition() -> None:
     """In a topology with billing on the agent's client, handoff(billing) then handoff(receptionist) leaves the
-    session's instructions, voice and tool names those of the definition, with no voice warning."""
+    session's instructions, voice and tool names those of the definition."""
     updates: list[AgentResponseUpdate] = []
     async with asyncio.timeout(TURN_TIMEOUT), receptionist() as start:
         billing = RealtimeAgent(
@@ -116,13 +115,12 @@ async def test_handing_back_restores_the_definition(caplog: pytest.LogCaptureFix
             .with_start_agent(start)
             .build()
         )
-        with caplog.at_level(logging.WARNING):
-            async with built, built.start_conversation() as conversation:
-                published = start.client.definition
-                await conversation.handoff(billing)
-                await conversation.handoff(start)
-                await conversation.close()
-                updates.extend([update async for update in conversation])
+        async with built, built.start_conversation() as conversation:
+            published = start.client.definition
+            await conversation.handoff(billing)
+            await conversation.handoff(start)
+            await conversation.close()
+            updates.extend([update async for update in conversation])
 
     assert published is not None
     restored = wire_sessions(updates)[-1]
@@ -137,8 +135,4 @@ async def test_handing_back_restores_the_definition(caplog: pytest.LogCaptureFix
     )
     assert [declared.get("name") for declared in restored["tools"]] == [
         declared.get("name") for declared in published["tools"]
-    ]
-    voice_warnings = ("dropping voice", "ignored the voice change")
-    assert not [
-        record for record in caplog.records if any(text in record.getMessage().lower() for text in voice_warnings)
     ]

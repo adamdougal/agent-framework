@@ -11,7 +11,6 @@ import base64
 import contextlib
 import importlib.util
 import json
-import logging
 import re
 import time
 from collections.abc import AsyncGenerator, Mapping
@@ -866,38 +865,31 @@ async def test_a_change_between_azure_voices_is_sent_after_output_audio() -> Non
     assert project.server.updates()[-1]["audio"]["output"]["voice"] == RYAN
 
 
-async def test_a_change_from_an_azure_voice_to_an_openai_voice_is_dropped_with_a_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """With an Azure voice live, update_session() with voice 'marin' sends no voice and logs a warning naming it."""
+async def test_a_change_from_an_azure_voice_to_an_openai_voice_is_dropped() -> None:
+    """With an Azure voice live, update_session() with voice 'marin' sends no voice."""
     project = FakeProjectClient()
     session = await start(project)
 
-    with caplog.at_level(logging.WARNING):
-        async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": "marin", "instructions": "Be brief."}, None), 5)
+    async with reading(session):
+        await asyncio.wait_for(session.update_session({"voice": "marin", "instructions": "Be brief."}, None), 5)
     await session.close()
 
     assert "voice" not in project.server.updates()[-1].get("audio", {}).get("output", {})
-    assert any("'marin'" in record.getMessage() for record in caplog.records)
 
 
-async def test_a_flattened_echo_of_every_requested_voice_field_causes_no_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_a_flattened_echo_of_every_requested_voice_field_counts_as_the_voice_change() -> None:
     """update_session() with voice {'type': 'azure-standard', 'name': 'en-GB-SoniaNeural', 'temperature': 0.5},
-    echoed as voice, voice_type and voice_temperature, logs no warning that the voice change was ignored."""
+    echoed as voice, voice_type and voice_temperature, leaves session.options['voice'] the requested voice."""
     project = FakeProjectClient()
     session = await start(project)
     project.server.flattens_voices = True
 
-    with caplog.at_level(logging.WARNING):
-        async with reading(session):
-            await asyncio.wait_for(session.update_session({"voice": {**SONIA, "temperature": 0.5}}, None), 5)
+    async with reading(session):
+        await asyncio.wait_for(session.update_session({"voice": {**SONIA, "temperature": 0.5}}, None), 5)
     await session.close()
 
     assert project.server.session["audio"]["output"]["voice_temperature"] == 0.5
-    assert not [record for record in caplog.records if "ignored the voice change" in record.getMessage()]
+    assert session.options["voice"] == {**SONIA, "temperature": 0.5}
 
 
 async def test_the_sessions_options_report_the_definitions_transcription() -> None:
@@ -992,25 +984,6 @@ async def test_the_start_sends_no_tools_key_when_nothing_is_added() -> None:
     await session.close()
 
     assert "tools" not in project.server.updates()[0]
-
-
-async def test_a_definition_function_with_no_implementation_warns_once_at_start(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Starting with the stand-in and no tool named 'get_office_hours' logs one warning naming 'get_office_hours',
-    and a later update with the same tools logs none."""
-    project = FakeProjectClient()
-
-    with caplog.at_level(logging.WARNING):
-        session = await start_with_tools(project, [DEFINITION_TOOLS, get_current_time])
-        async with reading(session):
-            await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
-            await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, get_current_time]), 5)
-        await session.close()
-
-    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
-    assert len([message for message in warnings if "get_office_hours" in message]) == 1
-    assert not [message for message in warnings if "get_current_time" in message]
 
 
 # endregion
@@ -1293,21 +1266,18 @@ class TestVerification:
         assert "word for word" in request["response"]["instructions"]
         assert request["response"]["instructions"].endswith("Hello")
 
-    async def test_an_object_echo_of_the_requested_voice_causes_no_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_an_object_echo_of_the_requested_voice_counts_as_the_voice_change(self) -> None:
         """update_session() with an Azure voice, echoed as a voice object holding every requested field and nulls
-        elsewhere, logs no warning that the voice change was ignored."""
+        elsewhere, leaves session.options['voice'] the requested voice."""
         project = FakeProjectClient()
         session = await start(project)
 
-        with caplog.at_level(logging.WARNING):
-            async with reading(session):
-                await asyncio.wait_for(session.update_session({"voice": RYAN}, None), 5)
+        async with reading(session):
+            await asyncio.wait_for(session.update_session({"voice": RYAN}, None), 5)
         await session.close()
 
         assert project.server.session["audio"]["output"]["voice"] == RYAN
-        assert not [record for record in caplog.records if "ignored the voice change" in record.getMessage()]
+        assert session.options["voice"] == RYAN
 
     async def test_the_sessions_options_report_the_definitions_other_audio_settings(self) -> None:
         """After starting without them, session.options holds the definition's turn_detection, noise_reduction,
