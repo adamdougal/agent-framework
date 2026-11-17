@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from .._types import AgentResponse, AgentResponseUpdate, ResponseStream
-from ..exceptions import RealtimeException
+from ..exceptions import RealtimeConversationClosedException, RealtimeException
 
 if TYPE_CHECKING:
     from ._conversation import RealtimeConversation
@@ -26,7 +27,9 @@ async def _turn_updates(
 ) -> AsyncIterator[AgentResponseUpdate]:
     async with conversation:
         if not turn_detection_responds:
-            await conversation.create_response()
+            # A close that interrupts the request has its own cause, such as a failed response, which iteration raises.
+            with contextlib.suppress(RealtimeConversationClosedException):
+                await conversation.create_response()
         async for update in conversation:
             yield update
 

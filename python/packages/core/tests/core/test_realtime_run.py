@@ -210,6 +210,18 @@ async def test_a_response_that_ends_failed_raises_with_the_providers_error_code_
     assert "Boom." in str(failure.value)
 
 
+async def test_a_response_that_fails_before_its_request_returns_still_raises_the_providers_error() -> None:
+    client = FakeRealtimeClient()
+    client.replies.append([
+        event("response_created", response_id="resp_1"),
+        event("response_done", response_id="resp_1", status="failed", error_code="server_error", error_message="Boom."),
+    ])
+    client.session_holds["create_response"] = asyncio.Event()
+
+    with pytest.raises(RealtimeException, match="server_error"):
+        await RealtimeAgent(client).run("Hi")
+
+
 async def test_the_session_closing_before_the_turn_ends_fails_the_run() -> None:
     client = FakeRealtimeClient()
     client.replies.append([event("response_created", response_id="resp_1")])
