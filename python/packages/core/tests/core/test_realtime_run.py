@@ -297,6 +297,16 @@ async def test_audio_in_an_earlier_agents_reply_is_left_out_of_the_input() -> No
     assert sent == [("assistant", ["text"]), ("user", ["text"])]
 
 
+async def test_a_run_refuses_audio_given_by_uri_before_opening_a_session() -> None:
+    client = FakeRealtimeClient()
+    clip = Message("user", [Content.from_uri("https://example.com/utterance.pcm", media_type="audio/pcm;rate=24000")])
+
+    with pytest.raises(ValueError, match="as data"):
+        await RealtimeAgent(client).run(clip)
+
+    assert client.sessions == []
+
+
 async def test_a_reply_whose_audio_interleaves_its_transcript_returns_the_transcript_once() -> None:
     client = FakeRealtimeClient()
     client.replies.append([

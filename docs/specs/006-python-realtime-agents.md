@@ -137,8 +137,9 @@ class RealtimeOptions(TypedDict, total=False):
   follows doesn't stop its report.
 - A run's input that is only audio leaves the response to turn detection, as `send(...)` does, so the run requests
   none itself. Audio in messages from other roles, such as an earlier agent's reply that a workflow passes on, is left
-  out, because the session would send it as the caller speaking; their text still goes in. Tool calls and results in a
-  run's input go in as context, as `start_conversation(messages=...)` sends them, never as answers.
+  out, because the session would send it as the caller speaking; their text still goes in. Audio given as a URI raises
+  `ValueError` before the session opens, because sessions drop it and turn detection would never hear it. Tool calls
+  and results in a run's input go in as context, as `start_conversation(messages=...)` sends them, never as answers.
 - `RealtimeOptions` replaces ADR 0035's `RealtimeSessionOptions`, and its `create_response` lives in turn detection.
   `None` turns a feature off. `OpenAIRealtimeOptions`, `VoiceLiveOptions` and `FoundryVoiceAgentOptions` extend it.
   `AzureVoice`, `AzureTurnDetection`, `AzureTranscription` and `AzureNoiseReduction` add Azure's types and fields, and

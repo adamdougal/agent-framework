@@ -29,3 +29,13 @@ def without_agents_audio(messages: Sequence[Message]) -> list[Message]:
         if message.contents:
             kept.append(message)
     return kept
+
+
+def refuse_audio_by_uri(messages: Sequence[Message]) -> None:
+    """A session drops audio it doesn't hold, so turn detection would never hear it and a run would wait forever.
+
+    Raises:
+        ValueError: If any message holds audio as a URI.
+    """
+    if any(content.type == "uri" and is_audio(content) for message in messages for content in message.contents):
+        raise ValueError("A realtime session can only send audio it holds as data; pass it with Content.from_data().")

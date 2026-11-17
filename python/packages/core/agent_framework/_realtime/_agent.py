@@ -21,7 +21,7 @@ from .._tools import (
     normalize_tools,
 )
 from .._types import normalize_messages
-from ._audio_input import is_audio_only, without_agents_audio
+from ._audio_input import is_audio_only, refuse_audio_by_uri, without_agents_audio
 from ._conversation import RealtimeConversation
 from ._handoffs import call_settings, start_settings
 from ._options import RealtimeOptionsT
@@ -359,6 +359,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             update, whose ``get_final_response()`` returns that response. Leaving the stream early closes the session.
 
         Raises:
+            ValueError: If the input holds audio as a URI, which a realtime session can't send; nothing is opened.
             RealtimeControlException: If the provider rejects the run's response request or a tool follow-up.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge one of those requests in time.
             RealtimeException: If a response ends ``failed``, with the provider's error code and message, or the
@@ -367,6 +368,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         if client_kwargs:
             logger.warning("Realtime clients take no per-run arguments, so client_kwargs is ignored.")
         run_input = without_agents_audio(normalize_messages(messages))
+        refuse_audio_by_uri(run_input)
         response_stream = run_stream(
             self._conversation(
                 run_input,
