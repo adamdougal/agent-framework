@@ -41,6 +41,8 @@ class FakeRealtimeSession:
         self.sent: list[RealtimeEvent | Message] = []
         self.calls: list[tuple[Any, ...]] = []
         self.update_session_error: BaseException | None = None
+        # A run's session is created inside the run, so its scripted replies come from the client.
+        self.replies: list[list[RealtimeEvent]] = []
         self._events: asyncio.Queue[RealtimeEvent | None] = asyncio.Queue()
         self._responses = 0
 
@@ -63,6 +65,10 @@ class FakeRealtimeSession:
 
     async def create_response(self, options: Any = None) -> str:
         self.calls.append(("create_response", options))
+        if self.replies:
+            reply = self.replies.pop(0)
+            self.emit(*reply)
+            return str(reply[0].additional_properties["core"]["response_id"])
         self._responses += 1
         return f"follow_up_{self._responses}"
 
@@ -75,6 +81,7 @@ class FakeRealtimeClient:
 
     def __init__(self) -> None:
         self.sessions: list[FakeRealtimeSession] = []
+        self.replies: list[list[RealtimeEvent]] = []
 
     @property
     def session(self) -> FakeRealtimeSession:
@@ -82,6 +89,7 @@ class FakeRealtimeClient:
 
     async def start_session(self, *, options: Any = None, tools: Sequence[ToolTypes] | None = None) -> Any:
         self.sessions.append(FakeRealtimeSession(options, tools))
+        self.session.replies = self.replies
         return self.session
 
 
@@ -613,3 +621,23 @@ class TestVerification:
             RealtimeHandoffBuilder(participants=[receptionist, _billing(client)]).with_start_agent(receptionist).build()
 
         assert not caplog.records
+
+    async def test_a_run_on_a_handoff_agent_hands_off_and_credits_the_reply_to_the_target(self) -> None:
+        client = FakeRealtimeClient()
+        receptionist, billing = _receptionist(client), _billing(client)
+        agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+        answer = Content.from_text("Your balance is £42.", merge_mode="replace", status="completed")
+        client.replies.extend([
+            _response("resp_1", _call("call_1", "handoff_to_billing")),
+            [
+                _event("response_created", response_id="resp_2"),
+                _event("item_added", item_id="item_2", previous_item_id=None, role="assistant"),
+                _event("output_text", content=answer, response_id="resp_2", item_id="item_2", content_index=0),
+                _event("response_done", response_id="resp_2", status="completed"),
+            ],
+        ])
+
+        response = await agent.run("What's my balance?")
+
+        assert response.text == "Your balance is £42."
+        assert response.messages[-1].author_name == "billing"

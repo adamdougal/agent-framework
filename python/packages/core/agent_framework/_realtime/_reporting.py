@@ -5,19 +5,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .._sessions import SessionContext
 from .._types import AgentResponse
 
 if TYPE_CHECKING:
-    from .._agents import BaseAgent
     from .._sessions import AgentSession, ContextProvider
+    from ._agent import RawRealtimeAgent
     from ._history import Exchange
 
 
 async def report_exchanges(
-    agent: BaseAgent, session: AgentSession, start: SessionContext, exchanges: Sequence[Exchange]
+    agent: RawRealtimeAgent[Any], session: AgentSession, start: SessionContext, exchanges: Sequence[Exchange]
 ) -> list[Exception]:
     """A failing provider skips the later exchanges, so one store's outage can't lose the call for the others."""
     providers = list(reversed(agent.context_providers))
@@ -29,8 +29,7 @@ async def report_exchanges(
                 continue
             try:
                 await provider.after_run(
-                    # A realtime agent has no run(), which SupportsAgentRun requires; providers read its identity.
-                    agent=agent,  # type: ignore[arg-type]
+                    agent=agent,
                     session=session,
                     context=context,
                     state=session.state.setdefault(provider.source_id, {}),

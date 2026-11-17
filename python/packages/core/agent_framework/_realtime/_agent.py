@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import logging
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Generic, Self
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self, overload
 
 from .._agents import BaseAgent, _provider_service_session_state_keys  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
@@ -20,15 +21,19 @@ from .._tools import (
     normalize_tools,
 )
 from .._types import normalize_messages
+from ._audio_input import is_audio_only, without_agents_audio
 from ._conversation import RealtimeConversation
 from ._handoffs import call_settings, start_settings
 from ._options import RealtimeOptionsT
+from ._run import run_stream
+
+logger = logging.getLogger("agent_framework")
 
 if TYPE_CHECKING:
     from .._middleware import MiddlewareTypes
     from .._sessions import AgentSession, ContextProvider
     from .._tools import FunctionInvocationConfiguration, ToolTypes
-    from .._types import AgentRunInputs
+    from .._types import AgentResponse, AgentResponseUpdate, AgentRunInputs, ResponseStream
     from ._clients import RealtimeClientProtocol
 
 
@@ -37,6 +42,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
     """A realtime agent without middleware or telemetry layers.
 
     Function tools still run when middleware and telemetry are bypassed.
+
+    ``start_conversation()`` holds a live, full-duplex conversation. ``run()`` takes one bounded turn over a realtime
+    session of its own, so the agent can stand in wherever an agent is run, such as a workflow or a host.
 
     A conversation declares and runs each local MCP tool's functions, copied when it starts and on
     ``update_session(tools=...)``. ``async with agent`` connects the agent's MCP tools that aren't connected yet;
@@ -52,6 +60,13 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
                 await conversation.send("What's the weather in Paris?")
                 async for update in conversation:
                     print(update.text)
+
+        One turn, returning the agent's transcript and audio:
+
+        .. code-block:: python
+
+            response = await agent.run("What's the weather in Paris?")
+            print(response.text)
 
         With an MCP tool, enter the agent so its connection closes with it:
 
@@ -201,6 +216,31 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             raise ValueError("control_timeout must be greater than 0.")
         if max_queued_updates < 1:
             raise ValueError("max_queued_updates must be at least 1.")
+        return self._conversation(
+            messages,
+            session=session,
+            options=options,
+            tools=tools,
+            middleware=middleware,
+            function_invocation_kwargs=function_invocation_kwargs,
+            control_timeout=control_timeout,
+            max_queued_updates=max_queued_updates,
+            half_duplex=False,
+        )
+
+    def _conversation(
+        self,
+        messages: AgentRunInputs | None,
+        *,
+        session: AgentSession | None,
+        options: RealtimeOptionsT | None,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None,
+        middleware: Sequence[MiddlewareTypes] | None,
+        function_invocation_kwargs: Mapping[str, Any] | None,
+        control_timeout: float,
+        max_queued_updates: int,
+        half_duplex: bool,
+    ) -> RealtimeConversation[RealtimeOptionsT]:
         invocation_configuration = normalize_function_invocation_configuration(self.function_invocation_configuration)
         own_middleware = categorize_middleware(self.middleware, supported_categories=("function",))["function"]
         start_middleware = categorize_middleware(middleware, supported_categories=("function",))["function"]
@@ -226,6 +266,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             mcp_exit_stack=self._exit_stack,
             control_timeout=control_timeout,
             max_queued_updates=max_queued_updates,
+            half_duplex=half_duplex,
         )
 
     def _add_history_when_none_loads(self, session: AgentSession | None) -> None:
@@ -235,10 +276,119 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             # Load history before providers such as compaction inspect the context.
             self.context_providers.insert(0, InMemoryHistoryProvider())
 
+    @overload
+    def run(
+        self,
+        messages: AgentRunInputs | None = None,
+        *,
+        stream: Literal[False] = ...,
+        session: AgentSession | None = None,
+        options: RealtimeOptionsT | None = None,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,
+        middleware: Sequence[MiddlewareTypes] | None = None,
+        function_invocation_kwargs: Mapping[str, Any] | None = None,
+        client_kwargs: Mapping[str, Any] | None = None,
+    ) -> Awaitable[AgentResponse]: ...
+
+    @overload
+    def run(
+        self,
+        messages: AgentRunInputs | None = None,
+        *,
+        stream: Literal[True],
+        session: AgentSession | None = None,
+        options: RealtimeOptionsT | None = None,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,
+        middleware: Sequence[MiddlewareTypes] | None = None,
+        function_invocation_kwargs: Mapping[str, Any] | None = None,
+        client_kwargs: Mapping[str, Any] | None = None,
+    ) -> ResponseStream[AgentResponseUpdate, AgentResponse]: ...
+
+    def run(
+        self,
+        messages: AgentRunInputs | None = None,
+        *,
+        stream: bool = False,
+        session: AgentSession | None = None,
+        options: RealtimeOptionsT | None = None,
+        tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,
+        middleware: Sequence[MiddlewareTypes] | None = None,
+        function_invocation_kwargs: Mapping[str, Any] | None = None,
+        client_kwargs: Mapping[str, Any] | None = None,
+    ) -> Awaitable[AgentResponse] | ResponseStream[AgentResponseUpdate, AgentResponse]:
+        """Take one bounded turn: send the input, let the agent reply and run its tools, then close the session.
+
+        The run opens a realtime session of its own, as ``start_conversation()`` would, with the same options, tools,
+        middleware and history. It sends ``messages`` and requests a response, then lets the tool loop run until a
+        response finishes with nothing left to do: no tool calls, or a batch that function middleware ended with
+        ``MiddlewareTermination``. Filler a tool speaks, such as "one moment", doesn't end it. An agent that owns a
+        handoff topology starts each run with its start participant speaking, and a handoff lasts until the run ends.
+
+        Input that's only audio is left to the provider's turn detection, which commits the caller's turn and requests
+        the response, so send one utterance that ends in silence; with turn detection off, the run never finishes.
+        Audio in messages from other roles, such as an earlier agent's reply that a workflow passes on, is left out,
+        since the session would hear it as the caller speaking; its text still goes in.
+
+        A run has no way to ask the app anything, so a call to a tool that needs approval, a declaration-only tool,
+        or a tool that raises ``UserInputRequiredException`` gets an error result instead, and the run carries on.
+
+        With context providers, the session closes first and the run is then reported as one exchange: text input as
+        given, audio input as the caller's transcript. A run that fails, is cancelled or is left early reports
+        nothing, so a host can retry it.
+
+        Args:
+            messages: The input for this turn. Tool calls and results from earlier agents go in as context.
+
+        Keyword Args:
+            stream: Whether to return a stream of every update the run produces, audio and caller transcripts
+                included, instead of the final response.
+            session: The agent session that keeps the run's history. When no context provider loads history, an
+                ``InMemoryHistoryProvider`` is added to the agent, as for a chat agent.
+            options: Session settings for this run, merged over the agent's ``default_options``.
+            tools: Tools for this run, in addition to the agent's.
+            middleware: Middleware for this run, joined to the agent's. Only function middleware runs; other
+                middleware is skipped with a warning.
+            function_invocation_kwargs: Keyword arguments for every tool call. The mapping is copied when the run
+                starts.
+            client_kwargs: Realtime clients take no per-run arguments, so a non-empty mapping is ignored with a
+                warning.
+
+        Returns:
+            When ``stream`` is ``False``, an awaitable of the response, holding the agent's assistant and tool messages:
+            its transcripts, output audio, tool calls and their results. When ``True``, a ``ResponseStream`` of every
+            update, whose ``get_final_response()`` returns that response. Leaving the stream early closes the session.
+
+        Raises:
+            RealtimeControlException: If the provider rejects the run's response request or a tool follow-up.
+            RealtimeControlTimeoutException: If the provider doesn't acknowledge one of those requests in time.
+            RealtimeException: If a response ends ``failed``, with the provider's error code and message, or the
+                session closes before the reply finishes, such as when a tool hangs up.
+        """
+        if client_kwargs:
+            logger.warning("Realtime clients take no per-run arguments, so client_kwargs is ignored.")
+        run_input = without_agents_audio(normalize_messages(messages))
+        response_stream = run_stream(
+            self._conversation(
+                run_input,
+                session=session,
+                options=options,
+                tools=tools,
+                middleware=middleware,
+                function_invocation_kwargs=function_invocation_kwargs,
+                control_timeout=10.0,
+                max_queued_updates=10_000,
+                half_duplex=True,
+            ),
+            turn_detection_responds=is_audio_only(run_input),
+        )
+        if stream:
+            return response_stream
+        return response_stream.get_final_response()
+
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
 class RealtimeAgent(RawRealtimeAgent[RealtimeOptionsT]):
     """A realtime agent.
 
-    See ``RawRealtimeAgent`` for live-conversation behavior and configuration.
+    See ``RawRealtimeAgent`` for live-conversation and run behavior and configuration.
     """

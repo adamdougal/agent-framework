@@ -135,8 +135,10 @@ class ToolLoop:
         responses: ResponseLedger,
         emit: Callable[[AgentResponseUpdate], None],
         app_input: AppInput,
+        can_ask_the_app: bool,
     ) -> None:
         self._tools = tools
+        self._can_ask_the_app = can_ask_the_app
         self._declared: list[ToolTypes] = []
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
@@ -345,9 +347,15 @@ class ToolLoop:
                     call.content, "this tool chain reached its limit, so the tool didn't run", "limit_reached"
                 )
             elif call.tool.approval_mode == "always_require":
-                awaiting_approval.append(call)
+                if self._can_ask_the_app:
+                    awaiting_approval.append(call)
+                else:
+                    call.result = _unanswerable_result(call.content)
             elif call.app_result is not None:
-                awaiting_result.append(call)
+                if self._can_ask_the_app:
+                    awaiting_result.append(call)
+                else:
+                    call.result = _unanswerable_result(call.content)
         await self._await_approvals(awaiting_approval)
         # An approved call to a tool the app runs still needs the app's result, which it may already have sent.
         awaiting_result += [call for call in awaiting_approval if call.result is None and call.app_result is not None]
@@ -355,8 +363,11 @@ class ToolLoop:
         terminated, executed = await self._execute(runnable)
         for call in runnable:
             if call.input_requests:
-                self._request_input(call)
-                awaiting_result.append(call)
+                if self._can_ask_the_app:
+                    self._request_input(call)
+                    awaiting_result.append(call)
+                else:
+                    call.result = _unanswerable_result(call.content)
         await self._await_results(awaiting_result)
         # Count synthetic errors too, so unknown calls can't evade the consecutive-error limit.
         chain.count(
@@ -487,7 +498,7 @@ class ToolLoop:
             except RealtimeConversationClosedException:
                 return
             except RealtimeException as error:
-                self._conversation._report_error(error)  # pyright: ignore[reportPrivateUsage]
+                self._conversation._follow_up_failed(error)  # pyright: ignore[reportPrivateUsage]
                 del self._chains_due[: self._claimed]
                 if not self._chains_due:
                     return
@@ -619,6 +630,15 @@ def _not_found_result(call: Content) -> Content:
         result=f'Error: Requested function "{call.name}" not found.',
         exception=str(KeyError(f'Function "{call.name}" not found.')),
         id=call.id,
+    )
+
+
+def _unanswerable_result(call: Content) -> Content:
+    """Without anyone to answer, a call that needs the app settles at once rather than waiting forever."""
+    return _settled_with_error(
+        call,
+        "the tool needs the app's approval or answer, which can't be given during this run, so it didn't run",
+        "unsupported",
     )
 
 

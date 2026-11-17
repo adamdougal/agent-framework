@@ -89,7 +89,9 @@ agent's live conversation, the [session update](../../samples/02-agents/provider
 [MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py),
 [handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py),
 [tool approval](../../samples/02-agents/providers/foundry/voice_live_tool_approval.py) and
-[app-run tool](../../samples/02-agents/providers/foundry/voice_live_app_tool.py) samples.
+[app-run tool](../../samples/02-agents/providers/foundry/voice_live_app_tool.py) samples. The
+[run sample](../../samples/02-agents/providers/foundry/voice_live_run.py) takes one half-duplex turn with `agent.run()`
+instead.
 
 ## Foundry voice agents (experimental)
 

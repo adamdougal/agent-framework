@@ -163,9 +163,9 @@ Tools reach the conversation through `FunctionInvocationContext.realtime_convers
 update takes effect before its result. Results are always strings. The "Azure Realtime hangs on non-string results"
 that Semantic Kernel apps work around isn't a protocol difference. Semantic Kernel sent no output for dict results, so
 the model waited. Barge-in never cancels running tools, because most barge-ins are backchannels and a half-done payment
-is worse than a reported one. Close cancels and settles them, and a paused `run(...)` keeps its calls for the next run.
-Approvals and local MCP tools are in scope, with `Agent`'s MCP lifecycle. See
-[Tool loop](../specs/006-python-realtime-agents.md#tool-loop).
+is worse than a reported one. Close cancels and settles them. A run can't wait for the app, so a call that needs an
+approval or the app's answer gets an error result there, and pausing runs comes later. Approvals and local MCP tools
+are in scope, with `Agent`'s MCP lifecycle. See [Tool loop](../specs/006-python-realtime-agents.md#tool-loop).
 
 ### Voice history
 

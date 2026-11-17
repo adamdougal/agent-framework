@@ -128,9 +128,17 @@ class RealtimeOptions(TypedDict, total=False):
   `client_kwargs` exists because `SupportsAgentRun.run` declares it. No v1 realtime client takes per-run arguments, so
   `run(...)` ignores a non-empty mapping with a warning. The caller owns both mappings, and nothing mutates them.
 - `run(...)` fails when its own response request claims an error, or when that request's acknowledgement times out,
-  instead of waiting for a `response.done` that won't come. Cancelling a run whose response never finishes, directly or
-  through the caller's `asyncio.timeout()`, runs the close sequence. Leaving a `run(stream=True)` stream early closes
-  its realtime session and receive loop.
+  instead of waiting for a `response.done` that won't come. A tool follow-up is the run's own request too, so one the
+  provider rejects or doesn't acknowledge fails the run. So does a response that ends `failed`, with a
+  `RealtimeException` naming the provider's error code and message, and a realtime session that closes before the turn
+  ends, whether the provider or a tool closes it. Cancelling a run whose response never finishes, directly or through
+  the caller's `asyncio.timeout()`, runs the close sequence. Leaving a `run(stream=True)` stream early closes its
+  realtime session and receive loop. A run is complete once its turn ends, so a cancellation during the close that
+  follows doesn't stop its report.
+- A run's input that is only audio leaves the response to turn detection, as `send(...)` does, so the run requests
+  none itself. Audio in messages from other roles, such as an earlier agent's reply that a workflow passes on, is left
+  out, because the session would send it as the caller speaking; their text still goes in. Tool calls and results in a
+  run's input go in as context, as `start_conversation(messages=...)` sends them, never as answers.
 - `RealtimeOptions` replaces ADR 0035's `RealtimeSessionOptions`, and its `create_response` lives in turn detection.
   `None` turns a feature off. `OpenAIRealtimeOptions`, `VoiceLiveOptions` and `FoundryVoiceAgentOptions` extend it.
   `AzureVoice`, `AzureTurnDetection`, `AzureTranscription` and `AzureNoiseReduction` add Azure's types and fields, and
@@ -341,10 +349,12 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   `create_response(...)`. A follow-up relaxes a required `tool_choice` to `"auto"`. Follow-ups due together merge, and a
   merged follow-up uses `tool_choice: "none"` if any of the chains it answers needs that. A follow-up the provider
   rejects or doesn't acknowledge streams as `error` content and is dropped, unless results went out after it was
-  requested. Batches from different responses run concurrently. `MiddlewareTermination` sends the results without a
-  follow-up. `run(...)` ends at the first response that finishes without tool calls, or when `MiddlewareTermination`
-  stops the loop. Responses that tools or middleware request through `say(...)` or `create_response(...)`, such as a
-  filler line, don't end it.
+  requested; in a run it fails the run instead. Batches from different responses run concurrently.
+  `MiddlewareTermination` sends the results without a follow-up. `run(...)` ends once a response has finished with
+  nothing left to do: no response active or requested, no batch or follow-up in flight, and the caller not speaking.
+  That covers a response without tool calls and a batch `MiddlewareTermination` stopped. Responses that tools or
+  middleware request through `say(...)` or `create_response(...)`, such as a filler line, don't end it, and nor does
+  a reply turn detection cancels because the caller spoke again.
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
   `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
   replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
@@ -373,16 +383,15 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
 - **Settlement.** Calls from a response that ended `cancelled`, `incomplete` or `failed` don't run; each gets an error
   result, sent on a best-effort basis, and no follow-up. Barge-in never cancels running tools. Close stops new batches,
   cancels running tools and waits for them, and settles every unfinished call, those waiting for the app included, with
-  an error result that isn't sent. A live conversation keeps its pending approvals to itself, so only a run has any in
-  the agent session to clear. A settled error's `exception` says why, such as `cancelled` or
+  an error result that isn't sent. A settled error's `exception` says why, such as `cancelled` or
   `conversation_closed`. `MiddlewareFailure` ends the conversation the same way, and iteration raises it. A tool or
   middleware that raises `CancelledError` while the conversation is open ends it too, and iteration raises
   `ToolExecutionException`. So does an unexpected failure in the conversation's background work, such as a follow-up
   request, and iteration raises that failure.
-- **Paused runs.** A `run(...)` that ends because its batch paused for an approval, an app-run tool or a user-input
-  request leaves those calls pending. It returns them in its `AgentResponse` and keeps the approvals in the agent
-  session, so the next run resumes them by replaying the call into its new realtime session. Close settles calls only
-  when a live conversation ends or a run fails or is cancelled.
+- **Calls in a run.** A run has no way to ask the app anything, so a call to a tool that needs approval, an app-run
+  tool or a tool that raises `UserInputRequiredException` gets an error result instead, with `unsupported` as its
+  `exception`, and the run carries on: a tool that needs approval never runs. Pausing a run for the app and resuming its
+  calls on the next run come later.
 - **App input.** The app answers through `send(...)` with `Content.from_function_result(...)`,
   `Content.from_function_approval_response(...)` or a `Message(role="tool")`, which the conversation routes into its
   batch. In a live conversation an approval request streams as `function_approval_request`, with the call's occurrence
@@ -450,8 +459,10 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay. The
   replayed items' echoes aren't recorded, and on their own they make no exchange.
 - **`run(...)`.** Each run is one exchange. Text input is stored as given, and audio input as its caller transcript.
-  The run's session closes through the close sequence before `after_run`. Context providers get the response without
-  audio. A failed run reports nothing.
+  Audio input relies on the provider's turn detection to commit the caller's turn, so it should be one utterance that
+  ends in silence; a pause long enough to start a second caller turn makes a second exchange. The run's session closes
+  through the close sequence before `after_run`. Context providers get the response without audio. A run that fails, is
+  cancelled or is left early reports nothing.
 - **Reading.** `RealtimeConversation.history` is a read-only snapshot of the call so far, readable during the call, and
   holds the final record after close.
 - **Continuation.** `service_session_id` stays unset for every v1 provider. A provider's conversation id travels in
@@ -752,8 +763,8 @@ the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the interna
 - Unit tests with fake realtime sessions cover the conversation lifecycle, bounded-queue backpressure, single-reader
   receive, control acknowledgements, error claiming before deduplication, lost races, the barge-in cut, the close
   sequence, every kind mapped from GA and Voice Live preview payloads, and `realtime_event` serialization.
-- Tool-loop tests cover batching, follow-ups, ordering against session updates, settlement, paused runs, approvals and
-  app-run tools through the shared executor.
+- Tool-loop tests cover batching, follow-ups, ordering against session updates, settlement, approvals and app-run
+  tools through the shared executor, and the calls a run can't wait for.
 - History tests cover spoken order with late transcripts, cut-off and text-less turns, reporting at close, provider
   failures and replay. Handoff, middleware and telemetry tests cover the active agent, the builder and the span tree.
 - Regression tests show the MCP helper and the topology base don't change chat behavior.

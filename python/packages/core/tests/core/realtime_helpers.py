@@ -77,6 +77,9 @@ class FakeRealtimeSession:
         self.truncate_rejections: dict[str, BaseException] = {}
         self.delete_rejections: dict[str, BaseException] = {}
         self.create_response_events: list[RealtimeEvent] = []
+        # Each response request emits the next of these, or raises it when it's an error, so a test can script a
+        # run's replies before it starts.
+        self.replies: list[list[RealtimeEvent] | BaseException] = []
         self.create_response_error: BaseException | None = None
         self.update_session_error: BaseException | None = None
         self.say_events: list[RealtimeEvent] = []
@@ -89,6 +92,11 @@ class FakeRealtimeSession:
         """Queue provider events for the conversation's receive loop."""
         for event in events:
             self._events.put_nowait(event)
+
+    @property
+    def queued_events(self) -> int:
+        """Events the receive loop hasn't read yet; each one read is dispatched before the next is."""
+        return self._events.qsize()
 
     def end(self) -> None:
         """End the session's events, as a provider closing the connection does."""
@@ -167,8 +175,9 @@ class FakeRealtimeSession:
     async def create_response(self, options: RealtimeOptions | None = None) -> str:
         self.calls.append(("create_response", options))
         # The response this call creates, or the error it ends with, fixed when the call is made.
-        events = list(self.create_response_events)
-        error = self.create_response_error
+        scripted = self.replies.pop(0) if self.replies else []
+        events = [*self.create_response_events, *([] if isinstance(scripted, BaseException) else scripted)]
+        error = scripted if isinstance(scripted, BaseException) else self.create_response_error
         self.emit(*events)
         await self._acknowledge("create_response")
         if error is not None:
@@ -222,6 +231,9 @@ class FakeRealtimeClient:
         self.session_holds: dict[str, asyncio.Event] = {}
         self.service_session_state_keys: tuple[str, ...] = ()
         self.send_error: BaseException | None = None
+        self.create_response_error: BaseException | None = None
+        # Shared by every session the client starts, so successive runs take successive replies.
+        self.replies: list[list[RealtimeEvent] | BaseException] = []
 
     @property
     def session(self) -> FakeRealtimeSession:
@@ -240,6 +252,8 @@ class FakeRealtimeClient:
             raise self.start_session_error
         session = FakeRealtimeSession(options, tools)
         session.send_error = self.send_error
+        session.create_response_error = self.create_response_error
+        session.replies = self.replies
         for method, release in self.session_holds.items():
             session._holds[method] = release  # pyright: ignore[reportPrivateUsage]
         self.sessions.append(session)

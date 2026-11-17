@@ -30,6 +30,7 @@ from ..exceptions import (
 )
 from ._acknowledgements import AcknowledgedT, await_acknowledgement
 from ._app_input import AppInput
+from ._audio_input import is_audio_only
 from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._handoffs import CallSettings, handoff_completed, participant_update, start_settings
@@ -37,6 +38,7 @@ from ._history import CallHistory
 from ._options import RealtimeOptionsT
 from ._reporting import report_exchanges
 from ._responses import ResponseLedger
+from ._run import failed_response_error
 from ._tool_loop import ToolLoop, requested_by_a_tool
 from ._update_stream import UpdateStream
 from ._updates import core_attributes, finish_reason_of, tool_result_update, update_from_event
@@ -101,8 +103,12 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         mcp_exit_stack: AsyncExitStack,
         control_timeout: float,
         max_queued_updates: int,
+        half_duplex: bool,
     ) -> None:
         self._owner = agent
+        self._half_duplex = half_duplex
+        # A run that doesn't finish its turn reports nothing, so a host's retry doesn't store its input twice.
+        self._unfinished_run = half_duplex
         self._active_agent = agent._start_participant()  # pyright: ignore[reportPrivateUsage]
         self._initial_messages = initial_messages
         self._options = options
@@ -140,6 +146,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             responses=self._responses,
             emit=self._emit,
             app_input=self._app_input,
+            can_ask_the_app=not half_duplex,
         )
         self._audio = AudioLedger()
         self._history = CallHistory()
@@ -243,8 +250,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             if isinstance(provider, HistoryProvider) and not provider.load_messages:
                 continue
             await provider.before_run(
-                # A realtime agent has no run(), which SupportsAgentRun requires; providers read its identity.
-                agent=self._owner,  # type: ignore[arg-type]
+                agent=self._owner,
                 session=self._provider_session,
                 context=context,
                 state=self._provider_session.state.setdefault(provider.source_id, {}),
@@ -338,6 +344,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             )
             self._tool_loop.on_response_done(response_id, status)
             self._cut_unheard([], self._mark_unheard_text(response_id))
+            if self._half_duplex and status == "failed":
+                self._fail(failed_response_error(core))
+            self._end_turn_if_over()
         elif event.kind == "function_call":
             self._responses.called(response_id)
             self._tool_loop.on_function_call(event)
@@ -404,6 +413,18 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if isinstance(error := task.exception(), Exception):
             logger.warning("A realtime conversation's background task failed: %s", error)
             self._fail(error)
+        self._end_turn_if_over()
+
+    def _end_turn_if_over(self) -> None:
+        """Anything a run's response started, such as a tool batch or its follow-up, can still add to the reply."""
+        if not self._half_duplex or self._closing.is_set():
+            return
+        responses = self._responses
+        in_flight = responses.any_active or responses.any_requested or bool(self._background_tasks)
+        # Turn detection answers a caller who is still speaking once they stop, so their reply is still to come.
+        if responses.any_finished and not in_flight and self._caller_quiet.is_set():
+            self._unfinished_run = False
+            self._start_close()
 
     async def send(self, value: AgentRunInputs | RealtimeEvent, *, create_response: bool = True) -> None:
         """Send input or a raw provider command, and request a response to text or message input.
@@ -453,7 +474,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             for message in messages:
                 # Close may have started while this send waited its turn, or while an earlier message went out.
                 await self._add_app_input(self._require_open_session(), message)
-        if _is_audio_only(messages):
+        if is_audio_only(messages):
             return  # committing the caller's turn starts its chain; turn detection or the app asks for the response
         self._tool_loop.on_new_input()
         if create_response:
@@ -493,8 +514,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     def _session_options(self) -> Mapping[str, Any]:
         return self._session.options if self._session is not None else self._options
 
-    def _report_error(self, error: RealtimeException) -> None:
-        """Failures the conversation survives, such as a rejected follow-up, stream instead of ending it."""
+    def _follow_up_failed(self, error: RealtimeException) -> None:
+        """A live conversation survives a follow-up the provider rejects, so the failure streams instead of ending it.
+
+        A run's follow-up is its own response request, so the run fails instead.
+        """
+        if self._half_duplex:
+            self._fail(error)
+            return
         code = error.code if isinstance(error, RealtimeControlException) else None
         self._emit(AgentResponseUpdate(contents=[Content.from_error(message=str(error), error_code=code)]))
 
@@ -660,6 +687,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             return response_id
         finally:
             self._responses.request_settled()
+            self._end_turn_if_over()
 
     async def say(self, text: str) -> str:
         """Have the agent speak ``text`` word for word, and return the response id once it's created.
@@ -844,6 +872,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     def _start_close(self) -> asyncio.Task[None]:
         """Input stops at once, synchronously, so nothing new starts while the close sequence runs."""
         if self._close_task is None:
+            if self._unfinished_run and self._failure is None:
+                # A run returning a partial reply as a success would leave a host no reason to retry it.
+                self._failure = RealtimeException("The realtime conversation closed before the run's reply finished.")
             self._closing.set()
             self._tool_loop.stop()
             self._close_task = asyncio.create_task(self._close_sequence())
@@ -876,7 +907,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await self._tool_loop.close()
             self._history.stop_waiting_for_caller_transcripts()
             self._history.end_unfinished_responses()
-            if self._start_context is not None and self._owner.context_providers:
+            if not self._unfinished_run and self._start_context is not None and self._owner.context_providers:
                 provider_failures = await report_exchanges(
                     self._owner, self._provider_session, self._start_context, self._history.exchanges()
                 )
@@ -934,15 +965,6 @@ def _without_answers(messages: Sequence[Message]) -> list[Message]:
             remaining.append(copy.copy(message))
             remaining[-1].contents = contents
     return remaining
-
-
-def _is_audio_only(messages: Sequence[Message]) -> bool:
-    contents = [content for message in messages for content in message.contents]
-    return bool(contents) and all(_is_audio(content) for content in contents)
-
-
-def _is_audio(content: Content) -> bool:
-    return content.type in ("data", "uri") and content.has_top_level_media_type("audio")
 
 
 def _is_repeated_error(event: RealtimeEvent, previous: RealtimeEvent | None) -> bool:

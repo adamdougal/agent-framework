@@ -31,6 +31,14 @@ class ResponseLedger:
         return bool(self._active)
 
     @property
+    def any_finished(self) -> bool:
+        return bool(self._finished)
+
+    @property
+    def any_requested(self) -> bool:
+        return bool(self._requests_in_flight)
+
+    @property
     def active(self) -> frozenset[str]:
         return frozenset(self._active)
 

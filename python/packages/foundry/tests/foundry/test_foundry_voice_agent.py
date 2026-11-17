@@ -1568,3 +1568,21 @@ class TestVerification:
         assert handed_off["instructions"] == "You are a receptionist."
         assert (handed_off["audio"]["output"]["voice"], handed_off["tool_choice"]) == (AVA, "auto")
         assert handed_off["tools"][:3] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
+
+    async def test_a_foundry_voice_agent_answers_a_run(self) -> None:
+        project = FakeProjectClient()
+        agent = FoundryVoiceAgent(
+            project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
+        )
+
+        async with agent:
+            running = asyncio.ensure_future(agent.run("What are your opening hours?"))
+
+            def requests() -> list[dict[str, Any]]:
+                return [sent for server in project.servers for sent in server.sent if sent["type"] == "response.create"]
+
+            await until(lambda: bool(requests()))
+            project.server.answer(requests()[0])
+            response = await asyncio.wait_for(running, 5)
+
+        assert response.finish_reason == "stop"

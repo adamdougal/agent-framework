@@ -113,11 +113,17 @@ the root package:
 - `_options.py` - `RealtimeOptions` and its turn-detection, transcription and noise-reduction TypedDicts.
 - `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
   `RealtimeEvent` or a `Message`, which it maps by content type.
-- `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
+- `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, `start_conversation(...)`, which merges the conversation's
   options, tools and function middleware over the agent's, and adds an `InMemoryHistoryProvider` for a session as
-  `Agent` does. `async with agent` connects the agent's MCP tools that aren't connected yet and closes, on exit, every
-  MCP tool the agent connected; it never closes one the app connected. Two protected hooks let an agent that owns a
-  handoff topology start its calls with another participant speaking and add each participant's handoff tools.
+  `Agent` does, and `run(...)`, which builds its conversation the same way, as a half-duplex run. `async with agent`
+  connects the agent's MCP tools that aren't connected yet and closes, on exit, every MCP tool the agent connected; it
+  never closes one the app connected. Two protected hooks let an agent that owns a handoff topology start its calls
+  with another participant speaking and add each participant's handoff tools.
+- `_run.py` - A half-duplex run's `ResponseStream`, which opens the conversation, requests the response unless turn
+  detection will, and streams every update; the response it finalizes to, holding only the agent's assistant and tool
+  messages; and the error a failed response raises.
+- `_audio_input.py` - Which input a session hears as the caller speaking. Audio-only input leaves the response to turn
+  detection, in `send()` and `run()` alike, and a run drops audio from other roles' messages.
 - `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice) and
   `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both compute the session's
   settings here.
@@ -128,7 +134,10 @@ the root package:
   they load. At start, on `update_session(tools=...)` and on `handoff(...)` it resolves its tools through
   `append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is replaced by its
   current functions in a list the conversation owns, connected on first use into the starting agent's exit stack, so
-  server-side tool-list changes wait for the next update.
+  server-side tool-list changes wait for the next update. As a half-duplex run, it closes itself once a response has
+  finished with nothing left in flight (no response active or requested, no background task, no caller speaking),
+  reports history only when it closed that way, and fails on a rejected follow-up, a `failed` response or any other
+  close.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
   timeout and until close starts, and lets a cancelled session call finish unwinding.
 - `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
@@ -141,7 +150,7 @@ the root package:
   `ctx.remove_tools()` go out as a session update before that batch's results. Each call runs through the function
   middleware of the agent active when it arrived. A batch waits for the app where a call needs it: approvals first,
   before any of its calls run, then the results of declaration-only calls and of tools that raised
-  `UserInputRequiredException`.
+  `UserInputRequiredException`. A run can't ask the app, so those calls get an error result there instead.
 - `_app_input.py` - `AppInput`, the conversation's record of what it asked the app: approval requests and app-run
   calls. `send()` routes function results and approval responses through it, and refuses an answer to anything it
   didn't ask, before sending anything.
