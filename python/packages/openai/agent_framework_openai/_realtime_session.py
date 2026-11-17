@@ -158,7 +158,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
         honored = self._honored(options or {})
         session = self._session_payload(honored, tools)
         if not session and not self._INITIAL_UPDATE_REQUIRED:
-            self.options = cast("RealtimeOptionsT", honored)
+            self.options = cast("RealtimeOptionsT", {**self.options, **honored})
             return
         await self._control(
             {"type": "session.update", "session": session},

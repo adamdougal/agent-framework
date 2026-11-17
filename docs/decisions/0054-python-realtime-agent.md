@@ -223,10 +223,10 @@ cancelled tool call now counts as a failure. See [Middleware](../specs/006-pytho
 
 Azure OpenAI is Azure routing on `OpenAIRealtimeClient`, as chat has routed Azure since ADR 0021. Voice Live gets
 `VoiceLiveClient`, pinned to the documented `2026-07-15`. Foundry voice agents get a first-class `FoundryVoiceAgent`,
-because a handoff topology needs the start agent's published definition. Both Azure clients live in
-`agent-framework-foundry` behind a `[realtime]` extra. All of them share `OpenAIRealtimeSession`, a public GA-protocol
-base session in `agent-framework-openai`, which maps wire JSON over each service's SDK used only as a transport. The
-SDKs add little weight, carry their handshake hardening, and fix only the URL path
+because a handoff topology needs the published agent's definition, which it reads when it's entered. Both Azure clients
+live in `agent-framework-foundry` behind a `[realtime]` extra. All of them share `OpenAIRealtimeSession`, a public
+GA-protocol base session in `agent-framework-openai`, which maps wire JSON over each service's SDK used only as a
+transport. The SDKs add little weight, carry their handshake hardening, and fix only the URL path
 ([evidence](https://github.com/adamdougal/agent-framework/blob/research/azure-realtime-transports/docs/research/azure-realtime-transports.md)),
 so a raw websocket was rejected. Providers differ by service and voice type, and a capability table documents the
 differences rather than a typed capability API. See

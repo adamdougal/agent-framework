@@ -43,6 +43,15 @@ These need the realtime extra: `pip install "agent-framework-foundry[realtime]" 
 | [`voice_live_mcp_tool.py`](voice_live_mcp_tool.py) | Give a realtime agent a local MCP tool: the conversation declares the MCP server's tools and runs them in the app. Also needs `mcp` and `tenacity` |
 | [`voice_live_handoff.py`](voice_live_handoff.py) | Hand a live call from a receptionist to a billing specialist in the same session with `RealtimeHandoffBuilder`, each in its own voice |
 
+## FoundryVoiceAgent Samples
+
+These need the realtime extra, `pip install "agent-framework-foundry[realtime]" --pre`, and a voice agent published in
+your Foundry project.
+
+| File | Description |
+|------|-------------|
+| [`foundry_voice_agent.py`](foundry_voice_agent.py) | Talk to an agent published in Foundry as a voice agent: its definition supplies the instructions, voice and tools, and the app implements the definition's functions by name |
+
 ## FoundryLocalClient Samples
 
 ### Prerequisites

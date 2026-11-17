@@ -186,6 +186,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         # The conversation owns the session from here, so a close that starts while the initial messages go out
         # closes it.
         self._session = session
+        self._warn_if_history_lacks_transcription()
         self._tool_loop.on_tools_declared(tools)
         try:
             async with self._write_lock:
@@ -245,14 +246,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             )
         self._apply_start_context(context)
         self._start_context = context
-        if not self._options.get("transcription") and any(
+        return context
+
+    def _warn_if_history_lacks_transcription(self) -> None:
+        """The session's settings, not the start options, say whether it transcribes: a provider can apply its own."""
+        if not self._session_options().get("transcription") and any(
             isinstance(provider, HistoryProvider) for provider in self._owner.context_providers
         ):
             logger.warning(
                 "The realtime conversation has a history provider but no transcription, so caller turns are stored "
                 "without text. Set the transcription option to keep what the caller said."
             )
-        return context
 
     def _apply_start_context(self, context: SessionContext) -> None:
         # Context providers prepare the call rather than its first speaker, so what they add holds across handoffs.

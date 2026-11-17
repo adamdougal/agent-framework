@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-"""Azure realtime option types: Voice Live's session settings, shared with Foundry voice agents."""
+"""Azure realtime option types: Voice Live's and Foundry voice agents' session settings."""
 
 # No ``from __future__ import annotations``: required keys need evaluated annotations at runtime.
 import sys
@@ -198,6 +198,27 @@ class VoiceLiveOptions(RealtimeOptions, total=False):
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"]
     parallel_tool_calls: bool
     output_audio_timestamp_types: Sequence[Literal["word"]]
+
+
+@experimental(feature_id=ExperimentalFeature.FOUNDRY_VOICE_AGENTS)
+class FoundryVoiceAgentOptions(RealtimeOptions, total=False):
+    """A Foundry voice agent's session settings: the neutral realtime options, widened for Azure.
+
+    Settings left out keep the agent definition's.
+
+    Keys:
+        voice: An OpenAI voice name, or an ``AzureVoice``.
+        turn_detection: How the caller's turn ends, or ``None`` for no turn detection.
+        transcription: How the caller is transcribed, or ``None`` for no caller transcript.
+        noise_reduction: How caller audio is cleaned, or ``None`` for none.
+        echo_cancellation: Server-side echo cancellation, or ``None`` for none.
+    """
+
+    voice: str | AzureVoice  # type: ignore[misc]
+    turn_detection: AzureTurnDetection | None  # type: ignore[misc]
+    transcription: AzureTranscription | None  # type: ignore[misc]
+    noise_reduction: AzureNoiseReduction | None
+    echo_cancellation: AzureEchoCancellation | None
 
 
 VoiceLiveOptionsT = TypeVar(
