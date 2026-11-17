@@ -515,6 +515,7 @@ async def test_build_accepts_participant_settings_that_wont_apply() -> None:
     billing = RealtimeAgent(
         client,  # type: ignore[arg-type]
         name="billing",
+        tools=[get_balance],
         context_providers=[InMemoryHistoryProvider()],
         function_invocation_configuration={"max_iterations": 2},
         default_options=billing_options,
@@ -525,9 +526,12 @@ async def test_build_accepts_participant_settings_that_wont_apply() -> None:
 
     async with agent.start_conversation() as conversation:
         await conversation.handoff(billing)
+        client.session.emit(*_response("resp_1", _call("call_1", "get_balance")))
+        await _eventually(lambda: bool(_results(client.session)))
 
-    [(_, update, _)] = client.session.calls
+    [(_, update, _)] = [call for call in client.session.calls if call[0] == "update_session"]
     assert "temperature" not in update
+    assert _results(client.session) == [("call_1", "£42")]
     assert audited == []
 
 

@@ -24,6 +24,7 @@ from agent_framework.exceptions import (
 )
 
 from .realtime_helpers import FakeRealtimeClient, eventually
+from .realtime_history_helpers import call_response, until_tool_result
 
 
 @tool
@@ -205,6 +206,7 @@ def test_invalid_function_invocation_configuration_raises_value_error_before_con
 
 
 async def test_bare_agent_middleware_is_skipped() -> None:
+    client = FakeRealtimeClient()
     audited: list[AgentContext] = []
 
     class AuditMiddleware(AgentMiddleware):
@@ -212,8 +214,10 @@ async def test_bare_agent_middleware_is_skipped() -> None:
             audited.append(context)
             await call_next()
 
-    async with RealtimeAgent(FakeRealtimeClient()).start_conversation(middleware=[AuditMiddleware()]) as conversation:
-        await conversation.send("Hi")
+    agent = RealtimeAgent(client, tools=[get_weather])
+    async with agent.start_conversation(middleware=[AuditMiddleware()]) as conversation:
+        client.session.emit(*call_response("resp_1", "item_1", "call_1", "get_weather", city="Paris"))
+        await until_tool_result(conversation)
 
     assert audited == []
 

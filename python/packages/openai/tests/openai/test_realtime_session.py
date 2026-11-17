@@ -2006,7 +2006,7 @@ async def test_voice_change_after_first_audio_is_dropped() -> None:
 
 
 async def test_an_ignored_voice_change_keeps_the_old_voice() -> None:
-    """After update_session({"voice": "cedar"}) acknowledged by a session.updated echoing voice "marin",
+    """update_session({"voice": "cedar"}) sends voice "cedar"; acknowledged by a session.updated echoing voice "marin",
     session.options keeps "marin"."""
     session, connection = await started({"voice": "marin"})
     connection.responder = lambda event: (
@@ -2018,6 +2018,7 @@ async def test_an_ignored_voice_change_keeps_the_old_voice() -> None:
     async with reading(session):
         await asyncio.wait_for(session.update_session({"voice": "cedar"}, None), 5)
 
+    assert connection.sent[-1]["session"]["audio"]["output"]["voice"] == "cedar"
     assert session.options == {"voice": "marin"}
 
 

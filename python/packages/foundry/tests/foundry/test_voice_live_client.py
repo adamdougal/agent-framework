@@ -1057,14 +1057,15 @@ class TestVerification:
         }
 
     async def test_an_ignored_voice_change_keeps_the_old_voice(self) -> None:
-        """Voice Live ignores a change between OpenAI voices: after update_session({"voice": "echo"}) acknowledged
-        with "alloy" still echoed, session.options keeps "alloy"."""
+        """Voice Live ignores a change between OpenAI voices: update_session({"voice": "echo"}) sends voice "echo",
+        and acknowledged with "alloy" still echoed, session.options keeps "alloy"."""
         session, connection = await voice_live_session({"voice": "alloy"})
         connection.echo_overrides = {"voice": "alloy"}
 
         async with reading(session):
             await asyncio.wait_for(session.update_session({"voice": "echo"}, None), 5)
 
+        assert connection.sent[-1]["session"]["voice"] == "echo"
         assert session.options["voice"] == "alloy"
 
     async def test_azure_voice_change_echoed_with_defaults_is_accepted(self) -> None:
@@ -1083,7 +1084,8 @@ class TestVerification:
         assert session.options["voice"] == sonia
 
     async def test_an_ignored_azure_voice_change_keeps_the_old_voice(self) -> None:
-        """update_session({"voice": Sonia}) acknowledged with Ava still echoed leaves session.options holding Ava."""
+        """update_session({"voice": Sonia}) sends Sonia, and acknowledged with Ava still echoed, session.options keeps
+        Ava."""
         ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
         sonia: AzureVoice = {"type": "azure-standard", "name": "en-GB-SoniaNeural"}
         session, connection = await voice_live_session({"voice": ava})
@@ -1092,6 +1094,7 @@ class TestVerification:
         async with reading(session):
             await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
+        assert connection.sent[-1]["session"]["voice"] == sonia
         assert session.options["voice"] == ava
 
     async def test_azure_voice_with_a_tuple_field_is_accepted(self) -> None:
