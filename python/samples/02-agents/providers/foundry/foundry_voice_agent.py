@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 import asyncio
+import os
 import wave
 
 from agent_framework import AgentResponseUpdate, tool
@@ -45,7 +46,13 @@ def get_current_time() -> str:
 async def main() -> None:
     reply_audio = bytearray()
     async with AzureCliCredential() as credential:
-        agent = FoundryVoiceAgent(credential=credential, tools=[get_current_time])
+        agent = FoundryVoiceAgent(
+            project_endpoint=os.getenv("FOUNDRY_PROJECT_ENDPOINT"),
+            agent_name=os.getenv("FOUNDRY_AGENT_NAME"),
+            agent_version=os.getenv("FOUNDRY_AGENT_VERSION"),
+            credential=credential,
+            tools=[get_current_time],
+        )
         async with agent, agent.start_conversation() as conversation:
             await conversation.send("Hi! What time is it?")
             update: AgentResponseUpdate
