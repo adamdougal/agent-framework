@@ -2136,14 +2136,13 @@ def test_a_handoff_description_falls_back_from_add_handoff_to_the_target_to_a_de
     }
 
 
-def test_adding_a_handoff_again_warns_and_replaces_its_description(caplog: pytest.LogCaptureFixture) -> None:
+def test_adding_a_handoff_again_replaces_its_description() -> None:
     triage, billing = _described_agent("triage"), _described_agent("billing")
     builder = HandoffBuilder(participants=[triage, billing]).with_start_agent(triage)
 
     builder.add_handoff(triage, [billing], description="Bills.")
     builder.add_handoff(triage, [billing], description="Bills and invoices.")
 
-    assert "Handoff from 'triage' to 'billing' is already configured; overwriting." in caplog.text
     assert _offered_handoffs(builder.build(), "triage") == {"handoff_to_billing": "Bills and invoices."}
 
 

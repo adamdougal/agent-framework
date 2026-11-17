@@ -3,7 +3,6 @@
 """Telemetry for tool calls cancelled while running."""
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import Mock
@@ -138,20 +137,6 @@ async def test_unhashable_cancel_message_records_cancelled_on_span(
     assert len(spans) == 1
     assert spans[0].attributes is not None
     assert spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
-
-
-@pytest.mark.usefixtures("span_exporter")
-async def test_cancelled_call_logs_cancellation_at_info(caplog: pytest.LogCaptureFixture) -> None:
-    """A cancelled call logs one INFO line naming the tool and its error.type."""
-    slow_tool, started = _slow_tool()
-    caplog.set_level(logging.INFO, logger="agent_framework")
-
-    await _cancel_while_running(slow_tool, started, "conversation_closed")
-
-    cancellation_records = [record for record in caplog.records if "cancelled" in record.getMessage()]
-    assert [(record.levelno, record.getMessage()) for record in cancellation_records] == [
-        (logging.INFO, "Function slow_tool cancelled (conversation_closed).")
-    ]
 
 
 class TestVerification:

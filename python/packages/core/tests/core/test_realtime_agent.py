@@ -3,7 +3,6 @@
 """Realtime agents starting live conversations."""
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -25,6 +24,7 @@ from agent_framework.exceptions import (
 )
 
 from .realtime_helpers import FakeRealtimeClient, eventually
+from .realtime_history_helpers import call_response, until_tool_result
 
 
 @tool
@@ -205,15 +205,21 @@ def test_invalid_function_invocation_configuration_raises_value_error_before_con
     assert client.start_session_calls == []
 
 
-def test_bare_agent_middleware_is_skipped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+async def test_bare_agent_middleware_is_skipped() -> None:
+    client = FakeRealtimeClient()
+    audited: list[AgentContext] = []
+
     class AuditMiddleware(AgentMiddleware):
         async def process(self, context: AgentContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            audited.append(context)
             await call_next()
 
-    with caplog.at_level(logging.WARNING):
-        RealtimeAgent(FakeRealtimeClient()).start_conversation(middleware=[AuditMiddleware()])
+    agent = RealtimeAgent(client, tools=[get_weather])
+    async with agent.start_conversation(middleware=[AuditMiddleware()]) as conversation:
+        client.session.emit(*call_response("resp_1", "item_1", "call_1", "get_weather", city="Paris"))
+        await until_tool_result(conversation)
 
-    assert any("Ignoring agent middleware" in record.getMessage() for record in caplog.records)
+    assert audited == []
 
 
 async def test_initial_messages_are_sent_as_context_without_a_response() -> None:

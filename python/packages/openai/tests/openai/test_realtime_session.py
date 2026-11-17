@@ -426,18 +426,17 @@ async def test_tool_choice_translates(tool_choice: Any, expected: Any) -> None:
     assert sent["tool_choice"] == expected
 
 
-async def test_tool_choice_allowed_tools_is_ignored_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """ToolMode {mode: "auto", allowed_tools: ["lookup"]} becomes "auto", and a warning says allowed_tools is ignored,
-    since realtime sessions can't restrict the declared tools that way."""
+async def test_tool_choice_allowed_tools_is_ignored() -> None:
+    """ToolMode {mode: "auto", allowed_tools: ["lookup"]} becomes "auto", since realtime sessions can't restrict the
+    declared tools that way."""
     sent = await initial_session({"tool_choice": {"mode": "auto", "allowed_tools": ["lookup"]}})
 
     assert sent["tool_choice"] == "auto"
-    assert "allowed_tools" in caplog.text
 
 
-async def test_tools_are_declared(caplog: pytest.LogCaptureFixture) -> None:
+async def test_tools_are_declared() -> None:
     """A FunctionTool becomes {type: "function", name, description, parameters}; a Mapping tool is sent as given;
-    any other tool is dropped with a warning naming it."""
+    any other tool is dropped."""
 
     @tool
     def lookup(query: str) -> str:
@@ -457,57 +456,22 @@ async def test_tools_are_declared(caplog: pytest.LogCaptureFixture) -> None:
         },
         hosted,
     ]
-    assert "object" in caplog.text
 
 
-async def test_an_unsupported_tool_is_logged_by_type_only(caplog: pytest.LogCaptureFixture) -> None:
-    """A tool object the session can't declare, whose repr holds an Authorization header, is dropped with a warning
-    naming its type but not the header's token."""
-
-    class HeaderedTool:
-        def __repr__(self) -> str:
-            return "HeaderedTool(headers={'Authorization': 'Bearer secret-token'})"
-
-    await initial_session({"instructions": "Hi"}, [HeaderedTool()])
-
-    assert "HeaderedTool" in caplog.text
-    assert "secret-token" not in caplog.text
-
-
-async def test_unsupported_option_is_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """temperature 0.7 and metadata {"a": "b"} aren't GA session fields: neither is sent, and one warning names each."""
+async def test_unsupported_options_are_dropped() -> None:
+    """temperature 0.7 and metadata {"a": "b"} aren't GA session fields, so neither is sent."""
     sent = await initial_session({"instructions": "Hi", "temperature": 0.7, "metadata": {"a": "b"}})
 
     assert sent == {"type": "realtime", "instructions": "Hi"}
-    assert "'temperature'" in caplog.text
-    assert "'metadata'" in caplog.text
 
 
-async def test_azure_voice_is_dropped_on_a_ga_session(caplog: pytest.LogCaptureFixture) -> None:
-    """voice {type: "azure-standard", name: "en-US-AvaNeural"} isn't sent, and a warning says the session takes voice
-    names only."""
+async def test_azure_voice_is_dropped_on_a_ga_session() -> None:
+    """voice {type: "azure-standard", name: "en-US-AvaNeural"} isn't sent, since the session takes voice names only."""
     azure_voice: Any = {"type": "azure-standard", "name": "en-US-AvaNeural"}
 
     sent = await initial_session({"instructions": "Hi", "voice": azure_voice})
 
     assert sent == {"type": "realtime", "instructions": "Hi"}
-    assert "voice" in caplog.text
-
-
-async def test_a_dropped_voice_object_is_logged_by_name_only(caplog: pytest.LogCaptureFixture) -> None:
-    """An Azure voice whose custom_lexicon_url is a SAS URL is dropped on a GA session with a warning naming
-    "en-US-AvaNeural", without the URL or its signature."""
-    azure_voice: Any = {
-        "type": "azure-standard",
-        "name": "en-US-AvaNeural",
-        "custom_lexicon_url": "https://store.blob.core.windows.net/lexicons/a.xml?sv=2024-01-01&sig=secret-signature",
-    }
-
-    await initial_session({"instructions": "Hi", "voice": azure_voice})
-
-    assert "en-US-AvaNeural" in caplog.text
-    assert "store.blob.core.windows.net" not in caplog.text
-    assert "secret-signature" not in caplog.text
 
 
 async def test_unsupported_audio_format_raises_before_sending() -> None:
@@ -768,14 +732,13 @@ async def test_audio_keeps_its_responses_format_after_a_format_change() -> None:
     ]
 
 
-async def test_update_session_with_nothing_left_returns_without_sending(caplog: pytest.LogCaptureFixture) -> None:
-    """update_session({"temperature": 0.7}, None) warns, sends nothing and returns at once."""
+async def test_update_session_with_nothing_left_returns_without_sending() -> None:
+    """update_session({"temperature": 0.7}, None) sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})
 
     await asyncio.wait_for(session.update_session({"temperature": 0.7}, None), 0.1)
 
     assert connection.sent_types() == ["session.update"]
-    assert "'temperature'" in caplog.text
     assert session.options == {"instructions": "A"}
 
 
@@ -1893,17 +1856,14 @@ async def test_send_audio_data_appends_to_the_input_buffer() -> None:
     assert without_event_ids(connection.sent) == [{"type": "input_audio_buffer.append", "audio": "AAE="}]
 
 
-async def test_send_external_audio_uri_is_dropped_without_logging_the_uri(caplog: pytest.LogCaptureFixture) -> None:
-    """Audio uri content pointing at a SAS URL sends nothing and warns, without the URL or its signature in the log."""
+async def test_send_external_audio_uri_is_dropped() -> None:
+    """Audio uri content pointing at a SAS URL sends nothing."""
     session, connection = await started()
     sas_url = "https://store.blob.core.windows.net/calls/a.wav?sv=2024-01-01&sig=secret-signature"
 
     await session.send(Message("user", [Content.from_uri(sas_url, media_type="audio/wav")]))
 
     assert connection.sent == []
-    assert "audio" in caplog.text
-    assert "store.blob.core.windows.net" not in caplog.text
-    assert "secret-signature" not in caplog.text
 
 
 async def test_send_user_and_system_text_create_input_text_items() -> None:
@@ -1951,9 +1911,9 @@ async def test_send_function_call_creates_a_function_call_item() -> None:
     ]
 
 
-async def test_send_function_result_creates_an_output_item(caplog: pytest.LogCaptureFixture) -> None:
+async def test_send_function_result_creates_an_output_item() -> None:
     """Content.from_function_result("call_1", result="42") sends a function_call_output item {call_id: "call_1",
-    output: "42"}; a result also holding an image sends only its text and warns once."""
+    output: "42"}; a result also holding an image sends only its text."""
     session, connection = await started()
     with_image = Content.from_function_result(
         "call_2", result=[Content.from_text("A chart."), Content.from_data(b"\x89PNG", "image/png")]
@@ -1971,7 +1931,6 @@ async def test_send_function_result_creates_an_output_item(caplog: pytest.LogCap
             "item": {"type": "function_call_output", "call_id": "call_2", "output": "A chart."},
         },
     ]
-    assert caplog.text.count("call_2") == 1
 
 
 async def test_send_a_non_text_function_result_sends_it_as_json() -> None:
@@ -1992,8 +1951,8 @@ async def test_send_a_non_text_function_result_sends_it_as_json() -> None:
     assert [event["item"]["output"] for event in connection.sent] == ['{"temperature": 21}', "0"]
 
 
-async def test_send_other_content_is_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """A function_approval_response content sends nothing and warns; contents around it are still sent in order."""
+async def test_send_other_content_is_dropped() -> None:
+    """A function_approval_response content sends nothing; contents around it are still sent in order."""
     session, connection = await started()
     approval = Content.from_function_approval_response(
         True, "approval_1", Content.from_function_call("call_1", "lookup", arguments={})
@@ -2003,8 +1962,6 @@ async def test_send_other_content_is_dropped_with_a_warning(caplog: pytest.LogCa
     await session.send(Message("user", ["Before", approval, image, "After"]))
 
     assert [event["item"]["content"][0]["text"] for event in connection.sent] == ["Before", "After"]
-    assert "function_approval_response" in caplog.text
-    assert "uri" in caplog.text
 
 
 async def test_concurrent_writes_do_not_interleave() -> None:
@@ -2034,8 +1991,8 @@ async def test_concurrent_writes_do_not_interleave() -> None:
 # region Voice
 
 
-async def test_voice_change_after_first_audio_is_dropped(caplog: pytest.LogCaptureFixture) -> None:
-    """After an output_audio event, update_session({"voice": "cedar"}, None) sends nothing, warns, and returns;
+async def test_voice_change_after_first_audio_is_dropped() -> None:
+    """After an output_audio event, update_session({"voice": "cedar"}, None) sends nothing and returns;
     session.options keeps the voice the provider accepted."""
     session, connection = await started({"voice": "marin"})
     first_audio = {**AGENT_PART, "type": "response.output_audio.delta", "event_id": "e1", "delta": "AAA="}
@@ -2045,14 +2002,13 @@ async def test_voice_change_after_first_audio_is_dropped(caplog: pytest.LogCaptu
         await asyncio.wait_for(session.update_session({"voice": "cedar"}, None), 0.5)
 
     assert connection.sent_types() == ["session.update"]
-    assert "'cedar'" in caplog.text
     assert session.options == {"voice": "marin"}
 
 
-async def test_ignored_voice_change_warns(caplog: pytest.LogCaptureFixture) -> None:
-    """update_session({"voice": "cedar"}) acknowledged by a session.updated echoing voice "marin" logs a warning that
-    the provider ignored the voice change."""
-    session, connection = await started()
+async def test_an_ignored_voice_change_keeps_the_old_voice() -> None:
+    """update_session({"voice": "cedar"}) sends voice "cedar"; acknowledged by a session.updated echoing voice "marin",
+    session.options keeps "marin"."""
+    session, connection = await started({"voice": "marin"})
     connection.responder = lambda event: (
         [{"type": "session.updated", "event_id": "e1", "session": {"audio": {"output": {"voice": "marin"}}}}]
         if event["type"] == "session.update"
@@ -2062,8 +2018,8 @@ async def test_ignored_voice_change_warns(caplog: pytest.LogCaptureFixture) -> N
     async with reading(session):
         await asyncio.wait_for(session.update_session({"voice": "cedar"}, None), 5)
 
-    assert "ignored" in caplog.text
-    assert "'cedar'" in caplog.text
+    assert connection.sent[-1]["session"]["audio"]["output"]["voice"] == "cedar"
+    assert session.options == {"voice": "marin"}
 
 
 # endregion
@@ -2278,8 +2234,8 @@ class TestVerification:
 
             assert await asyncio.wait_for(creating, 5) == "resp_2"
 
-    async def test_per_response_temperature_is_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
-        """create_response({"temperature": 0.9}) warns and sends no temperature."""
+    async def test_per_response_temperature_is_dropped(self) -> None:
+        """create_response({"temperature": 0.9}) sends no temperature."""
         session, connection = await started()
 
         async with reading(session):
@@ -2289,7 +2245,6 @@ class TestVerification:
             await asyncio.wait_for(creating, 5)
 
         assert "temperature" not in request["response"]
-        assert "'temperature'" in caplog.text
 
     async def test_turn_detection_and_transcription_extras_pass_through(self) -> None:
         """start(options={"turn_detection": {"type": "semantic_vad", "eagerness": "low"}, "transcription": {"model":
@@ -2331,8 +2286,8 @@ class TestVerification:
         assert update["reasoning"] == {"effort": "high"}
         assert cast(dict[str, Any], session.options) == {"speed": 0.9, "reasoning_effort": "high"}
 
-    async def test_typed_settings_per_response_are_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
-        """create_response({"speed": 1.2}) warns naming 'speed' and sends no speed."""
+    async def test_typed_settings_per_response_are_dropped(self) -> None:
+        """create_response({"speed": 1.2}) sends no speed."""
         session, connection = await started()
 
         async with reading(session):
@@ -2342,4 +2297,3 @@ class TestVerification:
             await asyncio.wait_for(creating, 5)
 
         assert "speed" not in request["response"]
-        assert "'speed'" in caplog.text

@@ -3,7 +3,6 @@
 """The realtime function-tool loop: batches, follow-ups, tool chains and settlement."""
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -1584,9 +1583,8 @@ async def test_a_result_send_that_fails_as_the_conversation_closes_does_not_fail
     assert _tool_messages(client.session) == []
 
 
-async def test_results_of_calls_that_never_ran_are_not_sent_once_closed(caplog: pytest.LogCaptureFixture) -> None:
+async def test_results_of_calls_that_never_ran_are_not_sent_once_closed() -> None:
     client = FakeRealtimeClient()
-    caplog.set_level(logging.DEBUG, logger="agent_framework")
 
     async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
         release_send = client.session.hold("send")
@@ -1596,12 +1594,13 @@ async def test_results_of_calls_that_never_ran_are_not_sent_once_closed(caplog: 
         await _next_function_result(conversation)
 
         await conversation.close()
+        lingering = asyncio.all_tasks() - {asyncio.current_task(), app_send}
         release_send.set()
         await asyncio.wait_for(app_send, 5)
         await asyncio.sleep(0.01)
 
+    assert lingering == set()  # close ended the task sending them, rather than leaving it to fail later
     assert _tool_messages(client.session) == []
-    assert "never ran" not in caplog.text  # close ended the task sending them, rather than leaving it to fail later
 
 
 async def test_a_chat_runs_tool_context_has_no_realtime_conversation(chat_client_base: MockBaseChatClient) -> None:
