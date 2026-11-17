@@ -126,12 +126,11 @@ class FoundryVoiceAgentClient:
             env_file_path=env_file_path,
             env_file_encoding=env_file_encoding,
         )
-        agent_name = settings.get("agent_name")
-        if not agent_name:
+        self.agent_name: str = settings.get("agent_name") or ""
+        if not self.agent_name:
             raise ValueError(
                 "Agent name is required. Set via 'agent_name' parameter or 'FOUNDRY_AGENT_NAME' environment variable."
             )
-        self.agent_name: str = agent_name
         self.agent_version = settings.get("agent_version")
         self._project_client = project_client
         self._project_access: tuple[str, AsyncTokenCredential] | None = None
