@@ -562,6 +562,9 @@ def _keep_results_as_they_finish(calls: Sequence[_Call]) -> Callable[[Content, l
 def _accepted_app_result(call: _Call) -> Content | None:
     if call.app_result is None or not call.app_result.done() or call.app_result.cancelled():
         return None
+    if call.decision is not None and _decided(call.decision) is not True:
+        # An early result for a call that needs approval stands only once the app approves the call.
+        return None
     # The result carries the call's occurrence id, as a result the loop produced would.
     result = copy.copy(call.app_result.result())
     result.id = call.content.id
@@ -569,10 +572,13 @@ def _accepted_app_result(call: _Call) -> Content | None:
 
 
 def _rejection_sent(call: _Call) -> Content | None:
-    decision = call.decision
-    if decision is None or not decision.done() or decision.cancelled() or decision.result():
+    if call.decision is None or _decided(call.decision) is not False:
         return None
     return approval_rejection_result(call.content, id=call.content.id)
+
+
+def _decided(decision: asyncio.Future[bool]) -> bool | None:
+    return decision.result() if decision.done() and not decision.cancelled() else None
 
 
 def _session_for_stateful_middleware(function_middleware: Sequence[FunctionMiddlewareTypes]) -> AgentSession | None:

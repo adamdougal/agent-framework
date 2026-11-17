@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections.abc import Sequence
 from typing import NamedTuple
 
@@ -72,6 +73,7 @@ class AppInput:
             claimed.add(request)
         for answer in answers:
             if answer.type == "function_result":
-                self._results.pop(self._waiting_call(answer) or "").answer.set_result(answer)
+                # A copy, so changing a result after sending it changes nothing.
+                self._results.pop(self._waiting_call(answer) or "").answer.set_result(copy.deepcopy(answer))
             else:
                 self._approvals.pop(answer.id or "").set_result(answer.approved is True)

@@ -421,6 +421,45 @@ async def test_an_app_run_tool_that_needs_approval_uses_the_result_the_app_sent(
     assert len(_of_type(updates, "function_call")) == 1
 
 
+async def test_close_drops_an_early_result_for_a_call_still_waiting_for_approval() -> None:
+    """A declaration-only tool needs approval. The app sends its result as soon as the call streams, then the call
+    closes with the approval unanswered: the call settles as conversation_closed, not with the app's result."""
+    client = FakeRealtimeClient()
+    transfer = FunctionTool(
+        name="transfer_to_person", description="Transfer the caller; the app does it.", approval_mode="always_require"
+    )
+
+    async with RealtimeAgent(client, tools=[transfer]).start_conversation() as conversation:
+        updates = _collect(conversation)
+        client.session.emit(*_response("resp_1", _call("call_1", "transfer_to_person")))
+        await _approval_request(updates)
+        await conversation.send(Content.from_function_result(call_id="call_1", result="transferred"))
+
+    await eventually(lambda: bool(_of_type(updates, "function_result")))
+    [settled] = _of_type(updates, "function_result")
+    assert settled.contents[0].exception == "conversation_closed"
+
+
+async def test_changing_a_result_after_sending_it_changes_nothing() -> None:
+    """The app sends a result for an app-run call while a sibling approval waits, then changes that result before
+    approving: the result sent is the one the app sent."""
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client, tools=[_account_tool(), _refund_tool([])]).start_conversation() as conversation:
+        updates = _collect(conversation)
+        client.session.emit(
+            *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "issue_refund", amount=5))
+        )
+        request = await _approval_request(updates)
+        answer = Content.from_function_result(call_id="call_1", result="Account 42")
+        await conversation.send(answer)
+        answer.result = "changed"
+        await conversation.send(request.to_function_approval_response(approved=True))
+        await eventually(lambda: bool(_tool_messages(client.session)))
+
+    assert _results(client.session) == [("call_1", "Account 42"), ("call_2", "refunded 5")]
+
+
 async def test_a_send_answering_one_call_twice_raises_and_answers_nothing() -> None:
     """One send holds the same approval twice. It raises ValueError, the call stays waiting, and nothing is sent."""
     runs: list[int] = []
