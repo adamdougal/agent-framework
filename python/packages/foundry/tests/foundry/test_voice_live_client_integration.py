@@ -9,7 +9,6 @@ asyncio.timeout(), and checks Voice Live behaviour the unit tests can only assum
 
 import asyncio
 import contextlib
-import logging
 import os
 from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any
@@ -167,19 +166,17 @@ async def test_conversation_say_speaks_the_text_verbatim() -> None:
     assert "Thanks for calling Contoso" in " ".join(finals)
 
 
-async def test_rejected_update_is_claimed_and_instructions_are_dropped(caplog: pytest.LogCaptureFixture) -> None:
+async def test_rejected_update_is_claimed_and_instructions_are_dropped() -> None:
     """An update Voice Live rejects raises RealtimeControlException, though its errors echo no event_id;
-    create_response({"instructions": ...}) warns and still returns a response id."""
+    create_response({"instructions": ...}) still returns a response id."""
     async with asyncio.timeout(TURN_TIMEOUT):
         async with live_session({"voice": AVA, "turn_detection": None}) as (session, reader):
             with pytest.raises(RealtimeControlException):
                 await session.update_session({"turn_detection": {"type": "not_a_detector"}}, None)
 
-            with caplog.at_level(logging.WARNING):
-                response_id = await session.create_response({"instructions": "Say hello."})
+            response_id = await session.create_response({"instructions": "Say hello."})
             await reader.until(lambda: reader.response_done(response_id))
 
-    assert "instructions" in caplog.text
     claimed = [event for event in reader.events if event.service_event_type == "error"]
     assert claimed
     assert all(event.kind == "passthrough" for event in claimed)
@@ -245,10 +242,10 @@ async def test_cancel_and_truncate() -> None:
     assert caught.value.code == "response_cancel_not_active"
 
 
-async def test_a_handoff_tool_moves_the_call_to_its_target(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_handoff_tool_moves_the_call_to_its_target() -> None:
     """A receptionist with voice en-US-AvaNeural, tool choice "required" and one handoff to billing, with voice
-    en-US-AndrewNeural, calls handoff_to_billing: handoff_completed streams from receptionist to billing, the reply
-    that follows is credited to billing, and no warning says the voice was dropped or ignored."""
+    en-US-AndrewNeural, calls handoff_to_billing: handoff_completed streams from receptionist to billing, and the reply
+    that follows is credited to billing."""
     async with asyncio.timeout(TURN_TIMEOUT), contextlib.AsyncExitStack() as stack:
         credential = None
         if not os.getenv("AZURE_VOICELIVE_API_KEY"):
@@ -274,23 +271,19 @@ async def test_a_handoff_tool_moves_the_call_to_its_target(caplog: pytest.LogCap
         )
         handoffs: list[Any] = []
         billing_finals: list[str] = []
-        with caplog.at_level(logging.WARNING):
-            async with agent.start_conversation() as conversation:
-                await conversation.send("I have a question about my bill.")
-                async for update in conversation:
-                    for content in update.contents:
-                        if content.type == "realtime_event" and content.kind == "handoff_completed":
-                            handoffs.append(content.additional_properties["core"])
-                        elif (
-                            content.type == "text" and content.status == "completed" and update.author_name == "billing"
-                        ):
-                            billing_finals.append(content.text or "")
-                    if update.finish_reason == "stop":
-                        break
+        async with agent.start_conversation() as conversation:
+            await conversation.send("I have a question about my bill.")
+            async for update in conversation:
+                for content in update.contents:
+                    if content.type == "realtime_event" and content.kind == "handoff_completed":
+                        handoffs.append(content.additional_properties["core"])
+                    elif content.type == "text" and content.status == "completed" and update.author_name == "billing":
+                        billing_finals.append(content.text or "")
+                if update.finish_reason == "stop":
+                    break
 
     assert handoffs == [{"source": "receptionist", "target": "billing"}]
     assert billing_finals
-    assert not [record for record in caplog.records if "voice" in record.getMessage().lower()]
 
 
 async def test_bad_credentials_raise() -> None:

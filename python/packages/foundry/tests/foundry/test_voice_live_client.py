@@ -792,8 +792,8 @@ async def test_azure_only_settings_are_sent() -> None:
     }
 
 
-async def test_per_response_instructions_are_dropped(caplog: pytest.LogCaptureFixture) -> None:
-    """create_response({"instructions": "Short.", "max_tokens": 50}) warns, and sends response
+async def test_per_response_instructions_are_dropped() -> None:
+    """create_response({"instructions": "Short.", "max_tokens": 50}) sends response
     {max_response_output_tokens: 50, metadata: {af_request_id: ...}} with no instructions."""
     session, connection = await voice_live_session()
 
@@ -807,7 +807,6 @@ async def test_per_response_instructions_are_dropped(caplog: pytest.LogCaptureFi
         "max_response_output_tokens": 50,
         "metadata": {"af_request_id": request["response"]["metadata"]["af_request_id"]},
     }
-    assert "instructions" in caplog.text
 
 
 async def test_per_response_output_modalities_are_sent_as_modalities() -> None:
@@ -963,15 +962,12 @@ async def test_assistant_text_is_sent_as_a_text_part() -> None:
     }
 
 
-async def test_ga_only_settings_are_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """start(options={"speed": 1.2, "truncation": "auto"}) on a Voice Live session sends neither key and warns naming
-    'speed' and 'truncation'."""
+async def test_ga_only_settings_are_dropped() -> None:
+    """start(options={"speed": 1.2, "truncation": "auto"}) on a Voice Live session sends neither key."""
     session = await flat_session(cast(VoiceLiveOptions, {"voice": "alloy", "speed": 1.2, "truncation": "auto"}))
 
     assert "speed" not in session
     assert "truncation" not in session
-    assert "'speed'" in caplog.text
-    assert "'truncation'" in caplog.text
 
 
 async def test_cancel_response_sends_no_response_id() -> None:
@@ -1060,21 +1056,20 @@ class TestVerification:
             "openai": {"type": "invalid_request_error", "param": "session.voice"}
         }
 
-    async def test_ignored_voice_change_warns_and_keeps_the_old_voice(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Voice Live ignores a change between OpenAI voices: update_session({"voice": "echo"}) acknowledged with
-        "alloy" still echoed logs the ignored-voice warning, and session.options keeps "alloy"."""
+    async def test_an_ignored_voice_change_keeps_the_old_voice(self) -> None:
+        """Voice Live ignores a change between OpenAI voices: after update_session({"voice": "echo"}) acknowledged
+        with "alloy" still echoed, session.options keeps "alloy"."""
         session, connection = await voice_live_session({"voice": "alloy"})
         connection.echo_overrides = {"voice": "alloy"}
 
         async with reading(session):
             await asyncio.wait_for(session.update_session({"voice": "echo"}, None), 5)
 
-        assert "ignored the voice change to 'echo'" in caplog.text
         assert session.options["voice"] == "alloy"
 
-    async def test_azure_voice_change_echoed_with_defaults_is_accepted(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_azure_voice_change_echoed_with_defaults_is_accepted(self) -> None:
         """update_session({"voice": Sonia}) acknowledged with Sonia plus Voice Live's default fields is accepted:
-        session.options holds Sonia as requested, and nothing warns."""
+        session.options holds Sonia as requested."""
         ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
         sonia: AzureVoice = {"type": "azure-standard", "name": "en-GB-SoniaNeural"}
         session, connection = await voice_live_session({"voice": ava})
@@ -1086,30 +1081,22 @@ class TestVerification:
             await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
         assert session.options["voice"] == sonia
-        assert "ignored the voice change" not in caplog.text
 
-    async def test_an_ignored_voice_is_logged_by_name_only(self, caplog: pytest.LogCaptureFixture) -> None:
-        """An ignored change to an Azure voice whose custom_lexicon_url is a SAS URL warns naming the voices, without
-        the URL or its signature."""
+    async def test_an_ignored_azure_voice_change_keeps_the_old_voice(self) -> None:
+        """update_session({"voice": Sonia}) acknowledged with Ava still echoed leaves session.options holding Ava."""
         ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
-        sonia: AzureVoice = {
-            "type": "azure-standard",
-            "name": "en-GB-SoniaNeural",
-            "custom_lexicon_url": "https://store.blob.core.windows.net/lexicons/a.xml?sv=2024-01-01&sig=secret-signature",
-        }
+        sonia: AzureVoice = {"type": "azure-standard", "name": "en-GB-SoniaNeural"}
         session, connection = await voice_live_session({"voice": ava})
         connection.echo_overrides = {"voice": ava}
 
         async with reading(session):
             await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
-        assert "ignored the voice change" in caplog.text
-        assert "en-GB-SoniaNeural" in caplog.text
-        assert "secret-signature" not in caplog.text
+        assert session.options["voice"] == ava
 
-    async def test_azure_voice_with_a_tuple_field_is_accepted(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_azure_voice_with_a_tuple_field_is_accepted(self) -> None:
         """update_session({"voice": Sonia with prefer_locales ("en-GB", "es-ES")}) acknowledged with the voice echoed
-        from JSON, where the tuple is a list: session.options holds Sonia as requested, and nothing warns."""
+        from JSON, where the tuple is a list: session.options holds Sonia as requested."""
         ava: AzureVoice = {"type": "azure-standard", "name": "en-US-AvaNeural"}
         sonia: AzureVoice = {
             "type": "azure-standard",
@@ -1122,4 +1109,3 @@ class TestVerification:
             await asyncio.wait_for(session.update_session({"voice": sonia}, None), 5)
 
         assert session.options["voice"] == sonia
-        assert "ignored the voice change" not in caplog.text

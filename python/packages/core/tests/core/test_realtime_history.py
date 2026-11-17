@@ -3,7 +3,6 @@
 """Voice history: the call's turns as messages, exchanges reported to context providers, replay and close."""
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -787,29 +786,6 @@ async def test_no_in_memory_history_provider_is_added_without_a_session_or_with_
         pass
 
     assert agent.context_providers == ([own_history] if case == "a loading history provider" else [])
-
-
-@pytest.mark.parametrize(
-    ("history", "options", "warnings"),
-    [
-        (True, {}, 1),
-        (True, {"transcription": None}, 1),
-        (True, _TRANSCRIBED, 0),
-        (False, {}, 0),
-    ],
-    ids=["transcription unset", "transcription off", "transcription on", "no history provider"],
-)
-async def test_history_providers_without_transcription_log_one_warning(
-    history: bool, options: RealtimeOptions, warnings: int, caplog: pytest.LogCaptureFixture
-) -> None:
-    client = FakeRealtimeClient()
-    agent = RealtimeAgent(client, context_providers=[InMemoryHistoryProvider()] if history else [Recorder()])
-
-    with caplog.at_level(logging.WARNING):
-        async with agent.start_conversation(options=options):
-            pass
-
-    assert sum("without text" in record.getMessage() for record in caplog.records) == warnings
 
 
 # endregion

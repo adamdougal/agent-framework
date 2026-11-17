@@ -10,7 +10,6 @@ can only assume.
 
 import asyncio
 import contextlib
-import logging
 import os
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
@@ -148,11 +147,11 @@ async def test_text_in_and_out() -> None:
     assert (capped_done["status"], capped_done.get("reason")) == ("incomplete", "max_output_tokens")
 
 
-async def test_short_audio_out(caplog: pytest.LogCaptureFixture) -> None:
+async def test_short_audio_out() -> None:
     """After a short spoken say("Thanks for calling."), whose final output_text holds the text and whose usage reports
-    audio output tokens, update_session({"voice": "cedar"}) drops the voice with a warning and a raw session.update
-    changing the voice is rejected with "cannot_update_voice"; a cancelled reply's response_done has reason
-    "client_cancelled"; after truncate(item, 0, 200), a raw conversation.item.retrieve reads back an empty
+    audio output tokens, update_session({"voice": "cedar"}) drops the voice rather than raising, and a raw
+    session.update changing the voice is rejected with "cannot_update_voice"; a cancelled reply's response_done has
+    reason "client_cancelled"; after truncate(item, 0, 200), a raw conversation.item.retrieve reads back an empty
     transcript."""
     options: OpenAIRealtimeOptions = {"voice": "marin", "turn_detection": None}
 
@@ -160,8 +159,7 @@ async def test_short_audio_out(caplog: pytest.LogCaptureFixture) -> None:
         thanks = await session.say("Thanks for calling.")
         await reader.until(lambda: reader.response_done(thanks))
 
-        with caplog.at_level(logging.WARNING):
-            await session.update_session({"voice": "cedar"}, None)
+        await session.update_session({"voice": "cedar"}, None)
         voice_change = {"type": "realtime", "audio": {"output": {"voice": "cedar"}}}
         await session.send(_raw("session.update", event_id="raw_voice", session=voice_change))
         await reader.until(lambda: any(event.kind == "error" for event in reader.events))
@@ -179,7 +177,6 @@ async def test_short_audio_out(caplog: pytest.LogCaptureFixture) -> None:
     assert "thanks for calling" in _final_text(reader.of_response(thanks)).lower()
     usage = next(event for event in reader.of_response(thanks) if event.kind == "usage")
     assert usage.content.usage_details["audio_output_token_count"] > 0
-    assert "can't change the voice now" in caplog.text
     voice_error = next(event for event in reader.events if event.kind == "error")
     assert voice_error.content.error_code == "cannot_update_voice"
     assert _core(reader.response_done(story))["reason"] == "client_cancelled"

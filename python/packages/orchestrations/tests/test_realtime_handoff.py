@@ -3,7 +3,6 @@
 """RealtimeHandoffBuilder: a handoff topology of realtime agents that share one live conversation."""
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from types import TracebackType
 from typing import Any, cast
@@ -503,11 +502,13 @@ def test_build_rejects_a_participant_tool_named_like_one_of_its_handoff_tools() 
         builder.build()
 
 
-def test_build_warns_about_participant_settings_that_wont_apply(caplog: pytest.LogCaptureFixture) -> None:
+async def test_build_accepts_participant_settings_that_wont_apply() -> None:
     client = FakeRealtimeClient()
+    audited: list[AgentContext] = []
 
     class AuditMiddleware(AgentMiddleware):
         async def process(self, context: AgentContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            audited.append(context)
             await call_next()
 
     billing_options: RealtimeOptions = {"temperature": 0.2}
@@ -520,13 +521,14 @@ def test_build_warns_about_participant_settings_that_wont_apply(caplog: pytest.L
         middleware=[AuditMiddleware()],
     )
     receptionist = _receptionist(client)
+    agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
 
-    with caplog.at_level(logging.WARNING):
-        RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+    async with agent.start_conversation() as conversation:
+        await conversation.handoff(billing)
 
-    [warning] = [record.getMessage() for record in caplog.records if "billing" in record.getMessage()]
-    for setting in ("context_providers", "function_invocation_configuration", "temperature", "middleware"):
-        assert setting in warning
+    [(_, update, _)] = client.session.calls
+    assert "temperature" not in update
+    assert audited == []
 
 
 def test_build_refuses_a_participant_middleware_bundle_with_agent_middleware() -> None:
@@ -596,20 +598,3 @@ class TestVerification:
             "handoff_to_receptionist",
             "handoff_to_support",
         ]
-
-    def test_build_does_not_warn_about_settings_a_participant_brings(self, caplog: pytest.LogCaptureFixture) -> None:
-        client = FakeRealtimeClient()
-        options: RealtimeOptions = {"voice": "alloy", "tool_choice": "required"}
-        receptionist = RealtimeAgent(
-            client,  # type: ignore[arg-type]
-            name="receptionist",
-            instructions="Greet the caller.",
-            tools=[greet],
-            default_options=options,
-            middleware=[_recorder("receptionist", [])],
-        )
-
-        with caplog.at_level(logging.WARNING):
-            RealtimeHandoffBuilder(participants=[receptionist, _billing(client)]).with_start_agent(receptionist).build()
-
-        assert not caplog.records

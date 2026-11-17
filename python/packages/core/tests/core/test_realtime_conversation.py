@@ -768,7 +768,7 @@ async def test_a_receive_error_after_the_app_closed_does_not_fail_the_conversati
         assert await _collect(conversation) == []
 
 
-async def test_close_finishes_when_closing_the_session_fails(caplog: pytest.LogCaptureFixture) -> None:
+async def test_close_finishes_when_closing_the_session_fails() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
@@ -779,7 +779,6 @@ async def test_close_finishes_when_closing_the_session_fails(caplog: pytest.LogC
             client.session.end()  # lets a hung close finish, so a failing run ends
 
         assert await _collect(conversation) == []
-    assert "The socket is stuck." in caplog.text
 
 
 async def test_cancelling_a_close_call_leaves_the_close_running() -> None:

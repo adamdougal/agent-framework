@@ -3,7 +3,6 @@
 """Session updates and verbatim speech in a live realtime conversation, and tool-list changes made by tools."""
 
 import asyncio
-import logging
 from typing import Any
 
 import pytest
@@ -424,9 +423,7 @@ async def test_a_tool_update_queued_behind_an_app_update_declares_the_tools_as_t
     assert updates == [("update_session", {}, [])]
 
 
-async def test_a_rejected_tool_update_restores_the_tools_and_still_sends_the_result(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_a_rejected_tool_update_restores_the_tools_and_still_sends_the_result() -> None:
     client = FakeRealtimeClient()
 
     @tool
@@ -437,21 +434,17 @@ async def test_a_rejected_tool_update_restores_the_tools_and_still_sends_the_res
 
     async with RealtimeAgent(client, tools=[offer_time]).start_conversation():
         client.session.update_session_error = RealtimeControlException("Invalid tool schema.", code="invalid_value")
-        with caplog.at_level(logging.WARNING):
-            client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
-            await eventually(lambda: ("create_response", None) in client.session.calls)
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        await eventually(lambda: ("create_response", None) in client.session.calls)
         client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
         await eventually(lambda: len(_results(client.session)) == 2)
 
     [first, (_, time_result)] = _results(client.session)
     assert first == ("call_1", "offered")
     assert "not found" in time_result
-    assert "Invalid tool schema." in caplog.text
 
 
-async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resends_it(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resends_it() -> None:
     client = FakeRealtimeClient()
 
     @tool
@@ -462,9 +455,8 @@ async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resen
 
     async with RealtimeAgent(client, tools=[offer_time]).start_conversation(control_timeout=0.05):
         acknowledge = client.session.hold("update_session")
-        with caplog.at_level(logging.WARNING):
-            client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
-            await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        await eventually(lambda: bool(_results(client.session)))
         acknowledge.set()
         client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
         await eventually(lambda: len(_results(client.session)) == 2)
@@ -472,7 +464,6 @@ async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resen
     assert _results(client.session)[1] == ("call_2", "noon")
     updates = [call for call in client.session.calls if call[0] == "update_session"]
     assert updates == [("update_session", {}, [offer_time, get_time])] * 2
-    assert "acknowledge" in caplog.text
 
 
 # endregion

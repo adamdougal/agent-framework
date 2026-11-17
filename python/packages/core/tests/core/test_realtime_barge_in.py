@@ -3,7 +3,6 @@
 """Barge-in: cutting the audio the caller didn't hear."""
 
 import asyncio
-import logging
 
 import pytest
 
@@ -369,7 +368,7 @@ async def test_g711_audio_is_8_khz_8_bit() -> None:
     assert await _cut_after_400_ms("audio/pcmu", 4000) == [("truncate", "item_1", 0, 400)]
 
 
-async def test_audio_in_an_unknown_format_is_not_cut(caplog: pytest.LogCaptureFixture) -> None:
+async def test_audio_in_an_unknown_format_is_not_cut() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
@@ -379,11 +378,9 @@ async def test_audio_in_an_unknown_format_is_not_cut(caplog: pytest.LogCaptureFi
             event("response_created", response_id="resp_1"),
             _audio("resp_1", "item_1", 48 * 1000, media_type="audio/opus"),
         )
-        with caplog.at_level(logging.WARNING):
-            await conversation.interrupt(played_ms=400)
+        await conversation.interrupt(played_ms=400)
 
     assert client.session.calls == [("cancel_response",)]
-    assert [record.getMessage() for record in caplog.records if "audio/opus" in record.getMessage()] != []
 
 
 async def test_a_provider_truncation_cuts_the_responses_later_messages_at_0_ms() -> None:
