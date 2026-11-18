@@ -86,6 +86,8 @@ class FoundryVoiceAgentClient:
         definition: The definition read on first entry, or ``None`` before then.
     """
 
+    OTEL_PROVIDER_NAME: ClassVar[str] = "azure.ai.foundry"
+
     def __init__(
         self,
         *,

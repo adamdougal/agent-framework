@@ -429,6 +429,7 @@ This folder contains different samples demonstrating how to use telemetry in var
 | [agent_observability.py](./agent_observability.py) | Telemetry collection for an agentic application with tool calls. |
 | [foundry_tracing.py](./foundry_tracing.py) | Azure Monitor integration with Microsoft Foundry. |
 | [microsoft_opentelemetry_distro.py](./microsoft_opentelemetry_distro.py) | One-call setup with the Microsoft OpenTelemetry Distro (`use_microsoft_opentelemetry()`), optionally enabling Azure Monitor. |
+| [realtime_agent_observability.py](./realtime_agent_observability.py) | Telemetry for a live realtime call on Azure Voice Live: one trace with a span per response and per tool call. |
 | [workflow_observability.py](./workflow_observability.py) | Telemetry collection for a workflow with multiple executors and message passing. |
 | [advanced_manual_setup_console_output.py](./advanced_manual_setup_console_output.py) | Advanced: manual setup of exporters and providers with console output — useful for understanding how observability works under the hood. |
 | [advanced_zero_code.py](./advanced_zero_code.py) | Advanced: zero-code provider/exporter setup using the `opentelemetry-instrument` CLI wrapper. |

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import copy
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from .._types import AgentRunInputs, Message
     from ._agent import RawRealtimeAgent
     from ._clients import RealtimeClientSessionProtocol
+    from ._telemetry import ConversationTelemetry
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
@@ -101,6 +103,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         mcp_exit_stack: AsyncExitStack,
         control_timeout: float,
         max_queued_updates: int,
+        telemetry: ConversationTelemetry | None,
     ) -> None:
         self._owner = agent
         self._active_agent = agent._start_participant()  # pyright: ignore[reportPrivateUsage]
@@ -147,6 +150,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._provider_session = agent_session if agent_session is not None else AgentSession()
         self._start_context: SessionContext | None = None
         self._previous_event: RealtimeEvent | None = None
+        self._telemetry = telemetry
+        self._opened_context: contextvars.Context | None = None
 
     @property
     def active_agent(self) -> RawRealtimeAgent[RealtimeOptionsT]:
@@ -172,6 +177,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._entered = True
         if self._closing.is_set():
             raise RealtimeConversationClosedException("The realtime conversation is closed.")
+        with self._telemetry.opened() if self._telemetry is not None else contextlib.nullcontext():
+            await self._open()
+        return self
+
+    async def _open(self) -> None:
         start_context = await self._prepare_from_context_providers()
         tools = await self._resolve_tools(self._tools)
         starting = asyncio.ensure_future(
@@ -213,8 +223,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                     "The realtime conversation closed while it was starting."
                 ) from error
             raise
+        self._opened_context = contextvars.copy_context()
         self._receive_task = asyncio.create_task(self._receive_loop(session))
-        return self
 
     async def _resolve_tools(self, tools: Sequence[ToolTypes]) -> list[ToolTypes]:
         """The conversation keeps its own list of each MCP tool's functions, so server-side changes wait for an update.
@@ -322,6 +332,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if _is_repeated_error(event, self._previous_event):
             return
         self._previous_event = event
+        if self._telemetry is not None:
+            self._telemetry.on_event(event, self._active_agent)
         core = core_attributes(event)
         response_id = core.get("response_id", "")
         if event.kind == "response_created":
@@ -846,7 +858,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if self._close_task is None:
             self._closing.set()
             self._tool_loop.stop()
-            self._close_task = asyncio.create_task(self._close_sequence())
+            # Close runs where the conversation opened, whichever task asked for it, so what it reports nests there.
+            context = self._opened_context.copy() if self._opened_context is not None else None
+            self._close_task = asyncio.create_task(self._close_sequence(), context=context)
         return self._close_task
 
     async def _wait_for_caller_transcripts(self) -> None:
@@ -882,8 +896,12 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 )
             await self._end_background_tasks()
         finally:
+            unrecorded = _unrecorded_history(provider_failures)
+            if self._telemetry is not None:
+                self._telemetry.closed(self._failure or unrecorded)
             self._updates.finish(self._failure)
-        _raise_unrecorded_history(provider_failures)
+        if unrecorded is not None:
+            raise unrecorded
 
     async def _end_background_tasks(self) -> None:
         """Nothing the conversation spawned may outlive it."""
@@ -894,11 +912,12 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await asyncio.wait(remaining)
 
 
-def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
+def _unrecorded_history(failures: Sequence[Exception]) -> Exception | None:
     if len(failures) == 1:
-        raise failures[0]
+        return failures[0]
     if failures:
-        raise ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
+        return ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
+    return None
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:

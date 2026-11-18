@@ -560,34 +560,25 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 ## Telemetry
 
 - **Location.** The `RealtimeAgent` telemetry layer instruments `run(...)` and `start_conversation(...)` from the event
-  kinds. Provider clients have no telemetry layers and no `Raw*` client classes; they supply the provider name, server
-  address and model. A provider client used without an agent emits nothing. `FoundryVoiceAgent` sits over
-  `RawFoundryVoiceAgent`.
+  kinds. Provider clients have no telemetry layers and no `Raw*` client classes; they supply the provider name, as
+  `OTEL_PROVIDER_NAME`, and the model. A provider client used without an agent emits nothing. `FoundryVoiceAgent` is
+  the telemetry layer over `RawFoundryVoiceAgent`.
 
 ```text
 invoke_agent {owner}                 INTERNAL: the conversation span
 ├── realtime_inference {model}       CLIENT: one per response
-├── execute_tool {tool}              INTERNAL: one per call that ran
-│   └── realtime.update_session      a control call made inside a tool
-├── realtime.create_response | realtime.say | realtime.update_session | realtime.interrupt
-└── realtime.handoff                 only for handoff(...) called outside a tool
+└── execute_tool {tool}              INTERNAL: one per call that ran
 ```
 
-- **Conversation span.** `invoke_agent {owner}` opens at `start_conversation(...)` under the current span and ends at
-  close; `run(...)` gets the same tree. It names the agent that started the conversation, which for a built handoff
-  agent is the built agent itself. It carries chat `invoke_agent`'s attributes plus `gen_ai.realtime_session.id`, and
-  sums usage over every response. The receive loop, tool batches, exchange reports and every other task the conversation
-  starts run in a copy of the context captured inside it, so `realtime_inference` and `execute_tool` spans are its
-  children and siblings of each other.
-- **Control spans.** Each public `update_session(...)`, `create_response(...)`, `say(...)` and `interrupt(...)` gets an
-  INTERNAL `realtime.<name>` span with the realtime session id, provider and any created response id. It records a
-  claimed error with the provider's code as `error.type` and ERROR status, except the `response_cancel_not_active`
-  that `interrupt(...)` ignores. Tool-loop follow-ups get none.
+- **Conversation span.** `invoke_agent {owner}` opens when the conversation is entered, under the current span, and
+  ends at close; `run(...)` gets the same tree. It names the agent that started the conversation, which for a built
+  handoff agent is the built agent itself. It carries chat `invoke_agent`'s attributes, with chat agents' provider name
+  `microsoft.agent_framework`, plus `gen_ai.realtime_session.id`, and sums usage over every response. Entry runs inside
+  it, so context providers' `before_run`, the provider's handshake, the receive loop and the tool batches it starts nest
+  under it, and close runs in a copy of the context captured there, whichever task closes the call. `realtime_inference`
+  and `execute_tool` spans are its children and siblings of each other.
 - **Agents.** `realtime_inference` spans carry `gen_ai.agent.name` and `gen_ai.agent.id` of the agent active when the
-  response was created, and `execute_tool` spans those of the agent active when the call arrived. A handoff tool's span
-  uses `gen_ai.transfer.mode=pass_control` and `gen_ai.transfer.target.name`, and its `handoff(...)` opens no span. A
-  handoff's own session update opens no control span. A `handoff(...)` outside a tool gets `realtime.handoff` with
-  source and target attributes. Spans naming a `FoundryVoiceAgent` carry `gen_ai.agent.version` when it pins one.
+  response was created.
 - **Conventions.** Realtime follows semantic-conventions-genai at commit `750e42c`, unreleased, in Agent Framework's
   latest mode; under the v1.36 baseline it emits the same spans, with mode-dependent attributes following the mode. The
   [per-provider mapping table](https://github.com/adamdougal/agent-framework/blob/research/realtime-telemetry-mapping/docs/research/realtime-telemetry-mapping.md#mapping-table)
@@ -595,38 +586,56 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   `reasoning_tokens` alongside, `gpt-transcribe` reports `duration`, Voice Live reports no transcription usage, failed
   Voice Live responses report `server_error`, and content-filter blocks never carry a category. Where the table and this
   section differ, this section wins.
-- **Identity.** Provider names are `openai`, `azure.ai.openai` with Azure routing, and `azure.ai.foundry` for Voice Live
-  and Foundry voice agents. `gen_ai.conversation.id` follows chat's rule and is captured at start: a host-supplied id,
-  else a string `service_session_id`. `gen_ai.realtime_session.id` comes from `session_created`. The event logger emits
-  `gen_ai.client.realtime_session.started` and `.ended` for every realtime session, INFO or WARN with `error.type` when
-  the session dies.
+- **Identity.** On `realtime_inference` spans, provider names are `openai`, `azure.ai.openai` with Azure routing, and
+  `azure.ai.foundry` for Voice Live and Foundry voice agents. `gen_ai.request.model` is the client's model and
+  `gen_ai.response.model` the one `session_created` reports; the span is named after the first of them known, or just
+  `realtime_inference`. `gen_ai.realtime_session.id` comes from `session_created`.
 - **Responses.** Span finish reasons are `stop`, `tool_call`, `content_filter` or `length`; the provider's verbatim
   `turn_detected` or `client_cancelled`, else `interrupted`, for cancelled responses and a response still running at
-  close; and `error`, with `error.type` and ERROR status, for failed responses and sessions that die mid-response.
-  Content filtering and interruptions leave the status unset. There's no `gen_ai.response.status`. Empty cancelled
-  responses are recorded like any other.
-- **Usage.** `UsageDetails` gains `audio_input_token_count`, `text_output_token_count`,
-  `image_cache_read_input_token_count` and their siblings, one per convention attribute, mapped in latest mode to
-  `gen_ai.usage.{text,audio,image}.{input,output}_tokens` and `.cache_read.input_tokens`. Transcription usage isn't
-  recorded. Each response records `gen_ai.client.operation.duration` and `gen_ai.client.token.usage` with
-  `gen_ai.operation.name=realtime_inference`; there are no realtime-specific metrics.
-- **Errors.** A session that dies marks the conversation span ERROR with `error.type` and any close code; a normal close
-  leaves it unset, and a `close()` that raises marks it ERROR. Unclaimed provider errors and context provider failures
-  become `agent_framework.realtime.error` events, which carry the message only with sensitive data on, and never change
-  a span's status. Each `item_truncated` becomes an `agent_framework.realtime.item_truncated` event with the response
-  id, item id and `audio_end_ms`. Exchange reports get no spans.
+  close; and `error`, with `error.type` and ERROR status, for failed responses and sessions that die mid-response. A
+  failed response's `error.type` is the provider's error code, else `server_error`; a dead session's is the failure's
+  class name. Content filtering and interruptions leave the status unset. There's no `gen_ai.response.status`. Empty
+  cancelled responses are recorded like any other.
+- **Usage.** Each response's usage maps through chat's mapping: input and output tokens, plus cache reads and reasoning
+  in latest mode. Transcription usage isn't recorded. Each response records `gen_ai.client.operation.duration` and
+  `gen_ai.client.token.usage` with `gen_ai.operation.name=realtime_inference`; there are no realtime-specific metrics.
+- **Errors.** A session that dies marks the conversation span ERROR with the failure's class name as `error.type`; a
+  normal close leaves it unset, and a `close()` or an entry that raises marks it ERROR. Exchange reports get no spans.
 - **Cancelled tools.** `FunctionTool.invoke` records a cancelled call as ERROR with `error.type` `cancelled`, or
   `conversation_closed` when closing the conversation cancelled it, on its span and its duration metric. The
   conversation passes that reason as the cancel message, and any other cancel message records `cancelled`, because
   `error.type` is a metric dimension. Calls that never ran get no span.
-- **Content.** Telemetry never records audio. With sensitive data on, `realtime_inference` spans record the agent
-  transcript as `transcription` parts plus text and `tool_call` parts, the app input and any caller transcript final
-  before the span ends, and `gen_ai.system_instructions` as of the response's creation. The live conversation span
-  records no messages; `run(...)`'s records input and output as chat does.
-- **Azure SDKs.** Each Azure client warns once when its SDK's instrumentor is active, naming the duplicate spans and how
-  to turn it off. `VoiceLiveInstrumentor` adds a span per outbound event, including each audio append, so a 30-second
-  call produced 1,176 spans. `FoundryVoiceAgentClient` injects `traceparent` and `tracestate`, never baggage, from the
-  conversation span when it connects. `AIProjectInstrumentor` keeps trace headers already present.
+- **Content.** Telemetry never records audio, and records no messages or transcripts yet.
+- **Azure SDKs.** `FoundryVoiceAgentClient` injects `traceparent` and `tracestate`, never baggage, from the conversation
+  span when it connects. `AIProjectInstrumentor` keeps trace headers already present.
+- **Later.** The rest of the telemetry comes after the first upstream PR, because the conventions it follows are
+  unreleased. Each can be added without breaking anything:
+  - **Control spans.** Each public `update_session(...)`, `create_response(...)`, `say(...)` and `interrupt(...)` gets
+    an INTERNAL `realtime.<name>` span with the realtime session id, provider and any created response id, under the
+    current `execute_tool` span inside a tool. It records a claimed error with the provider's code as `error.type` and
+    ERROR status, except the `response_cancel_not_active` that `interrupt(...)` ignores. Tool-loop follow-ups get none.
+  - **Handoffs.** `execute_tool` spans carry the agent active when the call arrived. A handoff tool's span uses
+    `gen_ai.transfer.mode=pass_control` and `gen_ai.transfer.target.name`, and its `handoff(...)` opens no span. A
+    handoff's own session update opens no control span. A `handoff(...)` outside a tool gets `realtime.handoff` with
+    source and target attributes.
+  - **Identity.** Spans naming a `FoundryVoiceAgent` carry `gen_ai.agent.version` when it pins one, spans carry
+    `server.address` from each client, and a session that dies records its close code. `gen_ai.conversation.id`
+    follows chat's rule and is captured at start: a host-supplied id, else a string `service_session_id`. Nothing sets
+    one on a live conversation today, because hosts drive `run(...)` and realtime never sets `service_session_id`.
+  - **Events.** The event logger emits `gen_ai.client.realtime_session.started` and `.ended` for every realtime
+    session, INFO or WARN with `error.type` when the session dies. Unclaimed provider errors and context provider
+    failures become `agent_framework.realtime.error` span events, which carry the message only with sensitive data on,
+    and never change a span's status. Each `item_truncated` becomes an `agent_framework.realtime.item_truncated` span
+    event with the response id, item id and `audio_end_ms`.
+  - **Modality usage.** The audio, text and image `UsageDetails` keys, such as `audio_input_token_count`, map in latest
+    mode to `gen_ai.usage.{text,audio,image}.{input,output}_tokens` and `.cache_read.input_tokens`.
+  - **Content.** With sensitive data on, `realtime_inference` spans record the agent transcript as `transcription` parts
+    plus text and `tool_call` parts, the app input and any caller transcript final before the span ends, and
+    `gen_ai.system_instructions` as of the response's creation. The live conversation span records no messages;
+    `run(...)`'s records input and output as chat does.
+  - **Azure SDK instrumentors.** Each Azure client warns once when its SDK's instrumentor is active, naming the
+    duplicate spans and how to turn it off. `VoiceLiveInstrumentor` adds a span per outbound event, including each
+    audio append, so a 30-second call produced 1,176 spans.
 
 ## Provider clients
 
@@ -720,7 +729,7 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
   `FunctionInvocationContext.realtime_conversation`; `ConversationMiddleware`, `ConversationContext`,
   `MiddlewareType.CONVERSATION` and the conversation category in `categorize_middleware`; `RawRealtimeAgent`,
   `RealtimeAgent`, `RealtimeConversation`, `RealtimeEvent`, the client/session protocols, the options types and the
-  realtime exceptions; the `realtime.*` span names and the `agent_framework.realtime.error` and
+  realtime exceptions; later, the `realtime.*` span names and the `agent_framework.realtime.error` and
   `agent_framework.realtime.item_truncated` events.
 - `agent-framework-orchestrations`: `RealtimeHandoffBuilder` and its built agent.
 - `agent-framework-openai`: `OpenAIRealtimeClient`, `OpenAIRealtimeOptions`, `OpenAIRealtimeTurnDetection`,
@@ -733,8 +742,9 @@ Under `REALTIME`, or `FOUNDRY_VOICE_AGENTS` for the Foundry voice agent classes:
 On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields, which only realtime-event content
 serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
 and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
-`ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys and their
-telemetry mapping; `FunctionTool.invoke` recording cancellation as ERROR; `OpenAISettings` and `AzureOpenAISettings`'
+`ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys, with their
+telemetry mapping later; `FunctionTool.invoke` recording cancellation as ERROR; `observability`'s public-named,
+unexported helpers that realtime telemetry shares with chat; `OpenAISettings` and `AzureOpenAISettings`'
 `realtime_model`, read from `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and

@@ -117,7 +117,9 @@ the root package:
   options, tools and function middleware over the agent's, and adds an `InMemoryHistoryProvider` for a session as
   `Agent` does. `async with agent` connects the agent's MCP tools that aren't connected yet and closes, on exit, every
   MCP tool the agent connected; it never closes one the app connected. Two protected hooks let an agent that owns a
-  handoff topology start its calls with another participant speaking and add each participant's handoff tools.
+  handoff topology start its calls with another participant speaking and add each participant's handoff tools. A
+  third, `_conversation_telemetry()`, returns `None` on the raw agent; `RealtimeTelemetryLayer`, which `RealtimeAgent`
+  and `FoundryVoiceAgent` compose over their raw agents, returns a recorder while instrumentation is enabled.
 - `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice) and
   `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both compute the session's
   settings here.
@@ -153,6 +155,12 @@ the root package:
   exchanges. `user` and `system` items without audio are echoes of app input or replay, so it ignores them.
 - `_reporting.py` - `report_exchanges`, which close uses to report each exchange to the context providers'
   `after_run` in order. A provider that fails skips the later exchanges, and the others carry on.
+- `_telemetry.py` - `ConversationTelemetry`, the recorder behind a conversation's `invoke_agent` span and a
+  `realtime_inference` span per response, with finish reasons, usage and the operation-duration and token-usage
+  metrics. The conversation hands it each event before the event's update is emitted, and the active agent with it.
+  Entry runs inside the conversation span, so the receive loop, tool batches and the provider's handshake nest under
+  it, and close runs in a copy of the context captured there. Attribute keys, usage mapping and metrics come from
+  public-named helpers in `observability.py`, shared with chat.
 
 Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, the
 live tool list, and an `on_call_finished` callback that keeps a cancelled batch's finished results, as private

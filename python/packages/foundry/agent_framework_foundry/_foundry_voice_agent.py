@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from agent_framework import RawRealtimeAgent, ToolMode, normalize_tools
 from agent_framework._feature_stage import ExperimentalFeature, experimental
+from agent_framework._realtime._agent import RealtimeTelemetryLayer
 
 from ._foundry_voice_client import DEFINITION_TOOLS, FoundryVoiceAgentClient, voice_from
 from ._realtime_options import FoundryVoiceAgentOptions
@@ -146,8 +147,11 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
 
 
 @experimental(feature_id=ExperimentalFeature.FOUNDRY_VOICE_AGENTS)
-class FoundryVoiceAgent(RawFoundryVoiceAgent):
+class FoundryVoiceAgent(RealtimeTelemetryLayer[FoundryVoiceAgentOptions], RawFoundryVoiceAgent):
     """A realtime agent published in Microsoft Foundry as a voice agent.
+
+    Its conversations are traced as ``RealtimeAgent``'s are, and each session's handshake carries the conversation
+    span's trace context, so Foundry's own spans for the session join the call's trace.
 
     See ``RawFoundryVoiceAgent`` for how the definition, tools and handoffs work.
     """
