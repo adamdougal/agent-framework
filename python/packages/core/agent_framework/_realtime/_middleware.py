@@ -41,7 +41,8 @@ class ConversationContext:
             Build a replacement rather than changing the update in place: its contents are the ones history and the
             tool loop hold, so an in-place change would reach them too.
         close_hooks: Hooks that run once the conversation has closed and reported its history, with the exception that
-            ended it, or ``None``. They run only for a conversation that opened.
+            ended it, such as an error raised from the conversation's ``async with`` block, or ``None``. They run only
+            for a conversation that opened.
 
     Any other exception from a send or update hook ends the conversation: ``send(...)`` or iteration raises it once
     close has finished, and after an update hook's exception no update still queued is delivered. A close hook's
@@ -113,7 +114,8 @@ class ConversationMiddleware(ABC):
 
         Args:
             context: The conversation's context. Register hooks on it before calling ``call_next()``.
-            call_next: Opens the conversation, through any inner middleware. It can be called only once.
+            call_next: Opens the conversation, through any inner middleware. Each middleware's ``call_next()`` can be
+                called only once.
 
         Note:
             Raising ``MiddlewareTermination`` before ``call_next()``, or returning without calling it, refuses the

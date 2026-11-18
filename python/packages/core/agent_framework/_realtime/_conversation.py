@@ -114,6 +114,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._conversation_middleware = conversation_middleware
         self._middleware_context = ConversationContext(agent=agent)
         self._update_hook_failure: Exception | None = None
+        self._exit_error: Exception | None = None
         self._initial_messages = initial_messages
         self._options = options
         self._call = call
@@ -315,6 +316,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if isinstance(exc_value, Exception):
+            self._exit_error = exc_value
         await self.close()
 
     @property
@@ -941,7 +944,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 provider_failures = await report_exchanges(
                     self._owner, self._provider_session, self._start_context, self._history.exchanges()
                 )
-            close_hook_failures = await run_close_hooks(self._middleware_context, self._failure)
+            # An app error that ended the call is what ended it, unless the conversation had already failed.
+            ended_by = self._failure if self._failure is not None else self._exit_error
+            close_hook_failures = await run_close_hooks(self._middleware_context, ended_by)
             await self._end_background_tasks()
         finally:
             self._updates.finish(self._failure)

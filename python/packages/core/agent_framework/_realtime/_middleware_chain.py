@@ -30,14 +30,14 @@ async def open_through_middleware(
     open_conversation: Callable[[], Awaitable[None]],
 ) -> None:
     """Raises ``MiddlewareTermination`` when the middleware returns without opening the conversation."""
-    opening_attempted = False
+    continued: set[int] = set()
 
     async def call(index: int) -> None:
-        nonlocal opening_attempted
+        # A repeated continuation would rerun inner middleware's side effects, or reopen the session.
+        if index in continued:
+            raise RuntimeError("call_next() can be called only once; it opens the realtime conversation once.")
+        continued.add(index)
         if index == len(middleware):
-            if opening_attempted:
-                raise RuntimeError("call_next() opens the realtime conversation once; it can't be called again.")
-            opening_attempted = True
             await open_conversation()
             context.conversation = conversation
             return

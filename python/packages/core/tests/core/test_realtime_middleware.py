@@ -199,6 +199,26 @@ async def test_calling_call_next_twice_raises_runtime_error() -> None:
     assert len(client.start_session_calls) == 1
 
 
+async def test_calling_an_outer_call_next_twice_raises_before_inner_middleware_runs_again() -> None:
+    """An outer middleware calling call_next() twice gets RuntimeError from the second call, and the inner middleware's
+    process() runs once."""
+    inner_runs: list[str] = []
+
+    async def open_twice(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        await call_next()
+        await call_next()
+
+    async def audit(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        inner_runs.append("audit")
+        await call_next()
+
+    with pytest.raises(RuntimeError, match="once"):
+        async with RealtimeAgent(FakeRealtimeClient(), middleware=[open_twice, audit]).start_conversation():
+            pass
+
+    assert inner_runs == ["audit"]
+
+
 async def test_an_exception_after_call_next_closes_the_session_and_entering_raises_it() -> None:
     """process() raising RuntimeError('audit store down') after call_next() closes the session once, and entering raises
     that RuntimeError."""
@@ -470,6 +490,18 @@ async def test_a_close_hook_gets_the_exception_that_ended_the_conversation() -> 
                 pass
 
     assert seen == [socket_died]
+
+
+async def test_an_exception_from_the_conversation_block_reaches_the_close_hooks() -> None:
+    """A ValueError('app failed') raised inside `async with agent.start_conversation()` reaches the close hook."""
+    closed: list[Exception | None] = []
+    app_failed = ValueError("app failed")
+
+    with pytest.raises(ValueError, match="app failed"):
+        async with RealtimeAgent(FakeRealtimeClient(), middleware=[close_hook(closed.append)]).start_conversation():
+            raise app_failed
+
+    assert closed == [app_failed]
 
 
 async def test_close_hooks_run_innermost_first() -> None:

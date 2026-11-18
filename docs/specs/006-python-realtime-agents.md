@@ -550,7 +550,7 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 - **`ConversationMiddleware`** has `process(context, call_next)`. A plain function whose parameter is annotated
   `ConversationContext` is conversation middleware, of type `MiddlewareType.CONVERSATION`. The chain runs once whenever
   a realtime session opens: when a conversation is entered, and, when `run(...)` comes, inside each run.
-  `call_next()` opens the session once; calling it again raises `RuntimeError`.
+  Each `call_next()` can be called once, so the session opens once; calling one again raises `RuntimeError`.
 - **`ConversationContext`** holds the agent that started the conversation, `metadata` the middleware share,
   `conversation` once the session is open, and the three hook lists. Letting middleware change the call's `session`,
   `options` and `tools` before `call_next()` comes later.
@@ -558,11 +558,12 @@ that starts as close begins is closed rather than adopted. Close also ends any r
   `update_hooks` and `close_hooks`. Send hooks see every value passed to `send(...)`, after normalization and before
   answers are routed; the initial `messages` don't pass through them. Update hooks see every update as the app reads
   it, audio included, including updates read after close. Close hooks run once, after history is reported, with the
-  exception that ended the conversation or `None`, and only for a conversation whose session opened. Control calls and
-  the tool loop's own results get no hooks.
+  exception that ended the conversation, an error raised from its `async with` block included, or `None`, and only for
+  a conversation whose session opened. Control calls and the tool loop's own results get no hooks.
 - **Outcomes.** A send or update hook returns a replacement, or `None` to keep the item. A send hook's replacement is
-  handled as if the app had sent it, in its place among the send's inputs: a `RealtimeEvent` raw, a `Message` as input. `MiddlewareTermination` in a hook
-  drops the item, and a send whose inputs are all dropped sends nothing and requests no response.
+  handled as if the app had sent it, in its place among the send's inputs: a `RealtimeEvent` raw, a `Message` as
+  input. `MiddlewareTermination` in a hook drops the item, and a send whose inputs are all dropped sends nothing and
+  requests no response.
   `MiddlewareTermination` in `process()` before `call_next()`, or a chain that returns without calling it, refuses the
   session: entering the conversation, or `run(...)` when it comes, raises `MiddlewareTermination`, and nothing
   connects. Any other exception ends the conversation fail-closed. An exception raised after `call_next()` closes the
