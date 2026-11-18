@@ -62,10 +62,10 @@ Related decisions and designs:
 
 ## Decision Drivers
 
-- **Agent composition.** Realtime agents compose with agent middleware, telemetry, context providers and the hosts and
-  workflows that accept `SupportsAgentRun`.
+- **Agent composition.** Realtime agents compose with telemetry and context providers, and, once `run(...)` comes, with
+  agent middleware and the hosts and workflows that accept `SupportsAgentRun`.
 - **Direct now, sandwich later**, behind one API, without implying they behave the same.
-- **Full-duplex fidelity**, with `run(...)` and `run(..., stream=True)` still available for one-turn flows.
+- **Full-duplex fidelity**, with `run(...)` and `run(..., stream=True)` for one-turn flows once `run(...)` comes.
 - **Provider-neutral signals.** Apps react to barge-in, transcripts, content filtering, usage and errors without
   matching wire event names.
 - **In-session control.** Apps and tools change instructions, tools and voice mid-call, with defined ordering against
@@ -274,9 +274,9 @@ nobody has verified that the project-scoped route serves realtime.
 - Neutral, because telemetry follows unreleased conventions pinned at a commit, which may still change.
 - Bad, because live resources bring lifecycle concerns that chat agents don't have, and sandwich pipelines need more
   cancellation and backpressure plumbing.
-- Bad, because `run(...)` comes later. Until then a realtime agent doesn't satisfy `SupportsAgentRun`, so workflows,
-  orchestrations, hosts and `as_tool()` don't take it as an agent, and agent middleware and a run's conversation span
-  wait for it.
+- Bad, because `run(...)` comes later. Until then a realtime agent doesn't satisfy `SupportsAgentRun`, so callers that
+  check for it, such as workflows, hosts and `as_tool()`, don't take it as an agent, and agent middleware and a run's
+  conversation span wait for it. Realtime handoffs don't need it.
 - Bad, because every control call costs a round trip, and control calls queue behind `interrupt(...)`'s truncate
   acknowledgements.
 - Bad, because tool batches wait for `response_done`, up to 2.5 s after a call with Azure TTS voices.
