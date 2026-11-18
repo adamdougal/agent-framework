@@ -62,10 +62,10 @@ Related decisions and designs:
 
 ## Decision Drivers
 
-- **Agent composition.** Realtime agents compose with agent middleware, telemetry, context providers and the hosts and
-  workflows that accept `SupportsAgentRun`.
+- **Agent composition.** Realtime agents compose with telemetry and context providers, and, once `run(...)` comes, with
+  agent middleware and the hosts and workflows that accept `SupportsAgentRun`.
 - **Direct now, sandwich later**, behind one API, without implying they behave the same.
-- **Full-duplex fidelity**, with `run(...)` and `run(..., stream=True)` still available for one-turn flows.
+- **Full-duplex fidelity**, with `run(...)` and `run(..., stream=True)` for one-turn flows once `run(...)` comes.
 - **Provider-neutral signals.** Apps react to barge-in, transcripts, content filtering, usage and errors without
   matching wire event names.
 - **In-session control.** Apps and tools change instructions, tools and voice mid-call, with defined ordering against
@@ -113,8 +113,12 @@ twice, once as deltas and once as the final text.
 otherwise inherit. `RealtimeAgent` adds realtime middleware and telemetry layers. `start_conversation(...)` returns
 `RealtimeConversation`, an async context manager that owns the socket, the single receive loop and a bounded update
 queue, and yields `AgentResponseUpdate` values; it never lives in `AgentSession`. A realtime agent starts the
-conversation, and its active agent can change through handoffs. `run(...)` is a half-duplex run over an ephemeral
-realtime session, so the agent satisfies `SupportsAgentRun`.
+conversation, and its active agent can change through handoffs. `run(...)`, a half-duplex run over an ephemeral
+realtime session that lets the agent satisfy `SupportsAgentRun`, comes later. Until then a realtime agent doesn't
+satisfy that protocol, so workflows, orchestrations and hosts that check for it don't take it as an agent, and
+`as_tool()` raises `TypeError`. That keeps `BaseAgent`'s contract, whose breaking closed
+microsoft/agent-framework#3821, because no caller that checks for the protocol reaches a `run` that behaves
+differently.
 
 Both entry points take `options=`, `tools=` and `middleware=` as named parameters. Hosts such as AG-UI, the MCP agent
 tool, Foundry hosting, declarative workflows and group chat pass `options=` or `tools=`, though `SupportsAgentRun`
@@ -163,8 +167,8 @@ Tools reach the conversation through `FunctionInvocationContext.realtime_convers
 update takes effect before its result. Results are always strings. The "Azure Realtime hangs on non-string results"
 that Semantic Kernel apps work around isn't a protocol difference. Semantic Kernel sent no output for dict results, so
 the model waited. Barge-in never cancels running tools, because most barge-ins are backchannels and a half-done payment
-is worse than a reported one. Close cancels and settles them, and a paused `run(...)` keeps its calls for the next run.
-Approvals and local MCP tools are in scope, with `Agent`'s MCP lifecycle. See
+is worse than a reported one. Close cancels and settles them, and once `run(...)` comes, a paused run keeps its calls
+for the next run. Approvals and local MCP tools are in scope, with `Agent`'s MCP lifecycle. See
 [Tool loop](../specs/006-python-realtime-agents.md#tool-loop).
 
 ### Voice history
@@ -264,11 +268,15 @@ nobody has verified that the project-scoped route serves realtime.
 - Good, because acknowledged control calls make a handoff's session update take effect before its tool result and
   follow-up, and rejections reach the caller.
 - Good, because handoffs happen in-session, and history records what the caller heard, in spoken order, during the call.
-- Good, because one conversation middleware policy covers live calls and `run()`, and each call is one trace.
+- Good, because one conversation middleware policy covers live calls and, once it comes, `run()`, and each call is one
+  trace.
 - Neutral, because the docs must spell out how providers differ, or the shared API hides it.
 - Neutral, because telemetry follows unreleased conventions pinned at a commit, which may still change.
 - Bad, because live resources bring lifecycle concerns that chat agents don't have, and sandwich pipelines need more
   cancellation and backpressure plumbing.
+- Bad, because `run(...)` comes later. Until then a realtime agent doesn't satisfy `SupportsAgentRun`, so callers that
+  check for it, such as workflows, hosts and `as_tool()`, don't take it as an agent, and agent middleware and a run's
+  conversation span wait for it. Realtime handoffs don't need it.
 - Bad, because every control call costs a round trip, and control calls queue behind `interrupt(...)`'s truncate
   acknowledgements.
 - Bad, because tool batches wait for `response_done`, up to 2.5 s after a call with Azure TTS voices.

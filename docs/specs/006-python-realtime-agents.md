@@ -19,6 +19,16 @@ Every API here is experimental under `ExperimentalFeature.REALTIME`, except the 
 [Changes to existing packages](#changes-to-existing-packages). This specification is normative. Package documentation
 may describe it but must not contradict it.
 
+`run(...)` comes later. The rules that mention it describe it as it will be, and these wait for it:
+
+- the half-duplex run itself, and with it `SupportsAgentRun`;
+- paused runs, and audio input to a run;
+- the parts of conversation middleware and telemetry that cover a run: agent middleware, which wraps only `run(...)`,
+  the conversation middleware chain inside a run, and a run's conversation span.
+
+Until then a realtime agent doesn't satisfy `SupportsAgentRun`, so workflows, orchestrations and hosts that check for
+it don't take it as an agent, and `as_tool()` raises `TypeError`. Live conversations are unaffected.
+
 ## API shapes
 
 The shapes fix names, parameters and return types. `ToolsInput` stands for the tool types `Agent.run(tools=...)`
@@ -37,7 +47,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         context_providers: Sequence[ContextProvider] | None = None, middleware: Sequence[MiddlewareTypes] | None = None,
     ) -> None: ...
 
-    def run(
+    def run(  # comes later; see Scope
         self, messages: AgentRunInputs | None = None, *, stream: bool = False, session: AgentSession | None = None,
         options: RealtimeOptionsT | None = None, tools: ToolsInput | None = None,
         middleware: Sequence[MiddlewareTypes] | None = None,
@@ -119,11 +129,11 @@ class RealtimeOptions(TypedDict, total=False):
 - `RawRealtimeAgent` runs no middleware and emits no telemetry; its tool loop still runs tools. It adds an
   `InMemoryHistoryProvider` ahead of its other context providers when a session is passed and no context provider loads
   history, as `Agent` does.
-- `run(...)` has no `**kwargs`, `compaction_strategy` or `tokenizer`. Per-run `options` merge over `default_options`,
-  and per-run `tools` merge into the run's realtime session. `start_conversation(...)` applies `options` and `tools` to
-  the initial session. `middleware=` joins the agent's own list, sorted by category. `AgentRunInputs` passed to
-  `run(...)`, `start_conversation(...)` or `send(...)` go through `normalize_messages(...)`, as `Agent.run(...)` input
-  does.
+- `run(...)`, when it comes, has no `**kwargs`, `compaction_strategy` or `tokenizer`. Per-run `options` merge over
+  `default_options`, and per-run `tools` merge into the run's realtime session. `start_conversation(...)` applies
+  `options` and `tools` to the initial session. `middleware=` joins the agent's own list, sorted by category.
+  `AgentRunInputs` passed to `run(...)`, `start_conversation(...)` or `send(...)` go through `normalize_messages(...)`,
+  as `Agent.run(...)` input does.
 - `function_invocation_kwargs` is copied when a run or the conversation starts and goes to every tool call, as in chat.
   `client_kwargs` exists because `SupportsAgentRun.run` declares it. No v1 realtime client takes per-run arguments, so
   `run(...)` ignores a non-empty mapping with a warning. The caller owns both mappings, and nothing mutates them.
@@ -379,10 +389,10 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   middleware that raises `CancelledError` while the conversation is open ends it too, and iteration raises
   `ToolExecutionException`. So does an unexpected failure in the conversation's background work, such as a follow-up
   request, and iteration raises that failure.
-- **Paused runs.** A `run(...)` that ends because its batch paused for an approval, an app-run tool or a user-input
-  request leaves those calls pending. It returns them in its `AgentResponse` and keeps the approvals in the agent
-  session, so the next run resumes them by replaying the call into its new realtime session. Close settles calls only
-  when a live conversation ends or a run fails or is cancelled.
+- **Paused runs** come later, with `run(...)`. A `run(...)` that ends because its batch paused for an approval, an
+  app-run tool or a user-input request leaves those calls pending. It returns them in its `AgentResponse` and keeps the
+  approvals in the agent session, so the next run resumes them by replaying the call into its new realtime session.
+  Close settles calls only when a live conversation ends or a run fails or is cancelled.
 - **App input.** The app answers through `send(...)` with `Content.from_function_result(...)`,
   `Content.from_function_approval_response(...)` or a `Message(role="tool")`, which the conversation routes into its
   batch. In a live conversation an approval request streams as `function_approval_request`, with the call's occurrence
@@ -449,9 +459,9 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   and system text, agent turns as assistant text, typed `output_text` on GA-protocol services and `text` on Voice Live,
   each call followed by its result, and cut-off turns as their heard text. Agent Framework doesn't cap replay. The
   replayed items' echoes aren't recorded, and on their own they make no exchange.
-- **`run(...)`.** Each run is one exchange. Text input is stored as given, and audio input as its caller transcript.
-  The run's session closes through the close sequence before `after_run`. Context providers get the response without
-  audio. A failed run reports nothing.
+- **`run(...)`**, when it comes. Each run is one exchange. Text input is stored as given, and audio input as its caller
+  transcript. The run's session closes through the close sequence before `after_run`. Context providers get the
+  response without audio. A failed run reports nothing.
 - **Reading.** `RealtimeConversation.history` is a read-only snapshot of the call so far, readable during the call, and
   holds the final record after close.
 - **Continuation.** `service_session_id` stays unset for every v1 provider. A provider's conversation id travels in
@@ -752,8 +762,8 @@ the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the interna
 - Unit tests with fake realtime sessions cover the conversation lifecycle, bounded-queue backpressure, single-reader
   receive, control acknowledgements, error claiming before deduplication, lost races, the barge-in cut, the close
   sequence, every kind mapped from GA and Voice Live preview payloads, and `realtime_event` serialization.
-- Tool-loop tests cover batching, follow-ups, ordering against session updates, settlement, paused runs, approvals and
-  app-run tools through the shared executor.
+- Tool-loop tests cover batching, follow-ups, ordering against session updates, settlement, approvals and app-run tools
+  through the shared executor, and paused runs once `run(...)` comes.
 - History tests cover spoken order with late transcripts, cut-off and text-less turns, reporting at close, provider
   failures and replay. Handoff, middleware and telemetry tests cover the active agent, the builder and the span tree.
 - Regression tests show the MCP helper and the topology base don't change chat behavior.
