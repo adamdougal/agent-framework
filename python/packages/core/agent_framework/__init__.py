@@ -203,6 +203,7 @@ _LAZY_MODULE_EXPORTS: Final[Mapping[str, tuple[str, ...]]] = {
     "._realtime._agent": ("RawRealtimeAgent", "RealtimeAgent"),
     "._realtime._clients": ("RealtimeClientProtocol", "RealtimeClientSessionProtocol"),
     "._realtime._conversation": ("RealtimeConversation",),
+    "._realtime._middleware": ("ConversationContext", "ConversationMiddleware"),
     "._realtime._events": ("RealtimeEvent",),
     "._realtime._kinds": (
         "RealtimeErrorAttributes",
@@ -521,6 +522,8 @@ __all__ = [
     "ContextProvider",
     "ContextWindowCompactionStrategy",
     "ContinuationToken",
+    "ConversationContext",
+    "ConversationMiddleware",
     "ConversationSplit",
     "ConversationSplitter",
     "DeduplicatingSkillsSource",

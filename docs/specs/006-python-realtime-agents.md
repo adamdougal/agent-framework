@@ -126,9 +126,9 @@ class RealtimeOptions(TypedDict, total=False):
     noise_reduction: RealtimeNoiseReduction | None  # type
 ```
 
-- `RawRealtimeAgent` runs no middleware and emits no telemetry; its tool loop still runs tools. It adds an
-  `InMemoryHistoryProvider` ahead of its other context providers when a session is passed and no context provider loads
-  history, as `Agent` does.
+- `RawRealtimeAgent` runs no conversation middleware and emits no telemetry; its tool loop still runs tools, through
+  their function middleware. It adds an `InMemoryHistoryProvider` ahead of its other context providers when a session
+  is passed and no context provider loads history, as `Agent` does.
 - `run(...)`, when it comes, has no `**kwargs`, `compaction_strategy` or `tokenizer`. Per-run `options` merge over
   `default_options`, and per-run `tools` merge into the run's realtime session. `start_conversation(...)` applies
   `options` and `tools` to the initial session. `middleware=` joins the agent's own list, sorted by category.
@@ -543,36 +543,53 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 - **Categories.** Agent middleware wraps `run(...)` only. `start_conversation(...)` skips bare agent middleware with a
   warning and raises `MiddlewareException` for a `MiddlewareBundle` with an agent member. Chat middleware has no seam:
   `categorize_middleware(supported_categories=...)` skips bare chat middleware with a warning and raises for a bundle
-  with a chat member, so the agent-hooks bundle raises. Function middleware is unchanged. A chat `Agent` skips
-  conversation middleware with a warning.
+  with a chat member, so the agent-hooks bundle raises. Function middleware is unchanged. `RawRealtimeAgent` skips
+  conversation middleware with a warning; `RealtimeAgent`, a built handoff agent and `FoundryVoiceAgent` run it. A
+  `MiddlewareBundle` may hold conversation middleware. A chat `Agent` skips conversation middleware with a warning and
+  raises for a bundle with a conversation member.
 - **`ConversationMiddleware`** has `process(context, call_next)`. A plain function whose parameter is annotated
   `ConversationContext` is conversation middleware, of type `MiddlewareType.CONVERSATION`. The chain runs once whenever
-  a realtime session opens, in `start_conversation(...)` and inside each `run(...)`.
-- **`ConversationContext`** holds the starting agent, `session`, `options`, `tools` and `metadata`, which middleware can
-  change before `call_next()`, and `conversation` once the session is open.
-- **Hooks.** Middleware registers three kinds of hook. Send hooks see every value passed to `send(...)`, after
-  normalization. Update hooks see every update yielded, audio included. Close hooks run once, after history is reported,
-  with the exception that ended the conversation or `None`. Control calls and the tool loop's own results get no hooks.
-- **Outcomes.** A send or update hook returns a replacement, or `None` to keep the item. `MiddlewareTermination` in a
-  hook drops the item; in `process()` before `call_next()`, it refuses the session, and `start_conversation(...)` or
-  `run(...)` raises it. Any other exception ends the conversation fail-closed, and close-hook failures raise from
-  `close()` after cleanup.
-- **Order.** Hooks run in onion order. The outermost middleware sees inputs first and updates last. History and
-  telemetry record inputs after the send hooks and updates before the update hooks. The tool loop and control calls act
-  on provider events, so dropping an update doesn't stop a call. `run(...)` builds its `AgentResponse` from what the
-  update hooks deliver.
-- **Ownership.** Conversation middleware comes from the agent that started the conversation and applies for the whole
-  call. `RealtimeHandoffBuilder(middleware=...)` applies to the built agent; its function middleware wraps every call,
-  outside the active participant's own, and `start_conversation(middleware=...)`'s function middleware, then the
-  context providers', wraps every call inside it. Participants' agent and conversation middleware don't apply, and
-  `build()` warns about them.
+  a realtime session opens: when a conversation is entered, and, when `run(...)` comes, inside each run.
+  Each `call_next()` can be called once, so the session opens once; calling one again raises `RuntimeError`.
+- **`ConversationContext`** holds the agent that started the conversation, `metadata` the middleware share,
+  `conversation` once the session is open, and the three hook lists. Letting middleware change the call's `session`,
+  `options` and `tools` before `call_next()` comes later.
+- **Hooks.** Middleware registers three kinds of hook on the context, as plain or async functions: `send_hooks`,
+  `update_hooks` and `close_hooks`. Send hooks see every value passed to `send(...)`, after normalization and before
+  answers are routed; the initial `messages` don't pass through them. Update hooks see every update as the app reads
+  it, audio included, including updates read after close. Close hooks run once, after history is reported, with the
+  exception that ended the conversation, an error raised from its `async with` block included, or `None`, and only for
+  a conversation whose session opened. Control calls and the tool loop's own results get no hooks.
+- **Outcomes.** A send or update hook returns a replacement, or `None` to keep the item. A send hook's replacement is
+  handled as if the app had sent it, in its place among the send's inputs: a `RealtimeEvent` raw, a `Message` as
+  input. `MiddlewareTermination` in a hook drops the item, and a send whose inputs are all dropped sends nothing and
+  requests no response.
+  `MiddlewareTermination` in `process()` before `call_next()`, or a chain that returns without calling it, refuses the
+  session: entering the conversation, or `run(...)` when it comes, raises `MiddlewareTermination`, and nothing
+  connects. Any other exception ends the conversation fail-closed. An exception raised after `call_next()` closes the
+  conversation and entering raises it; a send or update hook's exception closes it, then `send(...)` or iteration
+  raises it, and after an update hook's exception no update still queued is delivered. Close-hook failures raise from
+  `close()` after cleanup, with context-provider failures: one as it is, several as an `ExceptionGroup`. A hook returns
+  a replacement rather than changing the update in place, whose contents history and the tool loop share.
+- **Order.** Hooks run in onion order: send hooks in registration order, and update and close hooks in reverse, so
+  middleware that registers its hooks before `call_next()` sees inputs outermost first and updates and the close
+  outermost last. History and telemetry record inputs after the send hooks and updates before the update hooks. The
+  tool loop and control calls act on provider events, so dropping an update doesn't stop a call. `run(...)`, when it
+  comes, builds its `AgentResponse` from what the update hooks deliver.
+- **Ownership.** Conversation middleware comes from the agent that started the conversation, its own outside
+  `start_conversation(middleware=...)`'s, and applies for the whole call. `RealtimeHandoffBuilder(middleware=...)`
+  applies to the built agent; its function middleware wraps every call, outside the active participant's own, and
+  `start_conversation(middleware=...)`'s function middleware, then the context providers', wraps every call inside it.
+  Participants' agent and conversation middleware don't apply, and `build()` warns about them. A handoff target's
+  conversation middleware never runs.
 
 ## Telemetry
 
 - **Location.** The `RealtimeAgent` telemetry layer instruments `start_conversation(...)`, and `run(...)` when it comes,
   from the event kinds. Provider clients have no telemetry layers and no `Raw*` client classes; they supply the provider
   name, as `OTEL_PROVIDER_NAME`, and the model. A provider client used without an agent emits nothing.
-  `FoundryVoiceAgent` is the telemetry layer over `RawFoundryVoiceAgent`.
+  `FoundryVoiceAgent` sits over `RawFoundryVoiceAgent` and derives from `RealtimeAgent`, so it has `RealtimeAgent`'s
+  layers.
 
 ```text
 invoke_agent {owner}                 INTERNAL: the conversation span
@@ -580,13 +597,14 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 └── execute_tool {tool}              INTERNAL: one per call that ran
 ```
 
-- **Conversation span.** `invoke_agent {owner}` opens when the conversation is entered, under the current span, and ends
-  at close; `run(...)`, when it comes, gets the same tree. It names the agent that started the conversation, which for a
-  built handoff agent is the built agent itself. It carries chat `invoke_agent`'s attributes, with chat agents' provider
-  name `microsoft.agent_framework`, plus `gen_ai.realtime_session.id`, and sums usage over every response. Entry runs
-  inside it, so context providers' `before_run`, the provider's handshake, the receive loop and the tool batches it
-  starts nest under it, and close runs in a copy of the context captured there, whichever task closes the call.
-  `realtime_inference` and `execute_tool` spans are its children and siblings of each other.
+- **Conversation span.** `invoke_agent {owner}` opens when the conversation's realtime session opens, inside its
+  conversation middleware and under the span current there, and ends at close; `run(...)`, when it comes, gets the same
+  tree. Conversation middleware that refuses the session leaves no span. It names the agent that started the
+  conversation, which for a built handoff agent is the built agent itself. It carries chat `invoke_agent`'s attributes,
+  with chat agents' provider name `microsoft.agent_framework`, plus `gen_ai.realtime_session.id`, and sums usage over
+  every response. The opening runs inside it, so context providers' `before_run`, the provider's handshake, the receive
+  loop and the tool batches it starts nest under it, and close runs in a copy of the context captured there, whichever
+  task closes the call. `realtime_inference` and `execute_tool` spans are its children and siblings of each other.
 - **Agents.** `realtime_inference` spans carry `gen_ai.agent.name` and `gen_ai.agent.id` of the agent active when the
   response was created.
 - **Conventions.** Realtime follows semantic-conventions-genai at commit `750e42c`, unreleased, in Agent Framework's
@@ -758,7 +776,8 @@ telemetry mapping later; `FunctionTool.invoke` recording cancellation as ERROR; 
 unexported helpers that realtime telemetry shares with chat; `OpenAISettings` and `AzureOpenAISettings`'
 `realtime_model`, read from `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
-`HandoffBuilder` and `RealtimeHandoffBuilder`; and `ExperimentalFeature.REALTIME` and
+`HandoffBuilder` and `RealtimeHandoffBuilder`; `MiddlewareBundle` accepting conversation members, and a chat `Agent`
+skipping conversation middleware with a warning; and `ExperimentalFeature.REALTIME` and
 `ExperimentalFeature.FOUNDRY_VOICE_AGENTS`.
 
 ## Version compatibility

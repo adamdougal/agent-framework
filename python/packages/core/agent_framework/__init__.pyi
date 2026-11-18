@@ -182,6 +182,7 @@ from ._realtime._kinds import (
     RealtimeSpeechStoppedAttributes,
     RealtimeUsageAttributes,
 )
+from ._realtime._middleware import ConversationContext, ConversationMiddleware
 from ._realtime._options import (
     RealtimeNoiseReduction,
     RealtimeOptions,
@@ -476,6 +477,8 @@ __all__ = [
     "ContextProvider",
     "ContextWindowCompactionStrategy",
     "ContinuationToken",
+    "ConversationContext",
+    "ConversationMiddleware",
     "ConversationSplit",
     "ConversationSplitter",
     "DeduplicatingSkillsSource",

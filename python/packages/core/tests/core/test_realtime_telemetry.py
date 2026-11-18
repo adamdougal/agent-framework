@@ -3,6 +3,7 @@
 """Telemetry for live realtime conversations: the conversation span, response spans and their metrics."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import pytest
@@ -16,6 +17,7 @@ from agent_framework import (
     AgentSession,
     Content,
     ContextProvider,
+    ConversationContext,
     RawRealtimeAgent,
     RealtimeAgent,
     RealtimeEvent,
@@ -653,6 +655,22 @@ async def test_each_response_records_operation_duration_and_token_usage(
 
 
 class TestVerification:
+    async def test_the_conversation_span_opens_inside_conversation_middleware(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """Conversation middleware opens a span "guardrail" around call_next(): the invoke_agent span is its child."""
+        tracer = trace.get_tracer("app")
+
+        async def guardrail(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            with tracer.start_as_current_span("guardrail"):
+                await call_next()
+
+        async with RealtimeAgent(FakeRealtimeClient(), middleware=[guardrail]).start_conversation():
+            pass
+
+        spans = {span.name.split(" ")[0]: span for span in span_exporter.get_finished_spans()}
+        assert _parent_id(spans["invoke_agent"]) == _span_id(spans["guardrail"])
+
     async def test_a_response_cancelled_by_the_client_finishes_with_client_cancelled(
         self, span_exporter: InMemorySpanExporter
     ) -> None:

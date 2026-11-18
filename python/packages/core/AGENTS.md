@@ -117,9 +117,15 @@ the root package:
   options, tools and function middleware over the agent's, and adds an `InMemoryHistoryProvider` for a session as
   `Agent` does. `async with agent` connects the agent's MCP tools that aren't connected yet and closes, on exit, every
   MCP tool the agent connected; it never closes one the app connected. Two protected hooks let an agent that owns a
-  handoff topology start its calls with another participant speaking and add each participant's handoff tools. A
-  third, `_conversation_telemetry()`, returns `None` on the raw agent; `RealtimeTelemetryLayer`, which `RealtimeAgent`
-  and `FoundryVoiceAgent` compose over their raw agents, returns a recorder while instrumentation is enabled.
+  handoff topology start its calls with another participant speaking and add each participant's handoff tools. A third,
+  `_middleware_categories()`, names the middleware an agent's conversations run: function middleware on the raw
+  agent, and conversation middleware too on `RealtimeAgent`, which is the realtime middleware layer. A fourth,
+  `_conversation_telemetry()`, returns `None` on the raw agent; `RealtimeAgent`, also the telemetry layer, returns a
+  recorder while instrumentation is enabled. `FoundryVoiceAgent` derives from `RealtimeAgent`, so it has both layers.
+- `_middleware.py` - `ConversationMiddleware` and `ConversationContext`, the public conversation-middleware types.
+  `_middleware.py` in the package root imports them to categorize middleware, so this module imports nothing from it.
+- `_middleware_chain.py` - Runs a conversation's middleware: the chain around opening, which opens the conversation
+  once, and the send, update and close hooks in onion order.
 - `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice) and
   `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both compute the session's
   settings here.
@@ -127,10 +133,12 @@ the root package:
   and the close sequence. It owns the acknowledgement timeout and deduplicates unclaimed errors, tracks the active
   agent, and its `_dispatch` hands each event kind to the concern modules below. Opening runs context providers'
   `before_run`, whose instructions, tools and function middleware hold for the whole call, and replays the history
-  they load. At start, on `update_session(tools=...)` and on `handoff(...)` it resolves its tools through
-  `append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is replaced by its
-  current functions in a list the conversation owns, connected on first use into the starting agent's exit stack, so
-  server-side tool-list changes wait for the next update.
+  they load. Conversation middleware wraps opening; `send()` runs the send hooks before anything else, the reader runs
+  the update hooks as each update leaves the queue, after history has recorded it, and close runs the close hooks
+  last. A hook failure ends the call. At start, on `update_session(tools=...)` and on `handoff(...)` it resolves its
+  tools through `append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is
+  replaced by its current functions in a list the conversation owns, connected on first use into the starting agent's
+  exit stack, so server-side tool-list changes wait for the next update.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
   timeout and until close starts, and lets a cancelled session call finish unwinding.
 - `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
@@ -157,10 +165,11 @@ the root package:
   `after_run` in order. A provider that fails skips the later exchanges, and the others carry on.
 - `_telemetry.py` - `ConversationTelemetry`, the recorder behind a conversation's `invoke_agent` span and a
   `realtime_inference` span per response, with finish reasons, usage and the operation-duration and token-usage
-  metrics. The conversation hands it each event before the event's update is emitted, and the active agent with it.
-  Entry runs inside the conversation span, so the receive loop, tool batches and the provider's handshake nest under
-  it, and close runs in a copy of the context captured there. Attribute keys, usage mapping and metrics come from
-  public-named helpers in `observability.py`, shared with chat.
+  metrics. The conversation hands it each event, with the active agent, before the event's update is queued, so it
+  records what came from the provider before update hooks change it. The span opens inside conversation middleware,
+  around the session's opening, so the receive loop, tool batches and the provider's handshake nest under it, and
+  close runs in a copy of the context captured there. Attribute keys, usage mapping and metrics come from public-named
+  helpers in `observability.py`, shared with chat.
 
 Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, the
 live tool list, and an `on_call_finished` callback that keeps a cancelled batch's finished results, as private
