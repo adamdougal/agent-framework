@@ -13,12 +13,12 @@ import importlib.util
 import json
 import re
 import time
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any, Literal, cast
 
 import pytest
-from agent_framework import InMemoryHistoryProvider, Message, RealtimeAgent, tool
+from agent_framework import ConversationContext, InMemoryHistoryProvider, Message, RealtimeAgent, tool
 from agent_framework._telemetry import get_user_agent
 from agent_framework.exceptions import (
     RealtimeConnectionException,
@@ -1175,6 +1175,28 @@ async def test_a_plain_start_agent_does_not_inherit_the_definitions_tool_choice(
         pass
 
     assert project.server.updates()[0]["tool_choice"] == expected
+
+
+# endregion
+
+# region Conversation middleware
+
+
+async def test_a_foundry_voice_agent_runs_conversation_middleware() -> None:
+    """A FoundryVoiceAgent with a ConversationMiddleware runs its process() once when a conversation opens."""
+    project = FakeProjectClient()
+    opened: list[bool] = []
+
+    async def audit(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        await call_next()
+        opened.append(context.conversation is not None)
+
+    agent = FoundryVoiceAgent(
+        project_client=project.as_project_client(), agent_name="receptionist", agent_version="3", middleware=[audit]
+    )
+
+    async with agent, agent.start_conversation():
+        assert opened == [True]
 
 
 # endregion

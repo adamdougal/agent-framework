@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Self, cast
 
-from agent_framework import RawRealtimeAgent, ToolMode, normalize_tools
+from agent_framework import RawRealtimeAgent, RealtimeAgent, ToolMode, normalize_tools
 from agent_framework._feature_stage import ExperimentalFeature, experimental
 
 from ._foundry_voice_client import DEFINITION_TOOLS, FoundryVoiceAgentClient, voice_from
@@ -21,7 +21,9 @@ if TYPE_CHECKING:
 
 @experimental(feature_id=ExperimentalFeature.FOUNDRY_VOICE_AGENTS)
 class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
-    """A realtime agent published in Microsoft Foundry as a voice agent, without middleware or telemetry layers.
+    """A Foundry voice agent without the conversation middleware or telemetry layers.
+
+    It's a realtime agent published in Microsoft Foundry as a voice agent.
 
     The published agent definition supplies the agent's instructions, voice, tool choice and tools. Entering the agent
     with ``async with`` reads the definition, once for the agent's lifetime, and a conversation can't start before
@@ -104,7 +106,8 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
             name: The agent's name, which its updates carry as their author. Defaults to the agent name.
             description: A description of the agent, which a handoff tool to it uses.
             context_providers: The agent's context providers.
-            middleware: The agent's middleware. Realtime conversations run its function middleware.
+            middleware: The agent's middleware. Function middleware wraps its conversations' tool calls, and a
+                ``FoundryVoiceAgent`` runs its conversation middleware around each conversation.
             env_file_path: A ``.env`` file to read settings from.
             env_file_encoding: The ``.env`` file's encoding.
 
@@ -146,10 +149,11 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
 
 
 @experimental(feature_id=ExperimentalFeature.FOUNDRY_VOICE_AGENTS)
-class FoundryVoiceAgent(RawFoundryVoiceAgent):
+class FoundryVoiceAgent(RealtimeAgent[FoundryVoiceAgentOptions], RawFoundryVoiceAgent):
     """A realtime agent published in Microsoft Foundry as a voice agent.
 
-    See ``RawFoundryVoiceAgent`` for how the definition, tools and handoffs work.
+    See ``RawFoundryVoiceAgent`` for how the definition, tools and handoffs work. Like ``RealtimeAgent``, it runs
+    conversation middleware.
     """
 
 

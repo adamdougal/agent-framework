@@ -12,7 +12,9 @@ from agent_framework import (
     Agent,
     AgentContext,
     AgentMiddleware,
+    AgentResponseUpdate,
     Content,
+    ConversationContext,
     FunctionInvocationContext,
     FunctionTool,
     InMemoryHistoryProvider,
@@ -557,6 +559,38 @@ def test_build_refuses_a_participant_middleware_bundle_with_agent_middleware() -
 
 
 class TestVerification:
+    async def test_the_built_agents_conversation_middleware_sees_the_call_across_a_handoff(self) -> None:
+        """A built agent with conversation middleware yields its update hook's view of handoff_completed after a
+        handoff to billing, while billing's own conversation middleware never runs."""
+        client = FakeRealtimeClient()
+        seen: list[str] = []
+        billing_opened: list[ConversationContext] = []
+
+        def record_kinds(update: AgentResponseUpdate) -> None:
+            seen.extend(str(content.kind) for content in update.contents if content.type == "realtime_event")
+
+        async def watch(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            context.update_hooks.append(record_kinds)
+            await call_next()
+
+        async def audit_billing(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            billing_opened.append(context)
+            await call_next()
+
+        receptionist = _receptionist(client)
+        billing = RealtimeAgent(client, name="billing", middleware=[audit_billing])  # type: ignore[arg-type]
+        agent = (
+            RealtimeHandoffBuilder(participants=[receptionist, billing], middleware=[watch])
+            .with_start_agent(receptionist)
+            .build()
+        )
+
+        async with agent.start_conversation() as conversation:
+            await conversation.handoff(billing)
+            await asyncio.wait_for(anext(aiter(conversation)), 5)
+
+        assert (seen, billing_opened) == (["handoff_completed"], [])
+
     async def test_a_handoff_tools_description_falls_back_to_the_targets(self) -> None:
         client = FakeRealtimeClient()
         receptionist = _receptionist(client)

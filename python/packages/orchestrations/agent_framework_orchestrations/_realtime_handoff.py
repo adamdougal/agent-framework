@@ -43,8 +43,9 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
     without reconnecting, so the caller hears no break.
 
     A participant brings who's speaking: its instructions, tools, voice, tool choice and function middleware. The
-    built agent owns the rest of the call: its history and context providers, its tool-loop limits, its other session
-    settings, and instructions appended to every participant's. Participants must share one realtime client instance.
+    built agent owns the rest of the call: its history and context providers, its conversation middleware, its
+    tool-loop limits, its other session settings, and instructions appended to every participant's. Participants must
+    share one realtime client instance.
     ``async with`` the built agent enters every participant, so their MCP tools connect with it and close when it
     exits. On Voice Live, keep the participants' voices in one family, Azure or OpenAI, because Voice Live rejects a
     change between them.
@@ -87,8 +88,8 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
             default_options: Session settings for every call. Their instructions are appended to every
                 participant's. Their voice and tool choice apply to a participant that sets neither.
             function_invocation_configuration: The tool-loop limits for every call, whichever participant is speaking.
-            middleware: The built agent's middleware. Its function middleware wraps every call, outside the
-                participant's own.
+            middleware: The built agent's middleware. Its conversation middleware wraps every call, and its function
+                middleware wraps every tool call, outside the participant's own.
         """
         super().__init__(participants)
         self._agent_settings: dict[str, Any] = {
@@ -172,7 +173,7 @@ def _warn_about_settings_that_wont_apply(agent_id: str, agent: RawRealtimeAgent[
     if agent.function_invocation_configuration is not None:
         ignored.append("function_invocation_configuration")
     middleware = categorize_middleware(agent.middleware)
-    if middleware["agent"] or middleware["chat"]:
+    if middleware["agent"] or middleware["chat"] or middleware["conversation"]:
         ignored.append("middleware other than function middleware")
     if ignored:
         logger.warning(

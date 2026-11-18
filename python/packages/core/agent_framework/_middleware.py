@@ -25,6 +25,7 @@ from typing import (
 
 from ._clients import SupportsChatGetResponse
 from ._feature_stage import ExperimentalFeature, experimental
+from ._realtime._middleware import ConversationMiddleware, ConversationMiddlewareCallable, ConversationMiddlewareTypes
 from ._types import (
     AgentResponse,
     AgentResponseUpdate,
@@ -163,6 +164,7 @@ class MiddlewareType(str, Enum):
     AGENT = "agent"
     FUNCTION = "function"
     CHAT = "chat"
+    CONVERSATION = "conversation"
 
 
 def _select_run_level_tools(tools: Any, options: Mapping[str, Any] | None) -> Any:
@@ -1161,6 +1163,8 @@ class MiddlewareBundle:
             | FunctionMiddlewareCallable
             | ChatMiddleware
             | ChatMiddlewareCallable
+            | ConversationMiddleware
+            | ConversationMiddlewareCallable
         ],
     ) -> None:
         """Initialize the bundle.
@@ -1169,12 +1173,12 @@ class MiddlewareBundle:
             middleware: The middleware objects that belong together. Order is
                 preserved when the bundle is expanded into the run's pipelines.
                 Every member must be categorizable by the framework's own rules
-                (an agent/function/chat middleware instance, or a callable with a
+                (an agent/function/chat/conversation middleware instance, or a callable with a
                 recognizable middleware signature); nested bundles are rejected.
 
         Raises:
             MiddlewareException: If a member is a nested bundle or cannot be
-                categorized as agent, function, or chat middleware.
+                categorized as agent, function, chat, or conversation middleware.
         """
         members = tuple(middleware)
         for member in members:
@@ -1183,7 +1187,7 @@ class MiddlewareBundle:
                     "MiddlewareBundle members must be middleware objects; nesting a "
                     "MiddlewareBundle inside another bundle is not supported."
                 )
-            if isinstance(member, (AgentMiddleware, FunctionMiddleware, ChatMiddleware)):
+            if isinstance(member, (AgentMiddleware, FunctionMiddleware, ChatMiddleware, ConversationMiddleware)):
                 continue
             if callable(member):
                 # Raises MiddlewareException when the callable's category cannot be
@@ -1191,7 +1195,8 @@ class MiddlewareBundle:
                 _determine_middleware_type(member)
                 continue
             raise MiddlewareException(
-                f"MiddlewareBundle members must be agent, function, or chat middleware; got {type(member).__name__}."
+                "MiddlewareBundle members must be agent, function, chat, or conversation middleware; "
+                f"got {type(member).__name__}."
             )
         self._middleware = members
 
@@ -1208,6 +1213,8 @@ MiddlewareTypes: TypeAlias = (
     | FunctionMiddlewareCallable
     | ChatMiddleware
     | ChatMiddlewareCallable
+    | ConversationMiddleware
+    | ConversationMiddlewareCallable
     | MiddlewareBundle
 )
 
@@ -2067,12 +2074,17 @@ class AgentMiddlewareLayer:
         client_kwargs: Mapping[str, Any] | None = None,
     ) -> Awaitable[AgentResponse[Any]] | ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         """MiddlewareTypes-enabled unified run method."""
+        # Conversation middleware has no seam in a chat run, so it's skipped with a warning, and a bundle with a
+        # conversation member raises rather than installing part of its feature.
+        supported_categories = ("agent", "function", "chat")
         base_middleware = getattr(self, "middleware", None)
         base_middleware_list = categorize_middleware(
-            _copy_middleware_sequence(base_middleware) if base_middleware is not None else None
+            _copy_middleware_sequence(base_middleware) if base_middleware is not None else None,
+            supported_categories=supported_categories,
         )
         run_middleware_list = categorize_middleware(
-            _copy_middleware_sequence(middleware) if middleware is not None else None
+            _copy_middleware_sequence(middleware) if middleware is not None else None,
+            supported_categories=supported_categories,
         )
         pipeline = self._get_agent_middleware_pipeline([*base_middleware_list["agent"], *run_middleware_list["agent"]])
 
@@ -2197,7 +2209,7 @@ def _determine_middleware_type(middleware: Any) -> MiddlewareType:
         middleware: The middleware function to analyze.
 
     Returns:
-        MiddlewareType.AGENT, MiddlewareType.FUNCTION, or MiddlewareType.CHAT indicating the middleware type.
+        The middleware's type: agent, function, chat or conversation.
 
     Raises:
         MiddlewareException: When middleware type cannot be determined or there's a mismatch.
@@ -2234,6 +2246,8 @@ def _determine_middleware_type(middleware: Any) -> MiddlewareType:
                     param_type = MiddlewareType.FUNCTION
                 elif annotation_name == "ChatContext":
                     param_type = MiddlewareType.CHAT
+                elif annotation_name == "ConversationContext":
+                    param_type = MiddlewareType.CONVERSATION
         else:
             # Not enough parameters - can't be valid middleware
             raise MiddlewareException(
@@ -2267,7 +2281,7 @@ def _determine_middleware_type(middleware: Any) -> MiddlewareType:
     raise MiddlewareException(
         f"Cannot determine middleware type for function {middleware_name}. "
         f"Please either use @agent_middleware/@function_middleware/@chat_middleware decorators "
-        f"or specify parameter types (AgentContext, FunctionInvocationContext, or ChatContext)."
+        f"or specify parameter types (AgentContext, FunctionInvocationContext, ChatContext, or ConversationContext)."
     )
 
 
@@ -2275,6 +2289,7 @@ class MiddlewareDict(TypedDict):
     agent: list[AgentMiddleware | AgentMiddlewareCallable]
     function: list[FunctionMiddleware | FunctionMiddlewareCallable]
     chat: list[ChatMiddleware | ChatMiddlewareCallable]
+    conversation: list[ConversationMiddlewareTypes]
 
 
 def _as_middleware_list(
@@ -2322,7 +2337,7 @@ def categorize_middleware(
     Raises:
         MiddlewareException: If a bundle member falls outside ``supported_categories``.
     """
-    result: MiddlewareDict = {"agent": [], "function": [], "chat": []}
+    result: MiddlewareDict = {"agent": [], "function": [], "chat": [], "conversation": []}
 
     # Merge all middleware sources into a single list (bare-source normalization is
     # owned by _as_middleware_list).
@@ -2347,13 +2362,15 @@ def categorize_middleware(
 
     # Categorize each middleware item
     for middleware in all_middleware:
-        category: Literal["agent", "function", "chat"]
+        category: Literal["agent", "function", "chat", "conversation"]
         if isinstance(middleware, AgentMiddleware):
             category = "agent"
         elif isinstance(middleware, FunctionMiddleware):
             category = "function"
         elif isinstance(middleware, ChatMiddleware):
             category = "chat"
+        elif isinstance(middleware, ConversationMiddleware):
+            category = "conversation"
         elif callable(middleware):
             # Always call _determine_middleware_type to ensure proper validation
             middleware_type = _determine_middleware_type(middleware)
@@ -2361,8 +2378,10 @@ def categorize_middleware(
                 category = "agent"
             elif middleware_type == MiddlewareType.FUNCTION:
                 category = "function"
-            else:
+            elif middleware_type == MiddlewareType.CHAT:
                 category = "chat"
+            else:
+                category = "conversation"
         else:
             # Fallback to agent middleware for unknown types
             category = "agent"
