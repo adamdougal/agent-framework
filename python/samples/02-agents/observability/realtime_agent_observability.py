@@ -2,13 +2,17 @@
 
 import asyncio
 import os
+from collections import defaultdict
+from collections.abc import Sequence
 
 from agent_framework import RealtimeAgent, tool
 from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
 from agent_framework.observability import configure_otel_providers, get_tracer
 from azure.identity.aio import AzureCliCredential
 from dotenv import load_dotenv
-from opentelemetry.trace.span import format_trace_id
+from opentelemetry import trace
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 load_dotenv()
 
@@ -18,15 +22,14 @@ Realtime Agent Observability Example
 This sample traces a live call on Azure Voice Live. Each call is one trace: the conversation is an invoke_agent span,
 each response the model creates is a realtime_inference span beneath it, with the response's token usage and finish
 reason, and each tool call is an execute_tool span beside them. The conversation span sums the call's usage. No audio
-or transcripts are recorded. The sample sends one text question and prints the agent's reply, so it needs no
-microphone or speaker.
+or transcripts are recorded. The sample sends one text question, prints the agent's reply, then prints the call's
+spans as a tree, so it needs no microphone, speaker or observability backend.
 
 Prerequisites:
 - Install the realtime extra: pip install "agent-framework-foundry[realtime]" --pre
 - Set AZURE_VOICELIVE_ENDPOINT and AZURE_VOICELIVE_MODEL, for example a managed model such as gpt-realtime.
 - Set AZURE_VOICELIVE_API_KEY, or run `az login` to use AzureCliCredential.
-- An observability backend that receives OTLP, configured with OTEL_EXPORTER_OTLP_ENDPOINT, or set
-  ENABLE_CONSOLE_EXPORTERS=true to print the spans to the console.
+- Optionally, OTEL_EXPORTER_OTLP_ENDPOINT to send the spans to a backend as well.
 
 Realtime agents are experimental.
 """
@@ -38,9 +41,27 @@ def get_current_time() -> str:
     return "It's twelve noon."
 
 
+def print_trace(spans: Sequence[ReadableSpan]) -> None:
+    """Print the finished spans as a tree, with each response's finish reasons."""
+    children: defaultdict[int | None, list[ReadableSpan]] = defaultdict(list)
+    for span in spans:
+        children[span.parent.span_id if span.parent else None].append(span)
+
+    def print_children(parent_id: int | None, depth: int) -> None:
+        for span in sorted(children[parent_id], key=lambda child: child.start_time or 0):
+            finish_reasons = (span.attributes or {}).get("gen_ai.response.finish_reasons")
+            suffix = f"  finish_reasons {list(finish_reasons)}" if isinstance(finish_reasons, tuple) else ""
+            print(f"{'    ' * depth}{span.name}{suffix}")
+            if span.context is not None:
+                print_children(span.context.span_id, depth + 1)
+
+    print_children(None, 0)
+
+
 async def main() -> None:
-    # Reads the OTEL_* and ENABLE_* environment variables to choose where telemetry goes.
-    configure_otel_providers()
+    # Keeps the spans in memory to print at the end; OTEL_* and ENABLE_* environment variables can add exporters.
+    spans = InMemorySpanExporter()
+    configure_otel_providers(exporters=[spans])
     # A CLI credential is made only when no key is configured; the sample owns it, so it closes it.
     credential = None if os.getenv("AZURE_VOICELIVE_API_KEY") else AzureCliCredential()
     options: VoiceLiveOptions = {
@@ -58,8 +79,7 @@ async def main() -> None:
 
     try:
         # The conversation span nests under whatever span is current when the conversation opens.
-        with get_tracer().start_as_current_span("Scenario: Realtime call") as scenario:
-            print(f"Trace ID: {format_trace_id(scenario.get_span_context().trace_id)}")
+        with get_tracer().start_as_current_span("Scenario: Realtime call"):
             async with agent.start_conversation() as conversation:
                 print("Caller: What time is it?")
                 await conversation.send("What time is it?")
@@ -73,23 +93,27 @@ async def main() -> None:
         if credential is not None:
             await credential.close()
 
+    # The provider exports spans in batches, so flush them before reading.
+    tracer_provider = trace.get_tracer_provider()
+    if isinstance(tracer_provider, TracerProvider):
+        tracer_provider.force_flush()
+    print()
+    print_trace(spans.get_finished_spans())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
 
 """
-Sample output, with ENABLE_CONSOLE_EXPORTERS=true printing each span as JSON after it:
+Sample output:
 
-Trace ID: 6d0c6ec63df9c4a12ecb488d3fc6529b
 Caller: What time is it?
-concierge: I'm checking the current time for you now.
+concierge: I'll check the current time for you.
 concierge: It's twelve noon.
 
-The trace holds these spans:
-
 Scenario: Realtime call
-└── invoke_agent concierge
-    ├── realtime_inference gpt-realtime-2.1      finish_reasons ["tool_call"]
-    ├── execute_tool get_current_time
-    └── realtime_inference gpt-realtime-2.1      finish_reasons ["stop"]
+    invoke_agent concierge
+        realtime_inference gpt-realtime-2.1  finish_reasons ['tool_call']
+        execute_tool get_current_time
+        realtime_inference gpt-realtime-2.1  finish_reasons ['stop']
 """
