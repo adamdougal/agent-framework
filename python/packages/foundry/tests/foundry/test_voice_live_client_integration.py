@@ -22,6 +22,8 @@ from agent_framework.exceptions import (
 )
 from agent_framework.orchestrations import RealtimeHandoffBuilder
 from azure.identity.aio import AzureCliCredential
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from agent_framework_foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
 
@@ -89,6 +91,10 @@ async def live_session(
         reader = Reader(session)
         stack.push_async_callback(reader.stop)
         yield session, reader
+
+
+def _attribute(span: ReadableSpan, key: str) -> Any:
+    return (span.attributes or {}).get(key)
 
 
 def _final_text(events: list[Any]) -> str:
@@ -349,3 +355,45 @@ class TestVerification:
                 await session.delete_item(_core(added)["item_id"])
 
         assert _core(added)["input_audio"] is False
+
+    async def test_a_turn_that_calls_a_tool_is_one_trace_with_usage(self, span_exporter: InMemorySpanExporter) -> None:
+        """A RealtimeAgent on the managed model answers one text input by calling a tool: the call is one
+        invoke_agent span whose children are the realtime_inference spans, with gen_ai.provider.name
+        "azure.ai.foundry" and input and output token usage, and the tool's execute_tool span."""
+
+        @tool(description="Get the current time.")
+        def get_current_time() -> str:
+            return "It's twelve noon."
+
+        options: VoiceLiveOptions = {
+            "instructions": "When asked the time, call get_current_time, then answer in one short sentence.",
+            "voice": AVA,
+            "turn_detection": None,
+        }
+
+        async with contextlib.AsyncExitStack() as stack, asyncio.timeout(TURN_TIMEOUT):
+            credential = None
+            if not os.getenv("AZURE_VOICELIVE_API_KEY"):
+                credential = await stack.enter_async_context(AzureCliCredential())
+            client = VoiceLiveClient(credential=credential)
+            agent: RealtimeAgent[VoiceLiveOptions] = RealtimeAgent(
+                client, name="concierge", tools=[get_current_time], default_options=options
+            )
+            async with agent.start_conversation() as conversation:
+                await conversation.send("What time is it?")
+                async for update in conversation:
+                    if update.finish_reason == "stop":
+                        break
+
+        spans = span_exporter.get_finished_spans()
+        [conversation_span] = [span for span in spans if span.name == "invoke_agent concierge"]
+        responses = [span for span in spans if span.name.startswith("realtime_inference")]
+        [tool_span] = [span for span in spans if span.name == "execute_tool get_current_time"]
+        assert len(responses) >= 2
+        assert conversation_span.context is not None
+        assert {span.parent.span_id if span.parent else None for span in [*responses, tool_span]} == {
+            conversation_span.context.span_id
+        }
+        assert [_attribute(span, "gen_ai.provider.name") for span in responses] == ["azure.ai.foundry"] * len(responses)
+        assert all(_attribute(span, "gen_ai.usage.output_tokens") for span in responses)
+        assert _attribute(conversation_span, "gen_ai.usage.input_tokens")

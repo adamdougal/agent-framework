@@ -89,7 +89,8 @@ agent's live conversation, the [session update](../../samples/02-agents/provider
 [MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py),
 [handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py),
 [tool approval](../../samples/02-agents/providers/foundry/voice_live_tool_approval.py) and
-[app-run tool](../../samples/02-agents/providers/foundry/voice_live_app_tool.py) samples.
+[app-run tool](../../samples/02-agents/providers/foundry/voice_live_app_tool.py) samples. The
+[realtime observability sample](../../samples/02-agents/observability/realtime_agent_observability.py) traces a call.
 
 ## Foundry voice agents (experimental)
 
@@ -129,6 +130,8 @@ async with AzureCliCredential() as credential:
   warning, so keep a topology's voices in one family.
 - Hosted tools in the definition are re-sent as the agents API returns them. Keep their authorization in project
   connections rather than inline secrets.
+- With instrumentation enabled, calls are traced as `RealtimeAgent`'s are, and each session's handshake carries the
+  conversation span's trace context, so Foundry's own spans for the session join the call's trace.
 
 See [the Foundry voice agent sample](../../samples/02-agents/providers/foundry/foundry_voice_agent.py).
 

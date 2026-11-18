@@ -30,6 +30,7 @@ from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import RealtimeServerEventResponseCreated
 from azure.core.credentials import AccessToken
 from opentelemetry import baggage, context, trace
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from agent_framework_foundry import AzureVoice, FoundryVoiceAgent, FoundryVoiceAgentClient, FoundryVoiceAgentOptions
 from agent_framework_foundry import _foundry_voice_client as voice_client_module
@@ -1179,6 +1180,43 @@ async def test_a_plain_start_agent_does_not_inherit_the_definitions_tool_choice(
 
 # endregion
 
+# region Telemetry
+
+
+async def answer_one_text_input(project: FakeProjectClient, conversation: Any) -> None:
+    """Send "Hi", let the server answer it, and read updates until that response is done."""
+    request = asyncio.ensure_future(project.server.wait_sent("response.create"))
+    sending = asyncio.ensure_future(conversation.send("Hi"))
+    project.server.answer(await request)
+    await asyncio.wait_for(sending, 5)
+    async with asyncio.timeout(5):
+        async for update in conversation:
+            if any(content.kind == "response_done" for content in update.contents):
+                return
+
+
+async def test_a_foundry_voice_agents_conversation_is_traced_with_the_foundry_provider_name(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """A FoundryVoiceAgent named "receptionist" answers one text input: an "invoke_agent receptionist" span, and
+    under it the response's realtime_inference span with gen_ai.provider.name "azure.ai.foundry"."""
+    project = FakeProjectClient()
+    agent = FoundryVoiceAgent(project_client=project.as_project_client(), agent_name="receptionist", agent_version="3")
+
+    async with agent, agent.start_conversation() as conversation:
+        await answer_one_text_input(project, conversation)
+
+    spans = span_exporter.get_finished_spans()
+    [conversation_span] = [span for span in spans if span.name == "invoke_agent receptionist"]
+    [response_span] = [span for span in spans if span.name.startswith("realtime_inference")]
+    assert response_span.parent is not None
+    assert conversation_span.context is not None
+    assert response_span.parent.span_id == conversation_span.context.span_id
+    assert (response_span.attributes or {}).get("gen_ai.provider.name") == "azure.ai.foundry"
+
+
+# endregion
+
 # region Conversation middleware
 
 
@@ -1203,6 +1241,30 @@ async def test_a_foundry_voice_agent_runs_conversation_middleware() -> None:
 
 
 class TestVerification:
+    async def test_the_handshake_carries_the_conversation_spans_trace_context(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """A FoundryVoiceAgent conversation's handshake traceparent names the invoke_agent span's trace and span
+        ids."""
+        project = FakeProjectClient()
+        agent = FoundryVoiceAgent(
+            project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
+        )
+
+        async with agent, agent.start_conversation():
+            pass
+
+        [conversation_span] = [
+            span for span in span_exporter.get_finished_spans() if span.name == "invoke_agent receptionist"
+        ]
+        headers = {name.lower(): value for name, value in project.connect_calls[0]["extra_headers"].items()}
+        _, trace_id, span_id, _ = headers["traceparent"].split("-")
+        assert conversation_span.context is not None
+        assert (int(trace_id, 16), int(span_id, 16)) == (
+            conversation_span.context.trace_id,
+            conversation_span.context.span_id,
+        )
+
     async def test_an_openai_voice_in_the_definition_stays_a_name(self) -> None:
         """With the definition's voice 'marin' and voice_type 'openai', the default voice after entering is 'marin'."""
         project = FakeProjectClient({"3": with_audio_output(voice="marin", voice_type="openai")})

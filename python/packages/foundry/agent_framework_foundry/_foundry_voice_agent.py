@@ -152,8 +152,10 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
 class FoundryVoiceAgent(RealtimeAgent[FoundryVoiceAgentOptions], RawFoundryVoiceAgent):
     """A realtime agent published in Microsoft Foundry as a voice agent.
 
-    See ``RawFoundryVoiceAgent`` for how the definition, tools and handoffs work. Like ``RealtimeAgent``, it runs
-    conversation middleware.
+    Like ``RealtimeAgent``, it runs conversation middleware and traces its conversations. Each session's handshake
+    carries the conversation span's trace context, so Foundry's own spans for the session join the call's trace.
+
+    See ``RawFoundryVoiceAgent`` for how the definition, tools and handoffs work.
     """
 
 

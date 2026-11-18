@@ -9,6 +9,7 @@ from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self
 
+from .. import observability
 from .._agents import BaseAgent, _provider_service_session_state_keys  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
 from .._mcp import MCPTool
@@ -23,6 +24,7 @@ from .._types import normalize_messages
 from ._conversation import RealtimeConversation
 from ._handoffs import call_settings, start_settings
 from ._options import RealtimeOptionsT
+from ._telemetry import ConversationTelemetry
 
 if TYPE_CHECKING:
     from .._middleware import MiddlewareTypes
@@ -149,6 +151,10 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         """The middleware this agent's conversations run; middleware of other categories is skipped with a warning."""
         return ("function",)
 
+    def _conversation_telemetry(self) -> ConversationTelemetry | None:
+        """What records this agent's conversations; a raw agent records nothing."""
+        return None
+
     def start_conversation(
         self,
         messages: AgentRunInputs | None = None,
@@ -237,6 +243,7 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             mcp_exit_stack=self._exit_stack,
             control_timeout=control_timeout,
             max_queued_updates=max_queued_updates,
+            telemetry=self._conversation_telemetry(),
         )
 
     def _add_history_when_none_loads(self, session: AgentSession | None) -> None:
@@ -249,7 +256,13 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
 class RealtimeAgent(RawRealtimeAgent[RealtimeOptionsT]):
-    """A realtime agent, which runs conversation middleware around each conversation.
+    """A realtime agent, which runs conversation middleware around each conversation and traces it.
+
+    While instrumentation is enabled, each live conversation is an ``invoke_agent`` span, opened when the conversation
+    is entered and ended when it closes. Each response the provider creates is a ``realtime_inference`` span beneath
+    it, crediting the agent active when the response was created, with the response's usage and how it finished, and
+    records the operation-duration and token-usage metrics. Tool calls' ``execute_tool`` spans nest under the
+    conversation span too. No audio or transcripts are recorded.
 
     See ``RawRealtimeAgent`` for live-conversation behavior and configuration, and ``ConversationMiddleware`` for the
     middleware.
@@ -257,3 +270,8 @@ class RealtimeAgent(RawRealtimeAgent[RealtimeOptionsT]):
 
     def _middleware_categories(self) -> tuple[str, ...]:
         return ("function", "conversation")
+
+    def _conversation_telemetry(self) -> ConversationTelemetry | None:
+        if not observability.OBSERVABILITY_SETTINGS.ENABLED:
+            return None
+        return ConversationTelemetry(self)

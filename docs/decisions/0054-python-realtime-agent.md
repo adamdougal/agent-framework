@@ -204,23 +204,25 @@ Full-duplex traffic enters middleware and telemetry at these points:
 
 | Traffic | Middleware | Telemetry |
 | --- | --- | --- |
-| A whole `run(...)` | agent middleware | the conversation span |
-| A realtime session opening, live or in `run(...)` | conversation middleware's `process()` | the conversation span, and the session-started event |
-| Inbound `send(...)` | conversation middleware's send hooks | input on `realtime_inference` spans (sensitive data on) |
-| Outbound updates | conversation middleware's update hooks | `realtime_inference` spans, events and metrics |
+| A whole `run(...)`, when it comes | agent middleware | the conversation span |
+| A realtime session opening, live or in `run(...)` | conversation middleware's `process()` | the conversation span, and later the session-started event |
+| Inbound `send(...)` | conversation middleware's send hooks | later, input on `realtime_inference` spans (sensitive data on) |
+| Outbound updates | conversation middleware's update hooks | `realtime_inference` spans and metrics, and later events |
 | Tool calls | function middleware | `execute_tool` spans |
-| Control calls | none | `realtime.*` control spans |
-| Close | conversation middleware's close hooks | the end of the conversation span, and the session-ended event |
+| Control calls | none | later, `realtime.*` control spans |
+| Close | conversation middleware's close hooks | the end of the conversation span, and later the session-ended event |
 
-Telemetry never records audio, even with sensitive data on, and records transcripts instead. Middleware sees audio as
-`data` content and must not assume an update has text.
+Telemetry never records audio, even with sensitive data on; once message content comes, it records transcripts instead.
+Middleware sees audio as `data` content and must not assume an update has text.
 
 Conversation middleware, `ConversationMiddleware`, is a new category, so one guardrail covers live calls and `run()`.
 Agent middleware can't wrap a live call safely, because it reads a final result and may re-enter `call_next()`.
 Telemetry lives at the agent layer, in core. Each call is one `invoke_agent` span, with a `realtime_inference` span per
-response and its tool and control spans beneath it, following semantic-conventions-genai at `750e42c`, which is
-unreleased. Client-level spans, the Microsoft.Extensions.AI model, were rejected, because they have no agent context. A
-cancelled tool call now counts as a failure. See [Middleware](../specs/006-python-realtime-agents.md#middleware) and
+response and its tool spans beneath it, following semantic-conventions-genai at `750e42c`, which is unreleased. The
+first upstream PR ships only that call-level trace and its metrics, because every further attribute or event may change
+with the conventions; control spans and the rest come later. Client-level spans, the Microsoft.Extensions.AI model,
+were rejected, because they have no agent context. A cancelled tool call now counts as a failure. See
+[Middleware](../specs/006-python-realtime-agents.md#middleware) and
 [Telemetry](../specs/006-python-realtime-agents.md#telemetry).
 
 ### Provider clients
@@ -254,11 +256,13 @@ the speech-to-text and text-to-speech abstractions.
 Each of these can be added later without breaking anything: warm connection reuse, WebRTC and SIP, device drivers,
 cancelling tools on barge-in, per-tool timeouts and filler speech, first-class out-of-band responses, resuming
 provider-side conversations, remembering the active agent across realtime sessions, structured inputs and a per-session
-`store` override for Foundry voice agents, a typed capability API, and further telemetry such as `user_speech` spans and
-realtime metrics. Handoffs that change model or provider, transcription-only and translation sessions, Voice Live's
-agent-integration mode, and publishing Foundry agent definitions are out of scope. There's no `FoundryRealtimeClient` in
-v1, because `OpenAIRealtimeClient(azure_endpoint=...)` already reaches a Foundry resource's Azure OpenAI endpoint, and
-nobody has verified that the project-scoped route serves realtime.
+`store` override for Foundry voice agents, a typed capability API, and further telemetry: control-call and handoff
+spans, realtime error and truncation span events, session-started and ended events, message content, per-modality
+usage, the Foundry voice agent's version, server address and close codes, Azure SDK instrumentor warnings,
+`user_speech` spans and realtime metrics. Handoffs that change model or provider, transcription-only and translation
+sessions, Voice Live's agent-integration mode, and publishing Foundry agent definitions are out of scope. There's no
+`FoundryRealtimeClient` in v1, because `OpenAIRealtimeClient(azure_endpoint=...)` already reaches a Foundry resource's
+Azure OpenAI endpoint, and nobody has verified that the project-scoped route serves realtime.
 
 ### Consequences
 

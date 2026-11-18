@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import copy
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
     from .._types import AgentRunInputs
     from ._agent import RawRealtimeAgent
     from ._clients import RealtimeClientSessionProtocol
+    from ._telemetry import ConversationTelemetry
 
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
@@ -108,6 +110,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         mcp_exit_stack: AsyncExitStack,
         control_timeout: float,
         max_queued_updates: int,
+        telemetry: ConversationTelemetry | None,
     ) -> None:
         self._owner = agent
         self._active_agent = agent._start_participant()  # pyright: ignore[reportPrivateUsage]
@@ -158,6 +161,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._provider_session = agent_session if agent_session is not None else AgentSession()
         self._start_context: SessionContext | None = None
         self._previous_event: RealtimeEvent | None = None
+        self._telemetry = telemetry
+        self._opened_context: contextvars.Context | None = None
 
     @property
     def active_agent(self) -> RawRealtimeAgent[RealtimeOptionsT]:
@@ -185,7 +190,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             raise RealtimeConversationClosedException("The realtime conversation is closed.")
         context = self._middleware_context
         try:
-            await open_through_middleware(self._conversation_middleware, context, self, self._open)
+            await open_through_middleware(self._conversation_middleware, context, self, self._open_traced)
         except BaseException as error:
             if context.conversation is not None:
                 # The app never gets an open conversation from a failed entry, so it can't close it itself.
@@ -198,6 +203,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if isinstance(error, Exception):
             self._fail(error)
         await asyncio.wait({self._start_close()})
+
+    async def _open_traced(self) -> None:
+        """Telemetry sits inside conversation middleware, as history does, so its span covers the realtime session."""
+        with self._telemetry.opened() if self._telemetry is not None else contextlib.nullcontext():
+            await self._open()
 
     async def _open(self) -> None:
         start_context = await self._prepare_from_context_providers()
@@ -241,6 +251,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                     "The realtime conversation closed while it was starting."
                 ) from error
             raise
+        self._opened_context = contextvars.copy_context()
         self._receive_task = asyncio.create_task(self._receive_loop(session))
 
     async def _resolve_tools(self, tools: Sequence[ToolTypes]) -> list[ToolTypes]:
@@ -366,6 +377,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if _is_repeated_error(event, self._previous_event):
             return
         self._previous_event = event
+        if self._telemetry is not None:
+            self._telemetry.on_event(event, self._active_agent)
         core = core_attributes(event)
         response_id = core.get("response_id", "")
         if event.kind == "response_created":
@@ -911,7 +924,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         if self._close_task is None:
             self._closing.set()
             self._tool_loop.stop()
-            self._close_task = asyncio.create_task(self._close_sequence())
+            # Close runs where the conversation opened, whichever task asked for it, so what it reports nests there.
+            context = self._opened_context.copy() if self._opened_context is not None else None
+            self._close_task = asyncio.create_task(self._close_sequence(), context=context)
         return self._close_task
 
     async def _wait_for_caller_transcripts(self) -> None:
@@ -951,8 +966,12 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             close_hook_failures = await run_close_hooks(self._middleware_context, ended_by)
             await self._end_background_tasks()
         finally:
+            close_failure = _close_failure([*provider_failures, *close_hook_failures])
+            if self._telemetry is not None:
+                self._telemetry.closed(self._failure or close_failure)
             self._updates.finish(self._failure)
-        _raise_close_failures([*provider_failures, *close_hook_failures])
+        if close_failure is not None:
+            raise close_failure
 
     async def _end_background_tasks(self) -> None:
         """Nothing the conversation spawned may outlive it."""
@@ -963,14 +982,15 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await asyncio.wait(remaining)
 
 
-def _raise_close_failures(failures: Sequence[Exception]) -> None:
+def _close_failure(failures: Sequence[Exception]) -> Exception | None:
     if len(failures) == 1:
-        raise failures[0]
+        return failures[0]
     if failures:
-        raise ExceptionGroup(
+        return ExceptionGroup(
             "Context providers or conversation middleware failed while the realtime conversation closed.",
             list(failures),
         )
+    return None
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
