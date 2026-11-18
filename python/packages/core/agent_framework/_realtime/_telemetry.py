@@ -148,7 +148,9 @@ def _span_outcome(response_done: dict[str, Any], made_calls: bool) -> tuple[str 
 
 
 def _end_response(response: _Response, finish_reason: str | None, error_type: str | None) -> None:
-    attributes = {**response.attributes, OtelAttr.FINISH_REASONS: [finish_reason]}
+    attributes = dict(response.attributes)
+    if finish_reason is not None:
+        attributes[OtelAttr.FINISH_REASONS] = [finish_reason]
     if response.usage:
         apply_usage_attributes(attributes, response.usage)
     if error_type is not None:

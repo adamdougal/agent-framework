@@ -377,6 +377,17 @@ async def test_a_content_filtered_response_finishes_with_content_filter_and_no_e
     assert span.status.status_code == trace.StatusCode.UNSET
 
 
+async def test_an_incomplete_response_with_an_unknown_reason_records_no_finish_reasons(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """resp_1 ends incomplete with reason "something_else", which has no finish reason: its span carries no
+    gen_ai.response.finish_reasons, and its status is UNSET."""
+    [span] = await _spans_of_response_ending(span_exporter, status="incomplete", reason="something_else")
+
+    assert _attributes(span, OtelAttr.FINISH_REASONS) == (None,)
+    assert span.status.status_code == trace.StatusCode.UNSET
+
+
 async def test_a_cancelled_response_finishes_with_the_providers_reason(span_exporter: InMemorySpanExporter) -> None:
     """resp_1 ends cancelled with reason "turn_detected": finish reasons ("turn_detected",), status UNSET."""
     [span] = await _spans_of_response_ending(span_exporter, status="cancelled", reason="turn_detected")
