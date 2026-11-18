@@ -2,6 +2,7 @@
 
 """Telemetry for live realtime conversations: the conversation span, response spans and their metrics."""
 
+import asyncio
 from typing import Any, cast
 
 import pytest
@@ -518,6 +519,31 @@ async def test_a_conversation_that_fails_to_open_ends_its_span_with_error(span_e
     assert (span.status.status_code, _attributes(span, OtelAttr.ERROR_TYPE)) == (
         trace.StatusCode.ERROR,
         ("RealtimeConnectionException",),
+    )
+
+
+async def test_a_conversation_whose_entry_is_cancelled_ends_its_span_with_error(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """The app cancels the conversation while start_session is still connecting: entering raises CancelledError, and
+    one invoke_agent span has ended with status ERROR and error.type "CancelledError"."""
+    client = FakeRealtimeClient()
+    client.start_session_release = asyncio.Event()
+
+    async def enter() -> None:
+        async with RealtimeAgent(client).start_conversation():
+            pass
+
+    entering = asyncio.create_task(enter())
+    await eventually(lambda: bool(client.start_session_calls))
+    entering.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await entering
+
+    [span] = _spans(span_exporter, "invoke_agent")
+    assert (span.status.status_code, _attributes(span, OtelAttr.ERROR_TYPE)) == (
+        trace.StatusCode.ERROR,
+        ("CancelledError",),
     )
 
 

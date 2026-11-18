@@ -60,8 +60,12 @@ class ConversationTelemetry:
         try:
             with trace.use_span(self._span, record_exception=False, set_status_on_exception=False):
                 yield
-        except Exception as error:
-            capture_exception(self._span, error)
+        except BaseException as error:
+            if isinstance(error, Exception):
+                capture_exception(self._span, error)
+            else:
+                self._span.set_attribute(OtelAttr.ERROR_TYPE, type(error).__name__)
+                self._span.set_status(trace.StatusCode.ERROR)
             self._span.end()
             raise
 
