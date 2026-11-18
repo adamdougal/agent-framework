@@ -204,7 +204,7 @@ Full-duplex traffic enters middleware and telemetry at these points:
 
 | Traffic | Middleware | Telemetry |
 | --- | --- | --- |
-| A whole `run(...)` | agent middleware | the conversation span |
+| A whole `run(...)`, when it comes | agent middleware | the conversation span |
 | A realtime session opening, live or in `run(...)` | conversation middleware's `process()` | the conversation span, and later the session-started event |
 | Inbound `send(...)` | conversation middleware's send hooks | later, input on `realtime_inference` spans (sensitive data on) |
 | Outbound updates | conversation middleware's update hooks | `realtime_inference` spans and metrics, and later events |
@@ -212,8 +212,8 @@ Full-duplex traffic enters middleware and telemetry at these points:
 | Control calls | none | later, `realtime.*` control spans |
 | Close | conversation middleware's close hooks | the end of the conversation span, and later the session-ended event |
 
-Telemetry never records audio, even with sensitive data on, and records transcripts instead. Middleware sees audio as
-`data` content and must not assume an update has text.
+Telemetry never records audio, even with sensitive data on; once message content comes, it records transcripts instead.
+Middleware sees audio as `data` content and must not assume an update has text.
 
 Conversation middleware, `ConversationMiddleware`, is a new category, so one guardrail covers live calls and `run()`.
 Agent middleware can't wrap a live call safely, because it reads a final result and may re-enter `call_next()`.

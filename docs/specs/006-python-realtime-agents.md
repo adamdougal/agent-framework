@@ -569,10 +569,10 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 
 ## Telemetry
 
-- **Location.** The `RealtimeAgent` telemetry layer instruments `run(...)` and `start_conversation(...)` from the event
-  kinds. Provider clients have no telemetry layers and no `Raw*` client classes; they supply the provider name, as
-  `OTEL_PROVIDER_NAME`, and the model. A provider client used without an agent emits nothing. `FoundryVoiceAgent` is
-  the telemetry layer over `RawFoundryVoiceAgent`.
+- **Location.** The `RealtimeAgent` telemetry layer instruments `start_conversation(...)`, and `run(...)` when it comes,
+  from the event kinds. Provider clients have no telemetry layers and no `Raw*` client classes; they supply the provider
+  name, as `OTEL_PROVIDER_NAME`, and the model. A provider client used without an agent emits nothing.
+  `FoundryVoiceAgent` is the telemetry layer over `RawFoundryVoiceAgent`.
 
 ```text
 invoke_agent {owner}                 INTERNAL: the conversation span
@@ -580,13 +580,13 @@ invoke_agent {owner}                 INTERNAL: the conversation span
 └── execute_tool {tool}              INTERNAL: one per call that ran
 ```
 
-- **Conversation span.** `invoke_agent {owner}` opens when the conversation is entered, under the current span, and
-  ends at close; `run(...)` gets the same tree. It names the agent that started the conversation, which for a built
-  handoff agent is the built agent itself. It carries chat `invoke_agent`'s attributes, with chat agents' provider name
-  `microsoft.agent_framework`, plus `gen_ai.realtime_session.id`, and sums usage over every response. Entry runs inside
-  it, so context providers' `before_run`, the provider's handshake, the receive loop and the tool batches it starts nest
-  under it, and close runs in a copy of the context captured there, whichever task closes the call. `realtime_inference`
-  and `execute_tool` spans are its children and siblings of each other.
+- **Conversation span.** `invoke_agent {owner}` opens when the conversation is entered, under the current span, and ends
+  at close; `run(...)`, when it comes, gets the same tree. It names the agent that started the conversation, which for a
+  built handoff agent is the built agent itself. It carries chat `invoke_agent`'s attributes, with chat agents' provider
+  name `microsoft.agent_framework`, plus `gen_ai.realtime_session.id`, and sums usage over every response. Entry runs
+  inside it, so context providers' `before_run`, the provider's handshake, the receive loop and the tool batches it
+  starts nest under it, and close runs in a copy of the context captured there, whichever task closes the call.
+  `realtime_inference` and `execute_tool` spans are its children and siblings of each other.
 - **Agents.** `realtime_inference` spans carry `gen_ai.agent.name` and `gen_ai.agent.id` of the agent active when the
   response was created.
 - **Conventions.** Realtime follows semantic-conventions-genai at commit `750e42c`, unreleased, in Agent Framework's
@@ -629,9 +629,10 @@ invoke_agent {owner}                 INTERNAL: the conversation span
     handoff's own session update opens no control span. A `handoff(...)` outside a tool gets `realtime.handoff` with
     source and target attributes.
   - **Identity.** Spans naming a `FoundryVoiceAgent` carry `gen_ai.agent.version` when it pins one, spans carry
-    `server.address` from each client, and a session that dies records its close code. `gen_ai.conversation.id`
-    follows chat's rule and is captured at start: a host-supplied id, else a string `service_session_id`. Nothing sets
-    one on a live conversation today, because hosts drive `run(...)` and realtime never sets `service_session_id`.
+    `server.address` from each client, and a session that dies records its close code. `gen_ai.conversation.id`, with
+    `run(...)`, follows chat's rule and is captured at start: a host-supplied id, else a string `service_session_id`.
+    Nothing sets one on a live conversation, because hosts drive `run(...)` and realtime never sets
+    `service_session_id`.
   - **Events.** The event logger emits `gen_ai.client.realtime_session.started` and `.ended` for every realtime
     session, INFO or WARN with `error.type` when the session dies. Unclaimed provider errors and context provider
     failures become `agent_framework.realtime.error` span events, which carry the message only with sensitive data on,
@@ -642,7 +643,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   - **Content.** With sensitive data on, `realtime_inference` spans record the agent transcript as `transcription` parts
     plus text and `tool_call` parts, the app input and any caller transcript final before the span ends, and
     `gen_ai.system_instructions` as of the response's creation. The live conversation span records no messages;
-    `run(...)`'s records input and output as chat does.
+    `run(...)`'s, when it comes, records input and output as chat does.
   - **Azure SDK instrumentors.** Each Azure client warns once when its SDK's instrumentor is active, naming the
     duplicate spans and how to turn it off. `VoiceLiveInstrumentor` adds a span per outbound event, including each
     audio append, so a 30-second call produced 1,176 spans.
