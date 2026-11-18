@@ -34,7 +34,9 @@ This sample puts a guardrail around a live call with conversation middleware. It
 
 The sample sends text and saves the spoken replies to voice_live_guardrail.wav, so it needs no microphone or speaker.
 The update hook runs as the app reads each update, so it can await interrupt() and say(). History keeps what the
-provider sent, before the hooks change it.
+provider sent, before the hooks change it. Audio can reach the app ahead of its transcript, so a transcript guardrail
+stops the rest of a reply, not audio already played; an app that must hold audio back buffers it until the transcript
+passes.
 
 Prerequisites:
 - Install the realtime extra: pip install "agent-framework-foundry[realtime]" --pre

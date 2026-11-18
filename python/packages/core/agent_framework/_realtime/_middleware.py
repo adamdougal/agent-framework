@@ -38,11 +38,14 @@ class ConversationContext:
         update_hooks: Hooks that see each update as the app reads it, audio included, even after close. A hook returns
             a replacement or ``None`` to keep the update; raising ``MiddlewareTermination`` drops it. History and the
             tool loop act on what the provider sent, so dropping a ``function_call`` update doesn't stop the call.
+            Build a replacement rather than changing the update in place: its contents are the ones history and the
+            tool loop hold, so an in-place change would reach them too.
         close_hooks: Hooks that run once the conversation has closed and reported its history, with the exception that
             ended it, or ``None``. They run only for a conversation that opened.
 
     Any other exception from a send or update hook ends the conversation: ``send(...)`` or iteration raises it once
-    close has finished. A close hook's exception raises from ``close()`` after cleanup.
+    close has finished, and after an update hook's exception no update still queued is delivered. A close hook's
+    exception raises from ``close()`` after cleanup.
     """
 
     def __init__(self, *, agent: RawRealtimeAgent[Any]) -> None:

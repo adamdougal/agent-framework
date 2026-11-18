@@ -90,8 +90,11 @@ async def _through(hooks: Iterable[Callable[[ItemT], ItemT | Awaitable[ItemT | N
 async def run_close_hooks(context: ConversationContext, error: Exception | None) -> list[Exception]:
     """The outermost middleware closes last, as it would unwind from ``call_next()``.
 
-    One hook's failure doesn't skip the others' cleanup, so failures are returned for close to raise at the end.
+    One hook's failure doesn't skip the others' cleanup, so failures are returned for close to raise at the end. A
+    conversation that never opened has nothing for its middleware to clean up.
     """
+    if context.conversation is None:
+        return []
     failures: list[Exception] = []
     for hook in reversed(context.close_hooks):
         try:

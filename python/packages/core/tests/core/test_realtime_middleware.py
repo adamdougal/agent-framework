@@ -284,6 +284,22 @@ async def test_a_raw_event_passes_the_send_hooks_and_its_replacement_is_sent_raw
         assert (client.session.sent, client.session.calls) == ([commit], [])
 
 
+async def test_a_send_hooks_raw_replacement_keeps_its_place_among_the_sends_messages() -> None:
+    """send(['first', '[commit]', 'third']) with a hook replacing '[commit]' by a raw input_audio_buffer.commit event
+    reaches the session in the order ['first', commit, 'third']."""
+    client = FakeRealtimeClient()
+    commit = RealtimeEvent("passthrough", raw_representation={"type": "input_audio_buffer.commit"})
+
+    def commit_marker(item: Message | RealtimeEvent) -> RealtimeEvent | None:
+        return commit if isinstance(item, Message) and item.text == "[commit]" else None
+
+    async with RealtimeAgent(client, middleware=[send_hook(commit_marker)]).start_conversation() as conversation:
+        await conversation.send(["first", "[commit]", "third"], create_response=False)
+
+        sent = [item.text if isinstance(item, Message) else item for item in client.session.sent]
+        assert sent == ["first", commit, "third"]
+
+
 async def test_a_send_hook_failure_closes_the_conversation_then_send_and_iteration_raise_it() -> None:
     """A send hook raising RuntimeError('moderation down') closes the session; send() raises that RuntimeError once
     close finished, and iteration raises it too."""
@@ -398,6 +414,26 @@ async def test_an_update_hook_failure_closes_the_conversation_then_iteration_rai
         assert (yielded, client.session.close_count) == ([], 1)
 
 
+async def test_after_an_update_hook_failure_a_new_iterator_yields_none_of_the_queued_updates() -> None:
+    """An update hook failing with RuntimeError('moderation down') on the first of three queued updates leaves the
+    other two undelivered: reading again raises that RuntimeError instead of yielding them."""
+    client = FakeRealtimeClient()
+    failures = [RuntimeError("moderation down")]
+
+    def moderate_once(update: AgentResponseUpdate) -> None:
+        if failures:
+            raise failures.pop()
+
+    async with RealtimeAgent(client, middleware=[update_hook(moderate_once)]).start_conversation() as conversation:
+        client.session.emit(*reply("resp_1", "item_1", "Hello")[:3])
+        await eventually(lambda: [message.text for message in conversation.history] == ["Hello"])
+        with pytest.raises(RuntimeError):
+            await next_update(conversation)
+
+        with pytest.raises(RuntimeError, match="moderation down"):
+            await next_update(conversation)
+
+
 # endregion
 
 # region Close hooks
@@ -463,6 +499,24 @@ async def test_a_failing_close_hook_raises_from_close_after_cleanup() -> None:
             pass
 
     assert (client.session.close_count, order) == (1, ["outer"])
+
+
+async def test_closing_a_refused_conversation_runs_no_close_hooks() -> None:
+    """Calling close() on a conversation whose middleware refused the session doesn't run the close hook it
+    registered."""
+    closed: list[Exception | None] = []
+
+    async def refuse(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        context.close_hooks.append(closed.append)
+        raise MiddlewareTermination("refused")
+
+    conversation = RealtimeAgent(FakeRealtimeClient(), middleware=[refuse]).start_conversation()
+    with pytest.raises(MiddlewareTermination):
+        async with conversation:
+            pass
+    await conversation.close()
+
+    assert closed == []
 
 
 # endregion

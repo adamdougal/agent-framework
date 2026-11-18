@@ -561,14 +561,15 @@ that starts as close begins is closed rather than adopted. Close also ends any r
   exception that ended the conversation or `None`, and only for a conversation whose session opened. Control calls and
   the tool loop's own results get no hooks.
 - **Outcomes.** A send or update hook returns a replacement, or `None` to keep the item. A send hook's replacement is
-  handled as if the app had sent it: a `RealtimeEvent` raw, a `Message` as input. `MiddlewareTermination` in a hook
+  handled as if the app had sent it, in its place among the send's inputs: a `RealtimeEvent` raw, a `Message` as input. `MiddlewareTermination` in a hook
   drops the item, and a send whose inputs are all dropped sends nothing and requests no response.
   `MiddlewareTermination` in `process()` before `call_next()`, or a chain that returns without calling it, refuses the
   session: entering the conversation, or `run(...)` when it comes, raises `MiddlewareTermination`, and nothing
   connects. Any other exception ends the conversation fail-closed. An exception raised after `call_next()` closes the
   conversation and entering raises it; a send or update hook's exception closes it, then `send(...)` or iteration
-  raises it. Close-hook failures raise from `close()` after cleanup, with context-provider failures: one as it is,
-  several as an `ExceptionGroup`.
+  raises it, and after an update hook's exception no update still queued is delivered. Close-hook failures raise from
+  `close()` after cleanup, with context-provider failures: one as it is, several as an `ExceptionGroup`. A hook returns
+  a replacement rather than changing the update in place, whose contents history and the tool loop share.
 - **Order.** Hooks run in onion order: send hooks in registration order, and update and close hooks in reverse, so
   middleware that registers its hooks before `call_next()` sees inputs outermost first and updates and the close
   outermost last. History and telemetry record inputs after the send hooks and updates before the update hooks. The

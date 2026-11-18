@@ -113,6 +113,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._active_agent = agent._start_participant()  # pyright: ignore[reportPrivateUsage]
         self._conversation_middleware = conversation_middleware
         self._middleware_context = ConversationContext(agent=agent)
+        self._update_hook_failure: Exception | None = None
         self._initial_messages = initial_messages
         self._options = options
         self._call = call
@@ -331,9 +332,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
     async def _read_updates(self) -> AsyncIterator[AgentResponseUpdate]:
         async for update in self._updates:
+            # Updates queued after a guardrail broke must stay undelivered, whichever iterator asks for them.
+            if self._update_hook_failure is not None:
+                raise self._update_hook_failure
             try:
                 delivered = await through_update_hooks(self._middleware_context, update)
             except Exception as error:
+                self._update_hook_failure = error
                 await self._end_after_failure(error)
                 raise
             if delivered is not None:
@@ -485,25 +490,28 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         except Exception as error:
             await self._end_after_failure(error)
             raise
-        commands = [item for item in hooked if isinstance(item, RealtimeEvent)]
-        if commands:
-            async with self._write_lock:
-                for command in commands:
-                    await self._require_open_session().send(command)
-        messages = [item for item in hooked if isinstance(item, Message)]
-        if not messages:
-            return
-        answers = [content for message in messages for content in message.contents if _is_an_answer(content)]
+        answers = [
+            content
+            for item in hooked
+            if isinstance(item, Message)
+            for content in item.contents
+            if _is_an_answer(content)
+        ]
         if answers:
             self._app_input.route(answers)
-            messages = _without_answers(messages)
-            if not messages:
-                return
+            hooked = _without_answers(hooked)
+        if not hooked:
+            return
         async with self._write_lock:
-            for message in messages:
-                # Close may have started while this send waited its turn, or while an earlier message went out.
-                await self._add_app_input(self._require_open_session(), message)
-        if _is_audio_only(messages):
+            for item in hooked:
+                # Close may have started while this send waited its turn, or while an earlier input went out.
+                session = self._require_open_session()
+                if isinstance(item, RealtimeEvent):
+                    await session.send(item)
+                else:
+                    await self._add_app_input(session, item)
+        messages = [item for item in hooked if isinstance(item, Message)]
+        if not messages or _is_audio_only(messages):
             return  # committing the caller's turn starts its chain; turn detection or the app asks for the response
         self._tool_loop.on_new_input()
         if create_response:
@@ -983,13 +991,17 @@ def _is_an_answer(content: Content) -> bool:
     return content.type in ("function_result", "function_approval_response")
 
 
-def _without_answers(messages: Sequence[Message]) -> list[Message]:
-    remaining: list[Message] = []
-    for message in messages:
-        contents = [content for content in message.contents if not _is_an_answer(content)]
+def _without_answers(inputs: Sequence[Message | RealtimeEvent]) -> list[Message | RealtimeEvent]:
+    remaining: list[Message | RealtimeEvent] = []
+    for item in inputs:
+        if isinstance(item, RealtimeEvent):
+            remaining.append(item)
+            continue
+        contents = [content for content in item.contents if not _is_an_answer(content)]
         if contents:
-            remaining.append(copy.copy(message))
-            remaining[-1].contents = contents
+            without_answers = copy.copy(item)
+            without_answers.contents = contents
+            remaining.append(without_answers)
     return remaining
 
 
