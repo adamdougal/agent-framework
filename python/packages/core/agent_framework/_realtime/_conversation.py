@@ -20,7 +20,7 @@ from .._mcp import MCPTool
 from .._middleware import categorize_middleware
 from .._sessions import AgentSession, HistoryProvider, SessionContext
 from .._tools import normalize_tools
-from .._types import AgentResponseUpdate, Content, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
+from .._types import AgentResponseUpdate, Content, Message, _append_instructions, normalize_messages  # pyright: ignore[reportPrivateUsage]
 from ..exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -34,6 +34,8 @@ from ._barge_in import AudioLedger, Truncation
 from ._events import RealtimeEvent
 from ._handoffs import CallSettings, handoff_completed, participant_update, start_settings
 from ._history import CallHistory
+from ._middleware import ConversationContext, ConversationMiddlewareTypes
+from ._middleware_chain import open_through_middleware, run_close_hooks, through_send_hooks, through_update_hooks
 from ._options import RealtimeOptionsT
 from ._reporting import report_exchanges
 from ._responses import ResponseLedger
@@ -50,7 +52,7 @@ CALLER_TRANSCRIPT_WAIT_SECONDS = 3.0
 if TYPE_CHECKING:
     from .._middleware import FunctionMiddlewareTypes
     from .._tools import FunctionInvocationConfiguration, ToolTypes
-    from .._types import AgentRunInputs, Message
+    from .._types import AgentRunInputs
     from ._agent import RawRealtimeAgent
     from ._clients import RealtimeClientSessionProtocol
 
@@ -74,6 +76,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     to their ``after_run`` in order. A call whose process ends before it closes never reaches them, so an app that
     needs each exchange stored as it happens records it from the updates.
 
+    A ``RealtimeAgent``'s conversation middleware wraps the opening, and its hooks see what the app sends, each update
+    as the app reads it, and the close. History records what reached and came from the provider, before the hooks
+    change it.
+
     Examples:
         .. code-block:: python
 
@@ -96,6 +102,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         tools: Sequence[ToolTypes],
         invocation_configuration: FunctionInvocationConfiguration,
         function_middleware: Sequence[FunctionMiddlewareTypes],
+        conversation_middleware: Sequence[ConversationMiddlewareTypes],
         function_invocation_kwargs: Mapping[str, Any],
         mcp_connection_kwargs: Mapping[str, Any],
         mcp_exit_stack: AsyncExitStack,
@@ -104,6 +111,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     ) -> None:
         self._owner = agent
         self._active_agent = agent._start_participant()  # pyright: ignore[reportPrivateUsage]
+        self._conversation_middleware = conversation_middleware
+        self._middleware_context = ConversationContext(agent=agent)
+        self._update_hook_failure: Exception | None = None
+        self._exit_error: Exception | None = None
         self._initial_messages = initial_messages
         self._options = options
         self._call = call
@@ -172,6 +183,23 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         self._entered = True
         if self._closing.is_set():
             raise RealtimeConversationClosedException("The realtime conversation is closed.")
+        context = self._middleware_context
+        try:
+            await open_through_middleware(self._conversation_middleware, context, self, self._open)
+        except BaseException as error:
+            if context.conversation is not None:
+                # The app never gets an open conversation from a failed entry, so it can't close it itself.
+                await self._end_after_failure(error)
+            raise
+        return self
+
+    async def _end_after_failure(self, error: BaseException) -> None:
+        """Conversation middleware fails closed: a call whose guardrail broke ends rather than going on unguarded."""
+        if isinstance(error, Exception):
+            self._fail(error)
+        await asyncio.wait({self._start_close()})
+
+    async def _open(self) -> None:
         start_context = await self._prepare_from_context_providers()
         tools = await self._resolve_tools(self._tools)
         starting = asyncio.ensure_future(
@@ -214,7 +242,6 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 ) from error
             raise
         self._receive_task = asyncio.create_task(self._receive_loop(session))
-        return self
 
     async def _resolve_tools(self, tools: Sequence[ToolTypes]) -> list[ToolTypes]:
         """The conversation keeps its own list of each MCP tool's functions, so server-side changes wait for an update.
@@ -289,19 +316,36 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if isinstance(exc_value, Exception):
+            self._exit_error = exc_value
         await self.close()
 
     @property
     def updates(self) -> AsyncIterable[AgentResponseUpdate]:
         """The conversation's updates, which ``async for update in conversation`` also reads.
 
-        There is one stream, read by one reader. Iteration ends when the conversation closes, and raises the error
-        that ended it once the queued updates are read.
+        There is one stream, read by one reader. Conversation middleware's update hooks see each update as it's read,
+        and may replace or drop it. Iteration ends when the conversation closes, and raises the error that ended it once
+        the queued updates are read; an update hook's error ends the conversation and raises at once.
         """
         return self
 
     def __aiter__(self) -> AsyncIterator[AgentResponseUpdate]:
-        return aiter(self._updates)
+        return self._read_updates()
+
+    async def _read_updates(self) -> AsyncIterator[AgentResponseUpdate]:
+        async for update in self._updates:
+            # Updates queued after a guardrail broke must stay undelivered, whichever iterator asks for them.
+            if self._update_hook_failure is not None:
+                raise self._update_hook_failure
+            try:
+                delivered = await through_update_hooks(self._middleware_context, update)
+            except Exception as error:
+                self._update_hook_failure = error
+                await self._end_after_failure(error)
+                raise
+            if delivered is not None:
+                yield delivered
 
     async def _receive_loop(self, session: RealtimeClientSessionProtocol[RealtimeOptionsT]) -> None:
         failure: Exception | None = None
@@ -422,6 +466,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         call as the conversation received it, whatever call the response embeds. Other input sent alongside answers is
         handled as above.
 
+        Conversation middleware's send hooks see each input first, and may replace or drop it. When they drop all of
+        it, nothing is sent and no response is requested.
+
         Args:
             value: The input, or a raw provider command.
 
@@ -436,24 +483,40 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             RealtimeConversationClosedException: If the conversation has started closing.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the response request in time.
             RealtimeControlException: If the provider rejects the response request.
+            Exception: The error a send hook raised, other than ``MiddlewareTermination``, once the conversation it
+                ended has closed.
         """
         self._require_open_session()
-        if isinstance(value, RealtimeEvent):
-            async with self._write_lock:
-                await self._require_open_session().send(value)
-            return
-        messages = normalize_messages(value)
-        answers = [content for message in messages for content in message.contents if _is_an_answer(content)]
+        inputs = [value] if isinstance(value, RealtimeEvent) else normalize_messages(value)
+        try:
+            hooked = await through_send_hooks(self._middleware_context, inputs)
+        except Exception as error:
+            await self._end_after_failure(error)
+            raise
+        # Close may have started while an async hook ran, and an answer routed now would resume a call during close.
+        self._require_open_session()
+        answers = [
+            content
+            for item in hooked
+            if isinstance(item, Message)
+            for content in item.contents
+            if _is_an_answer(content)
+        ]
         if answers:
             self._app_input.route(answers)
-            messages = _without_answers(messages)
-            if not messages:
-                return
+            hooked = _without_answers(hooked)
+        if not hooked:
+            return
         async with self._write_lock:
-            for message in messages:
-                # Close may have started while this send waited its turn, or while an earlier message went out.
-                await self._add_app_input(self._require_open_session(), message)
-        if _is_audio_only(messages):
+            for item in hooked:
+                # Close may have started while this send waited its turn, or while an earlier input went out.
+                session = self._require_open_session()
+                if isinstance(item, RealtimeEvent):
+                    await session.send(item)
+                else:
+                    await self._add_app_input(session, item)
+        messages = [item for item in hooked if isinstance(item, Message)]
+        if not messages or _is_audio_only(messages):
             return  # committing the caller's turn starts its chain; turn detection or the app asks for the response
         self._tool_loop.on_new_input()
         if create_response:
@@ -832,12 +895,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         ``conversation_closed`` reason, and streams an error result for each call that didn't finish; calls that had
         finished keep their results. It then reports the call to the agent's context providers, one ``after_run`` per
         exchange in order, with providers in reverse registration order for each. A provider whose ``after_run`` fails
-        gets none of the later exchanges, while the others carry on. Iteration ends once the queued updates are read.
-        Closing again waits for the same close, and a cancelled caller doesn't cancel the close itself.
+        gets none of the later exchanges, while the others carry on. Last, it runs conversation middleware's close
+        hooks, innermost first, each with the error that ended the conversation or ``None``. Iteration ends once the
+        queued updates are read. Closing again waits for the same close, and a cancelled caller doesn't cancel the close
+        itself.
 
         Raises:
-            Exception: The failure of a context provider that couldn't record the call, after cleanup, or an
-                ``ExceptionGroup`` when several couldn't.
+            Exception: The failure of a context provider that couldn't record the call, or of a close hook, after
+                cleanup, or an ``ExceptionGroup`` when several failed.
         """
         await asyncio.shield(self._start_close())
 
@@ -860,6 +925,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     async def _close_sequence(self) -> None:
         """The updates end last, so iteration sees every settled call before it stops."""
         provider_failures: list[Exception] = []
+        close_hook_failures: list[Exception] = []
         try:
             if self._receive_task is not None and not self._receive_task.done():
                 await self._wait_for_caller_transcripts()
@@ -880,10 +946,13 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 provider_failures = await report_exchanges(
                     self._owner, self._provider_session, self._start_context, self._history.exchanges()
                 )
+            # An app error that ended the call is what ended it, unless the conversation had already failed.
+            ended_by = self._failure if self._failure is not None else self._exit_error
+            close_hook_failures = await run_close_hooks(self._middleware_context, ended_by)
             await self._end_background_tasks()
         finally:
             self._updates.finish(self._failure)
-        _raise_unrecorded_history(provider_failures)
+        _raise_close_failures([*provider_failures, *close_hook_failures])
 
     async def _end_background_tasks(self) -> None:
         """Nothing the conversation spawned may outlive it."""
@@ -894,11 +963,14 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             await asyncio.wait(remaining)
 
 
-def _raise_unrecorded_history(failures: Sequence[Exception]) -> None:
+def _raise_close_failures(failures: Sequence[Exception]) -> None:
     if len(failures) == 1:
         raise failures[0]
     if failures:
-        raise ExceptionGroup("Context providers couldn't record the conversation's history.", list(failures))
+        raise ExceptionGroup(
+            "Context providers or conversation middleware failed while the realtime conversation closed.",
+            list(failures),
+        )
 
 
 async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any]) -> None:
@@ -926,13 +998,17 @@ def _is_an_answer(content: Content) -> bool:
     return content.type in ("function_result", "function_approval_response")
 
 
-def _without_answers(messages: Sequence[Message]) -> list[Message]:
-    remaining: list[Message] = []
-    for message in messages:
-        contents = [content for content in message.contents if not _is_an_answer(content)]
+def _without_answers(inputs: Sequence[Message | RealtimeEvent]) -> list[Message | RealtimeEvent]:
+    remaining: list[Message | RealtimeEvent] = []
+    for item in inputs:
+        if isinstance(item, RealtimeEvent):
+            remaining.append(item)
+            continue
+        contents = [content for content in item.contents if not _is_an_answer(content)]
         if contents:
-            remaining.append(copy.copy(message))
-            remaining[-1].contents = contents
+            without_answers = copy.copy(item)
+            without_answers.contents = contents
+            remaining.append(without_answers)
     return remaining
 
 

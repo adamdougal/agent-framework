@@ -34,9 +34,9 @@ if TYPE_CHECKING:
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
 class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
-    """A realtime agent without middleware or telemetry layers.
+    """A realtime agent without the conversation middleware or telemetry layers.
 
-    Function tools still run when middleware and telemetry are bypassed.
+    Its tool calls still run, through its function middleware; conversation middleware is skipped with a warning.
 
     A conversation declares and runs each local MCP tool's functions, copied when it starts and on
     ``update_session(tools=...)``. ``async with agent`` connects the agent's MCP tools that aren't connected yet;
@@ -96,7 +96,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             description: A description of the agent.
             context_providers: The agent's context providers. A live conversation runs their ``before_run`` once,
                 when it opens, and their ``after_run`` once per exchange when it closes.
-            middleware: The agent's middleware. Realtime conversations run its function middleware.
+            middleware: The agent's middleware. Function middleware wraps its conversations' tool calls, and a
+                ``RealtimeAgent`` runs its conversation middleware around each conversation; other middleware is
+                skipped with a warning.
         """
         super().__init__(
             id=id, name=name, description=description, context_providers=context_providers, middleware=middleware
@@ -143,6 +145,10 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
         """
         return []
 
+    def _middleware_categories(self) -> tuple[str, ...]:
+        """The middleware this agent's conversations run; middleware of other categories is skipped with a warning."""
+        return ("function",)
+
     def start_conversation(
         self,
         messages: AgentRunInputs | None = None,
@@ -157,13 +163,14 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
     ) -> RealtimeConversation[RealtimeOptionsT]:
         """Create a live conversation with the provider, which opens when entered with ``async with``.
 
-        Entering the conversation runs the context providers' ``before_run``, starts the provider session with the
-        merged options and tools, replays the history they loaded, then sends ``messages`` as context; it never requests
-        a response. The instructions, tools and function middleware the providers add follow the agent's own; chat
-        middleware has no model call to wrap, so it's skipped as for the agent's own. Leaving the conversation closes
-        it and its session, then reports the call to the context providers one exchange at a time. A call whose process
-        ends before it closes never reaches them, so an app that needs each exchange stored as it happens records it
-        from the conversation's updates.
+        Entering the conversation runs its conversation middleware, if the agent runs any, around the opening. Opening
+        runs the context providers' ``before_run``, starts the provider session with the merged options and tools,
+        replays the history they loaded, then sends ``messages`` as context; it never requests a response. The
+        instructions, tools and function middleware the providers add follow the agent's own; chat middleware has no
+        model call to wrap, so it's skipped as for the agent's own. Leaving the conversation closes it and its session,
+        then reports the call to the context providers one exchange at a time. A call whose process ends before it
+        closes never reaches them, so an app that needs each exchange stored as it happens records it from the
+        conversation's updates.
 
         Options merge over the agent's ``default_options``: ``instructions`` are appended to the agent's instructions,
         ``metadata`` merges, and other keys replace the default, ``None`` included. ``tools`` join the agent's tools.
@@ -179,8 +186,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
                 the agent, as for a chat agent.
             options: Session settings for this conversation.
             tools: Tools for this conversation, in addition to the agent's.
-            middleware: Middleware for this conversation, joined to the agent's. Only function middleware runs;
-                other middleware is skipped with a warning.
+            middleware: Middleware for this conversation, inside the agent's own. Function middleware wraps its tool
+                calls, and a ``RealtimeAgent`` runs its conversation middleware; other middleware is skipped with a
+                warning.
             function_invocation_kwargs: Keyword arguments for every tool call. The mapping is copied when the
                 conversation is created.
             control_timeout: Seconds to wait for the provider to acknowledge the session start and each control call
@@ -196,15 +204,17 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
                 function invocation configuration is invalid. Entering the conversation raises ``ValueError``, before
                 anything is sent, if two of its tools share a name, counting MCP tools' functions and context
                 providers' tools, or a hosted MCP tool doesn't set ``require_approval`` to ``"never"``.
+            MiddlewareException: If a ``MiddlewareBundle`` holds middleware the agent's conversations can't run, such
+                as agent middleware.
         """
         if control_timeout <= 0:
             raise ValueError("control_timeout must be greater than 0.")
         if max_queued_updates < 1:
             raise ValueError("max_queued_updates must be at least 1.")
         invocation_configuration = normalize_function_invocation_configuration(self.function_invocation_configuration)
-        own_middleware = categorize_middleware(self.middleware, supported_categories=("function",))["function"]
-        start_middleware = categorize_middleware(middleware, supported_categories=("function",))["function"]
-        call = call_settings(self, options or {}, normalize_tools(tools), own_middleware, start_middleware)
+        own = categorize_middleware(self.middleware, supported_categories=self._middleware_categories())
+        start = categorize_middleware(middleware, supported_categories=self._middleware_categories())
+        call = call_settings(self, options or {}, normalize_tools(tools), own["function"], start["function"])
         session_options, session_tools = start_settings(self._start_participant(), call)
         app_kwargs = dict(function_invocation_kwargs or {})
         invocation_kwargs = dict(app_kwargs)
@@ -220,7 +230,8 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             call=call,
             tools=session_tools,
             invocation_configuration=invocation_configuration,
-            function_middleware=own_middleware,
+            function_middleware=own["function"],
+            conversation_middleware=[*own["conversation"], *start["conversation"]],
             function_invocation_kwargs=invocation_kwargs,
             mcp_connection_kwargs=app_kwargs,
             mcp_exit_stack=self._exit_stack,
@@ -238,7 +249,11 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
 class RealtimeAgent(RawRealtimeAgent[RealtimeOptionsT]):
-    """A realtime agent.
+    """A realtime agent, which runs conversation middleware around each conversation.
 
-    See ``RawRealtimeAgent`` for live-conversation behavior and configuration.
+    See ``RawRealtimeAgent`` for live-conversation behavior and configuration, and ``ConversationMiddleware`` for the
+    middleware.
     """
+
+    def _middleware_categories(self) -> tuple[str, ...]:
+        return ("function", "conversation")
