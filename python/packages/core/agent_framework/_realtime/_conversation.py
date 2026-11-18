@@ -493,6 +493,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         except Exception as error:
             await self._end_after_failure(error)
             raise
+        # Close may have started while an async hook ran, and an answer routed now would resume a call during close.
+        self._require_open_session()
         answers = [
             content
             for item in hooked

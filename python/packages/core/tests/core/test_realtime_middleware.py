@@ -2,6 +2,7 @@
 
 """Conversation middleware around a realtime agent's live conversations."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -23,7 +24,7 @@ from agent_framework import (
     RealtimeAgent,
     RealtimeEvent,
 )
-from agent_framework.exceptions import RealtimeConnectionException
+from agent_framework.exceptions import RealtimeConnectionException, RealtimeConversationClosedException
 
 from .realtime_helpers import FakeRealtimeClient, event, eventually, next_update
 from .realtime_history_helpers import Failing, Recorder, call_response, get_weather, reply, streamed
@@ -318,6 +319,34 @@ async def test_a_send_hooks_raw_replacement_keeps_its_place_among_the_sends_mess
 
         sent = [item.text if isinstance(item, Message) else item for item in client.session.sent]
         assert sent == ["first", commit, "third"]
+
+
+async def test_a_send_whose_hook_outlasts_the_conversation_raises_conversation_closed() -> None:
+    """When close starts while an async send hook is still checking an app result, send() raises
+    RealtimeConversationClosedException instead of answering the waiting call."""
+    client = FakeRealtimeClient()
+    account = FunctionTool(name="look_up_account", description="Look up the caller's account; the app answers.")
+    checking, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_moderation(item: Message | RealtimeEvent) -> None:
+        checking.set()
+        await release.wait()
+
+    agent = RealtimeAgent(client, tools=[account], middleware=[send_hook(slow_moderation)])
+    async with agent.start_conversation() as conversation:
+        client.session.emit(*call_response("resp_1", "item_1", "call_1", "look_up_account"))
+        await read_until(conversation, "function_call")
+        sending = asyncio.create_task(
+            conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
+        )
+        await asyncio.wait_for(checking.wait(), 5)
+        closing = asyncio.create_task(conversation.close())
+        await asyncio.sleep(0)  # close stops input at once, when its task first runs
+        release.set()
+
+        with pytest.raises(RealtimeConversationClosedException):
+            await sending
+        await closing
 
 
 async def test_a_send_hook_failure_closes_the_conversation_then_send_and_iteration_raise_it() -> None:
