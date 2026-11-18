@@ -388,6 +388,26 @@ async def test_an_incomplete_response_with_an_unknown_reason_records_no_finish_r
     assert span.status.status_code == trace.StatusCode.UNSET
 
 
+async def test_a_response_done_without_a_status_ends_its_span_and_the_call_goes_on(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """resp_1's response_done arrives without a status, then resp_2 completes: resp_1's span ends with no
+    gen_ai.response.finish_reasons, and resp_2's span ends with ("stop",)."""
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.emit(
+            event("response_created", response_id="resp_1"),
+            event("response_done", response_id="resp_1"),
+            *_response("resp_2"),
+        )
+        await _until_response_done(conversation, "resp_2")
+
+    spans = {_attributes(span, OtelAttr.RESPONSE_ID)[0]: span for span in _spans(span_exporter, "realtime_inference")}
+    assert _attributes(spans["resp_1"], OtelAttr.FINISH_REASONS) == (None,)
+    assert _attributes(spans["resp_2"], OtelAttr.FINISH_REASONS) == (("stop",),)
+
+
 async def test_a_cancelled_response_finishes_with_the_providers_reason(span_exporter: InMemorySpanExporter) -> None:
     """resp_1 ends cancelled with reason "turn_detected": finish reasons ("turn_detected",), status UNSET."""
     [span] = await _spans_of_response_ending(span_exporter, status="cancelled", reason="turn_detected")

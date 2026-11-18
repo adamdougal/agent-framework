@@ -139,9 +139,10 @@ def _span_outcome(response_done: dict[str, Any], made_calls: bool) -> tuple[str 
 
     Spans name a response that called tools ``tool_call``, where updates keep chat's ``tool_calls``.
     """
-    if response_done["status"] == "cancelled":
+    status = response_done.get("status")
+    if status == "cancelled":
         return response_done.get("reason") or "interrupted", None
-    if response_done["status"] == "failed":
+    if status == "failed":
         return "error", response_done.get("error_code") or "server_error"
     finish_reason = finish_reason_of(response_done, made_calls)
     return "tool_call" if finish_reason == "tool_calls" else finish_reason, None
