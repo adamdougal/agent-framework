@@ -842,6 +842,16 @@ async def test_echo_cancellation_goes_in_audio_input() -> None:
     assert project.server.updates()[0]["audio"]["input"]["echo_cancellation"] == {"type": "server_echo_cancellation"}
 
 
+async def test_reasoning_effort_goes_in_session_reasoning() -> None:
+    """Starting with reasoning_effort 'low' sends session.reasoning {'effort': 'low'}."""
+    project = FakeProjectClient()
+
+    session = await start(project, instructions="Be brief.", reasoning_effort="low")
+    await session.close()
+
+    assert project.server.updates()[0].get("reasoning") == {"effort": "low"}
+
+
 RYAN: AzureVoice = {"type": "azure-standard", "name": "en-GB-RyanNeural"}
 
 
@@ -1137,7 +1147,7 @@ async def test_the_apps_default_instructions_win_over_the_definitions() -> None:
 
 
 def topology(
-    project: FakeProjectClient, **builder_settings: Any
+    project: FakeProjectClient, *, billing_options: FoundryVoiceAgentOptions | None = None, **builder_settings: Any
 ) -> tuple[FoundryVoiceAgent, RealtimeAgent[FoundryVoiceAgentOptions], RealtimeAgent[FoundryVoiceAgentOptions]]:
     """The Foundry receptionist, a billing agent on its client, and the handoff agent built from them."""
     receptionist = FoundryVoiceAgent(
@@ -1152,7 +1162,7 @@ def topology(
         description="Answers billing questions.",
         instructions="You handle billing.",
         tools=[lookup_order],
-        default_options=FoundryVoiceAgentOptions(voice=SONIA),
+        default_options=billing_options or FoundryVoiceAgentOptions(voice=SONIA),
     )
     built = (
         RealtimeHandoffBuilder(participants=[receptionist, billing], **builder_settings)
@@ -1164,6 +1174,9 @@ def topology(
 
 def tool_names(session: Mapping[str, Any]) -> list[str | None]:
     return [declared.get("name") for declared in session["tools"]]
+
+
+REASONING_DEFINITION: dict[str, Any] = {**DEFINITION, "reasoning": {"effort": "high"}}
 
 
 # region Handoffs
@@ -1196,6 +1209,22 @@ async def test_a_plain_start_agent_does_not_inherit_the_definitions_tool_choice(
         pass
 
     assert project.server.updates()[0]["tool_choice"] == expected
+
+
+async def test_handing_back_restores_the_definitions_reasoning_effort() -> None:
+    """With a definition whose reasoning effort is 'high' and billing's own 'low', the handoff to billing sends
+    reasoning.effort 'low', and handing back sends 'high'."""
+    project = FakeProjectClient({"3": REASONING_DEFINITION})
+    receptionist, billing, built = topology(
+        project, billing_options=FoundryVoiceAgentOptions(voice=SONIA, reasoning_effort="low")
+    )
+
+    async with built, built.start_conversation() as conversation:
+        await asyncio.wait_for(conversation.handoff(billing), 5)
+        await asyncio.wait_for(conversation.handoff(receptionist), 5)
+
+    *_, to_billing, handed_back = project.server.updates()
+    assert (to_billing.get("reasoning"), handed_back.get("reasoning")) == ({"effort": "low"}, {"effort": "high"})
 
 
 # endregion
@@ -1672,3 +1701,30 @@ class TestVerification:
         assert handed_off["instructions"] == "You are a receptionist."
         assert (handed_off["audio"]["output"]["voice"], handed_off["tool_choice"]) == (AVA, "auto")
         assert handed_off["tools"][:3] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
+
+    async def test_the_agents_own_reasoning_effort_wins_over_the_definitions(self) -> None:
+        """With a definition whose reasoning effort is 'high' and the agent's default_options 'minimal', handing back to
+        the agent after billing's 'low' sends reasoning.effort 'minimal'."""
+        project = FakeProjectClient({"3": REASONING_DEFINITION})
+        receptionist = FoundryVoiceAgent(
+            project_client=project.as_project_client(),
+            agent_name="receptionist",
+            agent_version="3",
+            default_options=FoundryVoiceAgentOptions(reasoning_effort="minimal"),
+        )
+        billing = RealtimeAgent(
+            receptionist.client,
+            name="billing",
+            default_options=FoundryVoiceAgentOptions(voice=SONIA, reasoning_effort="low"),
+        )
+        built = (
+            RealtimeHandoffBuilder[FoundryVoiceAgentOptions](participants=[receptionist, billing])
+            .with_start_agent(receptionist)
+            .build()
+        )
+
+        async with built, built.start_conversation() as conversation:
+            await asyncio.wait_for(conversation.handoff(billing), 5)
+            await asyncio.wait_for(conversation.handoff(receptionist), 5)
+
+        assert project.server.updates()[-1].get("reasoning") == {"effort": "minimal"}

@@ -25,10 +25,10 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
 
     It's a realtime agent published in Microsoft Foundry as a voice agent.
 
-    The published agent definition supplies the agent's instructions, voice, tool choice and tools. Entering the agent
-    with ``async with`` reads the definition, once for the agent's lifetime, and a conversation can't start before
-    then. Entering a ``RealtimeHandoffBuilder`` agent enters its participants. Pin ``agent_version`` so every call runs
-    the version you chose.
+    The published agent definition supplies the agent's instructions, voice, tool choice, reasoning effort and tools.
+    Entering the agent with ``async with`` reads the definition, once for the agent's lifetime, and a conversation
+    can't start before then. Entering a ``RealtimeHandoffBuilder`` agent enters its participants. Pin ``agent_version``
+    so every call runs the version you chose.
 
     ``tools=`` supplies Python implementations for the definition's functions, matched by name. Any tool in a call
     can implement one, such as a handoff tool a handoff topology adds, and the definition's published declaration is
@@ -39,9 +39,10 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
     ``"never"`` can't start a conversation.
 
     In a handoff topology, other participants are realtime agents on this agent's ``client``. Handing back to it
-    restores its definition's instructions, voice, tool choice and tools. The handoff agent's instructions are appended
-    to the definition's, so a definition that already contains them gets them twice. A change from an Azure voice to an
-    OpenAI voice is dropped, because Foundry rejects it, so keep a topology's voices in one family.
+    restores its definition's instructions, voice, tool choice, reasoning effort and tools. The handoff agent's
+    instructions are appended to the definition's, so a definition that already contains them gets them twice. A change
+    from an Azure voice to an OpenAI voice is dropped, because Foundry rejects it, so keep a topology's voices in one
+    family.
 
     Examples:
         .. code-block:: python
@@ -103,8 +104,8 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
                 call gets the latest version on every call unless it pins one.
             credential: An async token credential for the ``https://ai.azure.com/.default`` scope.
             tools: Implementations of the definition's functions, matched by name, and any tools to add.
-            default_options: Session settings every conversation starts with. Instructions, a voice or a tool choice
-                here replace the definition's.
+            default_options: Session settings every conversation starts with. Instructions, a voice, a tool choice or
+                a reasoning effort here replace the definition's.
             function_invocation_configuration: Limits and settings for the tool loop.
             id: The agent's id. A new one is generated when ``None``.
             name: The agent's name, which its updates carry as their author. Defaults to the agent name.
@@ -164,12 +165,14 @@ class FoundryVoiceAgent(RealtimeAgent[FoundryVoiceAgentOptions], RawFoundryVoice
 
 
 def _published_defaults(definition: Mapping[str, Any]) -> dict[str, Any]:
-    """The voice and tool choice a definition sets, as the defaults of the agent it publishes."""
+    """The voice, tool choice and reasoning effort a definition sets, as the defaults of the agent it publishes."""
     defaults: dict[str, Any] = {}
     if (voice := voice_from(definition.get("audio", {}).get("output", {}))) is not None:
         defaults["voice"] = voice
     if definition.get("tool_choice") is not None:
         defaults["tool_choice"] = _tool_mode(definition["tool_choice"])
+    if (effort := definition.get("reasoning", {}).get("effort")) is not None:
+        defaults["reasoning_effort"] = effort
     return defaults
 
 

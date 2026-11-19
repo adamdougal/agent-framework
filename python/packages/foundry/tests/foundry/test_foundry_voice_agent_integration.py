@@ -45,7 +45,9 @@ def get_office_hours() -> str:
 
 
 @asynccontextmanager
-async def receptionist() -> AsyncGenerator[FoundryVoiceAgent, None]:
+async def receptionist(
+    default_options: FoundryVoiceAgentOptions | None = None,
+) -> AsyncGenerator[FoundryVoiceAgent, None]:
     """The published voice agent, pinned to FOUNDRY_VOICE_AGENT_VERSION when it's set."""
     async with AzureCliCredential() as credential:
         yield FoundryVoiceAgent(
@@ -56,6 +58,7 @@ async def receptionist() -> AsyncGenerator[FoundryVoiceAgent, None]:
             name="receptionist",
             description="Greets callers and routes them.",
             tools=[get_current_time, get_office_hours],
+            default_options=default_options,
         )
 
 
@@ -100,15 +103,19 @@ async def test_a_pinned_foundry_voice_agent_runs_a_definition_tool() -> None:
 
 async def test_handing_back_restores_the_definition() -> None:
     """In a topology with billing on the agent's client, handoff(billing) then handoff(receptionist) leaves the
-    session's instructions, voice and tool names those of the definition."""
+    session's instructions, voice and tool names those of the definition. The session reports billing's reasoning
+    effort 'high' after the first handoff, and the receptionist's own 'low' after handing back."""
     updates: list[AgentResponseUpdate] = []
-    async with asyncio.timeout(TURN_TIMEOUT), receptionist() as start:
+    async with (
+        asyncio.timeout(TURN_TIMEOUT),
+        receptionist(FoundryVoiceAgentOptions(reasoning_effort="low")) as start,
+    ):
         billing = RealtimeAgent(
             start.client,
             name="billing",
             description="Answers billing questions.",
             instructions="You answer billing questions in one short sentence.",
-            default_options=FoundryVoiceAgentOptions(voice=SONIA),
+            default_options=FoundryVoiceAgentOptions(voice=SONIA, reasoning_effort="high"),
         )
         built = (
             RealtimeHandoffBuilder[FoundryVoiceAgentOptions](participants=[start, billing])
@@ -123,7 +130,8 @@ async def test_handing_back_restores_the_definition() -> None:
             updates.extend([update async for update in conversation])
 
     assert published is not None
-    restored = wire_sessions(updates)[-1]
+    sessions = wire_sessions(updates)
+    restored = sessions[-1]
     assert restored["instructions"] == published["instructions"]
     voice = restored["audio"]["output"]
     voice = (
@@ -136,3 +144,4 @@ async def test_handing_back_restores_the_definition() -> None:
     assert [declared.get("name") for declared in restored["tools"]] == [
         declared.get("name") for declared in published["tools"]
     ]
+    assert [session["reasoning"]["effort"] for session in sessions[-2:]] == ["high", "low"]

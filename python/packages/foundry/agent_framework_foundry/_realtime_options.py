@@ -212,6 +212,7 @@ class FoundryVoiceAgentOptions(RealtimeOptions, total=False):
         transcription: How the caller is transcribed, or ``None`` for no caller transcript.
         noise_reduction: How caller audio is cleaned, or ``None`` for none.
         echo_cancellation: Server-side echo cancellation, or ``None`` for none.
+        reasoning_effort: How hard a reasoning model reasons.
     """
 
     voice: str | AzureVoice  # type: ignore[misc]
@@ -219,6 +220,7 @@ class FoundryVoiceAgentOptions(RealtimeOptions, total=False):
     transcription: AzureTranscription | None  # type: ignore[misc]
     noise_reduction: AzureNoiseReduction | None
     echo_cancellation: AzureEchoCancellation | None
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 
 
 VoiceLiveOptionsT = TypeVar(

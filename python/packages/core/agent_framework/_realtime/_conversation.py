@@ -640,8 +640,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
     ) -> None:
         """Make ``agent`` the agent speaking in this call, in the same realtime session, without reconnecting.
 
-        The session's instructions, tools, voice and tool choice become ``agent``'s, computed as the conversation
-        started them, with ``agent`` in place of the starting agent:
+        The session's instructions, tools, voice, tool choice and reasoning effort become ``agent``'s, computed as the
+        conversation started them, with ``agent`` in place of the starting agent:
 
         - instructions are ``agent``'s, followed by the call-wide instructions: the owner's when it doesn't speak
           itself, such as a handoff agent's, then the start options' and the context providers';
@@ -649,8 +649,9 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
           providers' tools and ``tools``. An MCP tool is declared as the functions its server offers now; one that
           isn't connected connects before the handoff takes its turn among the control calls, and stays open until
           the agent that started the conversation exits;
-        - a voice or tool choice in the start options holds for the call; otherwise ``agent``'s applies, then the
-          owner's default. Tool choice falls back to ``"auto"``. With no voice to send, the current voice stays.
+        - a voice, tool choice or reasoning effort in the start options holds for the call; otherwise ``agent``'s
+          applies, then the owner's default. Tool choice falls back to ``"auto"``. With no voice or reasoning effort
+          to send, the current one stays.
 
         Everything else stays as the call started: history, context providers, tool-loop limits and other settings.
         Calls that arrive afterwards run through ``agent``'s function middleware, inside the owner's when it doesn't

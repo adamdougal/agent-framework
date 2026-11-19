@@ -187,16 +187,16 @@ look unprompted. See [History](../specs/006-python-realtime-agents.md#history).
 
 ### In-session handoffs
 
-`RealtimeConversation.handoff(...)` swaps instructions, tools, voice and tool choice in the same realtime session and
-emits `handoff_completed`. `RealtimeHandoffBuilder` in `agent-framework-orchestrations` shares `HandoffBuilder`'s
-topology API and builds a realtime agent that owns the call; history, context and limits stay with it. `HandoffBuilder`
-stays chat-only. It clones chat agents, finds handoffs in finished responses and runs one bounded turn per participant,
-so a realtime agent inside it would reconnect every turn, while every framework surveyed hands off by updating the live
-session. Generalizing `HandoffBuilder` was rejected, because it can only give per-turn reconnects and would make
-`build()`'s return type depend on its participants. Agent-declared handoffs were rejected, because they add a topology
-concept chat `Agent` lacks. A handoff lasts for its realtime session, and a voice the provider can't change never fails
-a handoff, except between an Azure voice and an OpenAI voice on Voice Live, which rejects the change. See
-[Handoffs](../specs/006-python-realtime-agents.md#handoffs).
+`RealtimeConversation.handoff(...)` swaps instructions, tools, voice, tool choice and reasoning effort in the same
+realtime session and emits `handoff_completed`. `RealtimeHandoffBuilder` in `agent-framework-orchestrations` shares
+`HandoffBuilder`'s topology API and builds a realtime agent that owns the call; history, context and limits stay with
+it. `HandoffBuilder` stays chat-only. It clones chat agents, finds handoffs in finished responses and runs one bounded
+turn per participant, so a realtime agent inside it would reconnect every turn, while every framework surveyed hands
+off by updating the live session. Generalizing `HandoffBuilder` was rejected, because it can only give per-turn
+reconnects and would make `build()`'s return type depend on its participants. Agent-declared handoffs were rejected,
+because they add a topology concept chat `Agent` lacks. A handoff lasts for its realtime session, and a voice the
+provider can't change never fails a handoff, except between an Azure voice and an OpenAI voice on Voice Live, which
+rejects the change. See [Handoffs](../specs/006-python-realtime-agents.md#handoffs).
 
 ### Middleware and telemetry
 

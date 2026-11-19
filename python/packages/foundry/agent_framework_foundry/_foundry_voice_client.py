@@ -257,7 +257,10 @@ class _FoundryVoiceAgentSession(OpenAIRealtimeSession[FoundryVoiceAgentOptions])
 
     _EVENT_ALIASES: ClassVar[Mapping[str, str]] = {"conversation.item.created": "conversation.item.added"}
     _VOICE_OBJECTS_ACCEPTED: ClassVar[bool] = True
-    _SESSION_OPTION_KEYS: ClassVar[frozenset[str]] = OpenAIRealtimeSession._NEUTRAL_OPTION_KEYS | {"echo_cancellation"}
+    _SESSION_OPTION_KEYS: ClassVar[frozenset[str]] = OpenAIRealtimeSession._NEUTRAL_OPTION_KEYS | {
+        "echo_cancellation",
+        "reasoning_effort",
+    }
 
     def __init__(self, connection: OpenAIRealtimeConnection, definition: Mapping[str, Any]) -> None:
         super().__init__(connection)

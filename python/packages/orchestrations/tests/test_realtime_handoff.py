@@ -636,3 +636,34 @@ class TestVerification:
             "handoff_to_receptionist",
             "handoff_to_support",
         ]
+
+    async def test_the_session_opens_with_the_start_agents_reasoning_effort(self) -> None:
+        client = FakeRealtimeClient()
+        receptionist = _receptionist(client, reasoning_effort="low")
+        agent = (
+            RealtimeHandoffBuilder(participants=[receptionist, _billing(client)]).with_start_agent(receptionist).build()
+        )
+
+        async with agent.start_conversation():
+            options = client.session.start_options
+
+        assert options.get("reasoning_effort") == "low"
+
+    async def test_the_built_agents_reasoning_effort_applies_to_a_participant_without_its_own(self) -> None:
+        client = FakeRealtimeClient()
+        receptionist, support = _receptionist(client, reasoning_effort="low"), _support(client)
+        call_options = cast(RealtimeOptions, {"reasoning_effort": "medium"})
+        agent = (
+            RealtimeHandoffBuilder(participants=[receptionist, support], default_options=call_options)
+            .with_start_agent(receptionist)
+            .build()
+        )
+
+        async with agent.start_conversation() as conversation:
+            await conversation.handoff(support)
+
+        [(_, update, _)] = client.session.calls
+        assert (client.session.start_options.get("reasoning_effort"), update.get("reasoning_effort")) == (
+            "low",
+            "medium",
+        )

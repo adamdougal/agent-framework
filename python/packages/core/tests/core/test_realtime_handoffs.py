@@ -4,7 +4,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -85,6 +85,11 @@ def _billing(client: FakeRealtimeClient, *, middleware: Sequence[Any] = ()) -> R
         default_options=default_options,
         middleware=list(middleware),
     )
+
+
+def _effort(reasoning_effort: str) -> RealtimeOptions:
+    # Reasoning effort is a provider option, so the neutral options type doesn't declare it.
+    return cast(RealtimeOptions, {"reasoning_effort": reasoning_effort})
 
 
 def _recorder(label: str, seen: list[tuple[str, str]]) -> Any:
@@ -265,6 +270,17 @@ async def test_a_handoff_leaves_voice_out_when_nothing_sets_one() -> None:
 
     [(_, options, _)] = client.session.calls
     assert "voice" not in options
+
+
+async def test_handoff_sends_the_targets_own_reasoning_effort() -> None:
+    client = FakeRealtimeClient()
+    billing = RealtimeAgent(client, name="billing", default_options=_effort("high"))
+
+    async with _receptionist(client).start_conversation() as conversation:
+        await conversation.handoff(billing)
+
+    [(_, options, _)] = client.session.calls
+    assert options.get("reasoning_effort") == "high"
 
 
 async def test_a_handoff_sends_empty_instructions_when_nothing_sets_any() -> None:
@@ -588,3 +604,35 @@ class TestVerification:
             await eventually(lambda: len(client.session.calls) == 3)
 
         assert client.session.calls[-1] == ("create_response", {"tool_choice": "none"})
+
+    async def test_handing_back_restores_the_starting_agents_reasoning_effort(self) -> None:
+        client = FakeRealtimeClient()
+        receptionist = RealtimeAgent(client, name="receptionist", default_options=_effort("low"))
+        billing = RealtimeAgent(client, name="billing", default_options=_effort("high"))
+
+        async with receptionist.start_conversation() as conversation:
+            await conversation.handoff(billing)
+            await conversation.handoff(receptionist)
+
+        [_, (_, options, _)] = client.session.calls
+        assert options.get("reasoning_effort") == "low"
+
+    async def test_a_reasoning_effort_in_the_start_options_holds_across_handoffs(self) -> None:
+        client = FakeRealtimeClient()
+        billing = RealtimeAgent(client, name="billing", default_options=_effort("high"))
+
+        async with _receptionist(client).start_conversation(options=_effort("minimal")) as conversation:
+            await conversation.handoff(billing)
+
+        [(_, options, _)] = client.session.calls
+        assert options.get("reasoning_effort") == "minimal"
+
+    async def test_a_target_without_a_reasoning_effort_leaves_the_current_one(self) -> None:
+        client = FakeRealtimeClient()
+        receptionist = RealtimeAgent(client, name="receptionist", default_options=_effort("low"))
+
+        async with receptionist.start_conversation() as conversation:
+            await conversation.handoff(RealtimeAgent(client, name="billing"))
+
+        [(_, options, _)] = client.session.calls
+        assert "reasoning_effort" not in options

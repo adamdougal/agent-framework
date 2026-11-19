@@ -95,9 +95,9 @@ agent's live conversation, the [session update](../../samples/02-agents/provider
 ## Foundry voice agents (experimental)
 
 `FoundryVoiceAgent` is a realtime agent for an agent published in your Foundry project as a voice agent. The published
-agent definition supplies its instructions, voice, tool choice and tools, and your app supplies Python implementations
-for the definition's functions, matched by name. It needs the realtime extra, and reads `FOUNDRY_PROJECT_ENDPOINT`,
-`FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` when they aren't passed.
+agent definition supplies its instructions, voice, tool choice, reasoning effort and tools, and your app supplies Python
+implementations for the definition's functions, matched by name. It needs the realtime extra, and reads
+`FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` when they aren't passed.
 
 ```python
 from agent_framework import tool

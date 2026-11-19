@@ -32,7 +32,7 @@ class CallSettings:
     host_middleware: Sequence[FunctionMiddlewareTypes]
 
 
-PER_PARTICIPANT_OPTIONS = ("voice", "tool_choice")
+PER_PARTICIPANT_OPTIONS = ("voice", "tool_choice", "reasoning_effort")
 """The session options that change with whoever is speaking; every other option holds for the call."""
 
 
@@ -87,8 +87,8 @@ def participant_update(
     """Nothing the previous agent set may linger.
 
     Instructions are always sent, and tool choice falls back to "auto", every provider's default, so a router's
-    "required" never carries over to a specialist. The provider's default voice isn't known, so with no voice to
-    send, the current one stays.
+    "required" never carries over to a specialist. The provider's default voice and reasoning effort aren't known, so
+    with no voice or effort to send, the current one stays.
     """
     options = {"instructions": "", "tool_choice": "auto", **_participant_settings(agent, call)}
     return options, _declared_tools(agent, call, extra_tools)
