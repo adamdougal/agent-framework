@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 from agent_framework import FunctionTool, load_settings, prepend_agent_framework_to_user_agent
 from agent_framework._feature_stage import ExperimentalFeature, experimental
+from agent_framework._realtime._conversation import refuse_hosted_approvals
 from agent_framework.exceptions import RealtimeConnectionException
 from agent_framework_openai._realtime_session import OpenAIRealtimeConnection, OpenAIRealtimeSession
 from azure.ai.projects.aio import AIProjectClient
@@ -206,6 +207,8 @@ class FoundryVoiceAgentClient:
 
         Raises:
             RuntimeError: If the client hasn't been entered, so its definition hasn't been read.
+            ValueError: If the definition has a hosted MCP tool that doesn't set ``require_approval`` to ``"never"``;
+                nothing connects.
             RealtimeConnectionException: If connecting fails.
             RealtimeControlException: If Foundry rejects the initial settings.
         """
@@ -214,6 +217,11 @@ class FoundryVoiceAgentClient:
                 "The Foundry voice agent's definition hasn't been read. Enter the agent with 'async with' before "
                 "starting a conversation."
             )
+        # Every session opens running the definition, and handing back to the agent re-declares its tools, so the
+        # definition is refused whichever participant starts.
+        refuse_hosted_approvals(
+            self.definition.get("tools", []), declared_in=f"the definition of Foundry voice agent {self.agent_name!r}"
+        )
         manager = self.project_client.beta.voice_agents.realtime.connect(
             agent_name=self.agent_name, api_version=VOICE_AGENT_API_VERSION, extra_headers=self._handshake_headers()
         )

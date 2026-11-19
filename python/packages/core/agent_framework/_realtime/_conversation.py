@@ -261,7 +261,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         abandoned, so a hung server can't hold up close, and the connection never joins an agent that has already
         exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
         """
-        _refuse_hosted_approvals(tools)
+        refuse_hosted_approvals(tools)
         resolving = append_tools_with_mcp_functions(
             [], tools, exit_stack=self._mcp_exit_stack, connection_kwargs=self._mcp_connection_kwargs
         )
@@ -1001,16 +1001,20 @@ async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any])
         logger.warning("Closing the realtime session after entry failed also failed: %s", error)
 
 
-def _refuse_hosted_approvals(tools: Sequence[ToolTypes]) -> None:
-    """Nothing answers a hosted tool's approval request yet, so its call would wait forever."""
+def refuse_hosted_approvals(tools: Sequence[ToolTypes], *, declared_in: str | None = None) -> None:
+    """Nothing answers a hosted tool's approval request yet, so its call would wait forever.
+
+    ``declared_in`` names where a declaration the app didn't write is set up, so the error points there.
+    """
     for tool in tools:
         if not isinstance(tool, Mapping):
             continue
         declaration = cast(Mapping[str, Any], tool)
         if declaration.get("type") == "mcp" and declaration.get("require_approval") != "never":
+            where = f" in {declared_in}" if declared_in else ""
             raise ValueError(
                 f"The hosted MCP tool {declaration.get('server_label')!r} may ask for approval, which realtime "
-                "agents don't support yet. Set its require_approval to 'never'."
+                f"agents don't support yet. Set its require_approval to 'never'{where}."
             )
 
 

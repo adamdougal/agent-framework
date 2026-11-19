@@ -34,7 +34,9 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
     can implement one, such as a handoff tool a handoff topology adds, and the definition's published declaration is
     the one sent. A definition function nothing implements gets an error result, with a warning when a session starts.
     Tools the definition doesn't name are declared alongside its own. Definitions published by Semantic Kernel name
-    their tools ``<Plugin>-<function>``, so republish them with the names of your Agent Framework tools.
+    their tools ``<Plugin>-<function>``, so republish them with the names of your Agent Framework tools. Realtime
+    agents can't answer hosted approvals yet, so a definition whose hosted MCP tool doesn't set ``require_approval`` to
+    ``"never"`` can't start a conversation.
 
     In a handoff topology, other participants are realtime agents on this agent's ``client``. Handing back to it
     restores its definition's instructions, voice, tool choice and tools. A change from an Azure voice to an OpenAI
