@@ -715,8 +715,10 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   matched by name; any tool in the call can implement a definition function, its published declaration is the one
   sent, and a definition function nothing implements gets an error result and a warning at start. Added tools are
   declared alongside the definition's tools, re-sent as published; when the session already declares the definition's
-  tools and nothing is added, no `tools` key is sent. Both `conversation.item.created` and `.added` map to
-  `item_added`.
+  tools and nothing is added, no `tools` key is sent. The definition's hosted MCP tools are held to the same
+  `require_approval` rule as the app's: unless each sets `"never"`, entering a conversation on the agent's client
+  raises `ValueError` before connecting, whichever participant starts. Both `conversation.item.created` and `.added`
+  map to `item_added`.
 - **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]`, with `websockets>=13,<16`.
   `agent-framework-foundry[realtime]` adds `azure-ai-voicelive[aiohttp]>=1.3.1,<2` and raises `azure-ai-projects` to
   `>=2.7,<2.10`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and

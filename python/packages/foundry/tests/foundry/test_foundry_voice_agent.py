@@ -52,7 +52,12 @@ GET_OFFICE_HOURS = {
     "parameters": {"type": "object", "properties": {}, "required": []},
     "response_scheduling": "when_idle",
 }
-ORDERS_MCP = {"type": "mcp", "server_label": "orders", "server_url": "https://orders.example/mcp"}
+ORDERS_MCP = {
+    "type": "mcp",
+    "server_label": "orders",
+    "server_url": "https://orders.example/mcp",
+    "require_approval": "never",
+}
 
 DEFINITION: dict[str, Any] = {
     "kind": "voice",
@@ -985,6 +990,21 @@ async def test_the_start_sends_no_tools_key_when_nothing_is_added() -> None:
     await session.close()
 
     assert "tools" not in project.server.updates()[0]
+
+
+async def test_a_definition_whose_hosted_mcp_tool_may_ask_for_approval_is_refused_before_connecting() -> None:
+    """Entering a conversation of an agent whose definition publishes hosted MCP tool 'orders' with require_approval
+    'always' raises ValueError naming 'orders', require_approval and Foundry, and nothing connects."""
+    asking = {**ORDERS_MCP, "require_approval": "always"}
+    project = FakeProjectClient({"3": {**DEFINITION, "tools": [GET_CURRENT_TIME, asking]}})
+    agent = FoundryVoiceAgent(project_client=project.as_project_client(), agent_name="receptionist", agent_version="3")
+
+    async with agent:
+        with pytest.raises(ValueError, match="'orders'.*require_approval.*Foundry"):
+            async with agent.start_conversation():
+                pass
+
+    assert project.connect_calls == []
 
 
 # endregion
