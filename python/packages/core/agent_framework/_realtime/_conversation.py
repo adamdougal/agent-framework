@@ -650,8 +650,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
           isn't connected connects before the handoff takes its turn among the control calls, and stays open until
           the agent that started the conversation exits;
         - a voice, tool choice or reasoning effort in the start options holds for the call; otherwise ``agent``'s
-          applies, then the owner's default. Tool choice falls back to ``"auto"``. With no voice or reasoning effort
-          to send, the current one stays.
+          applies, then the owner's default when it doesn't speak itself. Tool choice falls back to ``"auto"``. With
+          no voice or reasoning effort to send, the current one stays.
 
         Everything else stays as the call started: history, context providers, tool-loop limits and other settings.
         Calls that arrive afterwards run through ``agent``'s function middleware, inside the owner's when it doesn't

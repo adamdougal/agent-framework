@@ -1703,8 +1703,8 @@ class TestVerification:
         assert handed_off["tools"][:3] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
 
     async def test_the_agents_own_reasoning_effort_wins_over_the_definitions(self) -> None:
-        """With a definition whose reasoning effort is 'high' and the agent's default_options 'minimal', handing back to
-        the agent after billing's 'low' sends reasoning.effort 'minimal'."""
+        """With a definition whose reasoning effort is 'high' and the agent's default_options 'minimal', the start and,
+        after billing's 'low', handing back to the agent send reasoning.effort 'minimal'."""
         project = FakeProjectClient({"3": REASONING_DEFINITION})
         receptionist = FoundryVoiceAgent(
             project_client=project.as_project_client(),
@@ -1727,4 +1727,5 @@ class TestVerification:
             await asyncio.wait_for(conversation.handoff(billing), 5)
             await asyncio.wait_for(conversation.handoff(receptionist), 5)
 
-        assert project.server.updates()[-1].get("reasoning") == {"effort": "minimal"}
+        opened, *_, handed_back = project.server.updates()
+        assert (opened.get("reasoning"), handed_back.get("reasoning")) == ({"effort": "minimal"}, {"effort": "minimal"})

@@ -3,7 +3,8 @@
 """Live integration tests for FoundryVoiceAgent against a published Foundry voice agent.
 
 Marked integration and flaky, and skipped unless FOUNDRY_PROJECT_ENDPOINT and FOUNDRY_VOICE_AGENT_NAME are set. The
-agent must declare get_current_time, get_office_hours, handoff_to_billing and handoff_to_support, with an Azure voice.
+agent must run on a reasoning model, such as gpt-realtime-2, and declare get_current_time, get_office_hours,
+handoff_to_billing and handoff_to_support, with an Azure voice.
 FOUNDRY_VOICE_AGENT_VERSION pins a version whose instructions differ from the latest one's. They authenticate with
 the Azure CLI login.
 """
