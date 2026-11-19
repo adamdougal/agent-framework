@@ -70,7 +70,10 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
     Read the updates from a single task, and start control calls such as ``interrupt(...)`` as separate tasks so the
     loop keeps reading. Iteration ends when the conversation closes, and raises the error that ended it, such as
-    ``RealtimeConnectionException`` or ``RealtimeBackpressureException``, after the queued updates are read.
+    ``RealtimeConnectionException`` or ``RealtimeBackpressureException``, after the queued updates are read. A task
+    still reading when the app leaves ``async with`` keeps getting updates, such as reply audio, until iteration ends,
+    including those that arrive while the conversation closes. An app that relays them to a transport, such as a
+    websocket, must stop writing once the transport has closed.
 
     The call's turns are kept as text in ``history``. Opening runs the agent's context providers' ``before_run`` once,
     applies their instructions, tools and function middleware, and replays the history they load into the new realtime

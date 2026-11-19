@@ -39,8 +39,9 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
     ``"never"`` can't start a conversation.
 
     In a handoff topology, other participants are realtime agents on this agent's ``client``. Handing back to it
-    restores its definition's instructions, voice, tool choice and tools. A change from an Azure voice to an OpenAI
-    voice is dropped, because Foundry rejects it, so keep a topology's voices in one family.
+    restores its definition's instructions, voice, tool choice and tools. The handoff agent's instructions are appended
+    to the definition's, so a definition that already contains them gets them twice. A change from an Azure voice to an
+    OpenAI voice is dropped, because Foundry rejects it, so keep a topology's voices in one family.
 
     Examples:
         .. code-block:: python
@@ -98,7 +99,8 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
                 Read from ``FOUNDRY_PROJECT_ENDPOINT`` when not passed.
             agent_name: The published voice agent's name. Read from ``FOUNDRY_AGENT_NAME`` when not passed.
             agent_version: The version to pin. Read from ``FOUNDRY_AGENT_VERSION`` when not passed; otherwise the latest
-                version when the agent is first entered.
+                version when the agent is first entered. Each instance reads its own, so an app that creates one per
+                call gets the latest version on every call unless it pins one.
             credential: An async token credential for the ``https://ai.azure.com/.default`` scope.
             tools: Implementations of the definition's functions, matched by name, and any tools to add.
             default_options: Session settings every conversation starts with. Instructions, a voice or a tool choice

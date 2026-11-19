@@ -483,6 +483,10 @@ that starts as close begins is closed rather than adopted. Close also ends any r
 6. Run conversation middleware's close hooks.
 7. Return, or raise context provider and close-hook failures after cleanup.
 
+Events that arrive before the socket closes still stream as updates, and iteration ends after step 6, once the queued
+updates are read. A reader in its own task therefore still gets updates, such as reply audio, once the app leaves
+`async with`, and an app relaying them must stop writing to a transport that has closed.
+
 ## Handoffs
 
 - **`handoff(agent, *, tools=None)`** has `update_session(...)`'s contract and makes `agent` the active agent.
