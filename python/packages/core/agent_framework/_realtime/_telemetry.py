@@ -15,14 +15,14 @@ from opentelemetry import trace
 from .._types import add_usage_details
 from ..observability import (
     OtelAttr,
-    apply_usage_attributes,
+    _apply_usage_attributes,  # pyright: ignore[reportPrivateUsage]
+    _capture_model_response,  # pyright: ignore[reportPrivateUsage]
+    _get_span_attributes,  # pyright: ignore[reportPrivateUsage]
+    _provider_name_attr,  # pyright: ignore[reportPrivateUsage]
     capture_exception,
-    capture_model_response,
-    get_agent_span_attributes,
-    get_provider_name_attribute,
     get_tracer,
 )
-from ._updates import core_attributes, finish_reason_of
+from ._updates import _finish_reason_of, core_attributes  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from .._agents import BaseAgent
@@ -53,7 +53,13 @@ class ConversationTelemetry:
     @contextmanager
     def opened(self) -> Generator[None]:
         """Everything the conversation starts while opening, its receive loop included, runs inside its span."""
-        attributes = get_agent_span_attributes(self._owner, OtelAttr.AGENT_FRAMEWORK_GEN_AI_SYSTEM)
+        attributes = _get_span_attributes(
+            operation_name=OtelAttr.AGENT_INVOKE_OPERATION,
+            provider_name=OtelAttr.AGENT_FRAMEWORK_GEN_AI_SYSTEM,
+            agent_id=self._owner.id,
+            agent_name=self._owner.name or self._owner.id,
+            agent_description=self._owner.description,
+        )
         self._span = get_tracer().start_span(
             f"invoke_agent {attributes[OtelAttr.AGENT_NAME]}", kind=trace.SpanKind.INTERNAL, attributes=attributes
         )
@@ -92,7 +98,7 @@ class ConversationTelemetry:
         requested_model = getattr(client, "model", None)
         attributes: dict[str, Any] = {
             OtelAttr.OPERATION: "realtime_inference",
-            get_provider_name_attribute(): getattr(client, "OTEL_PROVIDER_NAME", "unknown"),
+            _provider_name_attr(): getattr(client, "OTEL_PROVIDER_NAME", "unknown"),
             OtelAttr.RESPONSE_ID: response_id,
             OtelAttr.AGENT_ID: agent.id,
             OtelAttr.AGENT_NAME: agent.name or agent.id,
@@ -127,7 +133,7 @@ class ConversationTelemetry:
             else:
                 _end_response(response, "error", type(failure).__name__)
         usage_attributes: dict[str, Any] = {}
-        apply_usage_attributes(usage_attributes, self._usage)
+        _apply_usage_attributes(usage_attributes, self._usage)
         self._span.set_attributes(usage_attributes)
         if failure is not None:
             capture_exception(self._span, failure)
@@ -144,7 +150,7 @@ def _span_outcome(response_done: dict[str, Any], made_calls: bool) -> tuple[str 
         return response_done.get("reason") or "interrupted", None
     if status == "failed":
         return "error", response_done.get("error_code") or "server_error"
-    finish_reason = finish_reason_of(response_done, made_calls)
+    finish_reason = _finish_reason_of(response_done, made_calls)
     return "tool_call" if finish_reason == "tool_calls" else finish_reason, None
 
 
@@ -153,9 +159,9 @@ def _end_response(response: _Response, finish_reason: str | None, error_type: st
     if finish_reason is not None:
         attributes[OtelAttr.FINISH_REASONS] = [finish_reason]
     if response.usage:
-        apply_usage_attributes(attributes, response.usage)
+        _apply_usage_attributes(attributes, response.usage)
     if error_type is not None:
         attributes[OtelAttr.ERROR_TYPE] = error_type
         response.span.set_status(trace.StatusCode.ERROR)
-    capture_model_response(response.span, attributes, perf_counter() - response.started_at)
+    _capture_model_response(response.span, attributes, perf_counter() - response.started_at)
     response.span.end()

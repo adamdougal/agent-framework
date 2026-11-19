@@ -42,7 +42,7 @@ from ._reporting import report_exchanges
 from ._responses import ResponseLedger
 from ._tool_loop import ToolLoop, requested_by_a_tool
 from ._update_stream import UpdateStream
-from ._updates import core_attributes, finish_reason_of, tool_result_update, update_from_event
+from ._updates import _finish_reason_of, core_attributes, tool_result_update, update_from_event  # pyright: ignore[reportPrivateUsage]
 
 logger = logging.getLogger("agent_framework")
 
@@ -391,7 +391,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 response_id,
                 status,
                 core.get("reason"),
-                finish_reason_of(core, self._responses.made_calls(response_id)),
+                _finish_reason_of(core, self._responses.made_calls(response_id)),
             )
             self._tool_loop.on_response_done(response_id, status)
             self._cut_unheard([], self._mark_unheard_text(response_id))
