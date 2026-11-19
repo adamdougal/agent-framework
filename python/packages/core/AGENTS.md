@@ -58,7 +58,7 @@ agent_framework/
 - **`RawAgent.open()` / `close()`** (inherited by `Agent`) - Explicitly enter the client's and configured MCP tools'
   async contexts, then release them along with lazily connected MCP tools. `async with agent` delegates to these
   methods; a partially failed `open()` closes resources already entered. Each run resolves its tools, connecting MCP
-  tools on first use, through `append_tools_with_mcp_functions(...)`, which realtime conversations share.
+  tools on first use, through `_append_tools_with_mcp_functions(...)`, which realtime conversations share.
 - Providers that store service-owned continuation handles in `AgentSession.state` declare their keys through
   `service_session_state_keys`. `as_tool(propagate_session=True)` combines declarations from the parent and child
   agents and their clients to isolate those handles in both directions while ordinary application-owned state
@@ -136,7 +136,7 @@ the root package:
   they load. Conversation middleware wraps opening; `send()` runs the send hooks before anything else, the reader runs
   the update hooks as each update leaves the queue, after history has recorded it, and close runs the close hooks
   last. A hook failure ends the call. At start, on `update_session(tools=...)` and on `handoff(...)` it resolves its
-  tools through `append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is
+  tools through `_append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is
   replaced by its current functions in a list the conversation owns, connected on first use into the starting agent's
   exit stack, so server-side tool-list changes wait for the next update.
 - `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the

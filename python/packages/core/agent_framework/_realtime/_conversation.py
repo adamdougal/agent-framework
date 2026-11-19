@@ -15,7 +15,7 @@ from dataclasses import replace
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
-from .._agents import append_tools_with_mcp_functions
+from .._agents import _append_tools_with_mcp_functions  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
 from .._mcp import MCPTool
 from .._middleware import categorize_middleware
@@ -42,7 +42,7 @@ from ._reporting import report_exchanges
 from ._responses import ResponseLedger
 from ._tool_loop import ToolLoop, requested_by_a_tool
 from ._update_stream import UpdateStream
-from ._updates import core_attributes, finish_reason_of, tool_result_update, update_from_event
+from ._updates import _finish_reason_of, core_attributes, tool_result_update, update_from_event  # pyright: ignore[reportPrivateUsage]
 
 logger = logging.getLogger("agent_framework")
 
@@ -261,8 +261,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         abandoned, so a hung server can't hold up close, and the connection never joins an agent that has already
         exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
         """
-        refuse_hosted_approvals(tools)
-        resolving = append_tools_with_mcp_functions(
+        _refuse_hosted_approvals(tools)
+        resolving = _append_tools_with_mcp_functions(
             [], tools, exit_stack=self._mcp_exit_stack, connection_kwargs=self._mcp_connection_kwargs
         )
         if not any(isinstance(tool, MCPTool) for tool in tools):
@@ -391,7 +391,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
                 response_id,
                 status,
                 core.get("reason"),
-                finish_reason_of(core, self._responses.made_calls(response_id)),
+                _finish_reason_of(core, self._responses.made_calls(response_id)),
             )
             self._tool_loop.on_response_done(response_id, status)
             self._cut_unheard([], self._mark_unheard_text(response_id))
@@ -1001,7 +1001,7 @@ async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any])
         logger.warning("Closing the realtime session after entry failed also failed: %s", error)
 
 
-def refuse_hosted_approvals(tools: Sequence[ToolTypes], *, declared_in: str | None = None) -> None:
+def _refuse_hosted_approvals(tools: Sequence[ToolTypes], *, declared_in: str | None = None) -> None:
     """Nothing answers a hosted tool's approval request yet, so its call would wait forever.
 
     ``declared_in`` names where a declaration the app didn't write is set up, so the error points there.

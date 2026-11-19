@@ -66,7 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover
     )
     from pydantic import BaseModel
 
-    from ._agents import BaseAgent, SupportsAgentRun
+    from ._agents import SupportsAgentRun
     from ._clients import SupportsChatGetResponse
     from ._compaction import CompactionStrategy, TokenizerProtocol
     from ._middleware import MiddlewareTypes
@@ -2700,25 +2700,6 @@ class AgentTelemetryLayer:
 # region Otel Helpers
 
 
-def get_agent_span_attributes(agent: BaseAgent, provider_name: str) -> dict[str, Any]:
-    """Get the attributes of an ``invoke_agent`` span for an agent, keyed for the active semantic conventions.
-
-    Args:
-        agent: The invoked agent, with its ``id``, ``name`` and ``description``.
-        provider_name: The provider name the span reports.
-
-    Returns:
-        The span attributes.
-    """
-    return _get_span_attributes(
-        operation_name=OtelAttr.AGENT_INVOKE_OPERATION,
-        provider_name=provider_name,
-        agent_id=agent.id,
-        agent_name=agent.name or agent.id,
-        agent_description=agent.description,
-    )
-
-
 def get_function_span_attributes(function: FunctionTool, tool_call_id: str | None = None) -> dict[str, str]:
     """Get the span attributes for the given function.
 
@@ -3181,7 +3162,7 @@ OTEL_ATTR_MAP: dict[str | tuple[str, ...], tuple[str, Callable[[Any], Any] | Non
 }
 
 
-def get_provider_name_attribute() -> OtelAttr:
+def _provider_name_attr() -> OtelAttr:
     """Return the provider-identifying attribute for the active GenAI semconv version.
 
     ``gen_ai.system`` was renamed to ``gen_ai.provider.name`` in the conventions above v1.36.0.
@@ -3232,7 +3213,7 @@ def _get_span_attributes(**kwargs: Any) -> dict[str, Any]:
     if OtelAttr.PROVIDER_NAME in attributes:
         # Rename to the active semconv version's key; extend with a similar pop/rename if future
         # OTel releases rename other attributes we emit.
-        attributes[get_provider_name_attribute()] = attributes.pop(OtelAttr.PROVIDER_NAME)
+        attributes[_provider_name_attr()] = attributes.pop(OtelAttr.PROVIDER_NAME)
 
     return attributes
 
@@ -3556,10 +3537,10 @@ def _apply_accumulated_usage(attributes: dict[str, Any], captured_fields: set[st
     accumulated = INNER_ACCUMULATED_USAGE.get()
     if not accumulated:
         return
-    apply_usage_attributes(attributes, accumulated)
+    _apply_usage_attributes(attributes, accumulated)
 
 
-def apply_usage_attributes(attributes: dict[str, Any], usage: Mapping[str, Any]) -> None:
+def _apply_usage_attributes(attributes: dict[str, Any], usage: Mapping[str, Any]) -> None:
     """Apply known usage details as standard OTel GenAI attributes."""
     for usage_key, otel_attr in USAGE_DETAIL_TO_OTEL_ATTR:
         if (
@@ -3603,7 +3584,7 @@ def _get_response_attributes(
     if model := getattr(response, "model", None):
         attributes[OtelAttr.RESPONSE_MODEL] = model
     if capture_usage and (usage := response.usage_details):
-        apply_usage_attributes(attributes, usage)
+        _apply_usage_attributes(attributes, usage)
     return attributes
 
 
@@ -3662,7 +3643,7 @@ def _capture_response(
         operation_duration_histogram.record(duration, attributes=attrs)
 
 
-def capture_model_response(span: trace.Span, attributes: dict[str, Any], duration: float) -> None:
+def _capture_model_response(span: trace.Span, attributes: dict[str, Any], duration: float) -> None:  # pyright: ignore[reportUnusedFunction] - called by realtime telemetry
     """Set a finished model call's attributes on its span, and record its operation duration and token usage.
 
     Args:
