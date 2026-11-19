@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 from agent_framework import FunctionTool, load_settings, prepend_agent_framework_to_user_agent
 from agent_framework._feature_stage import ExperimentalFeature, experimental
-from agent_framework._realtime._conversation import refuse_hosted_approvals
+from agent_framework._realtime._conversation import _refuse_hosted_approvals  # pyright: ignore[reportPrivateUsage]
 from agent_framework.exceptions import RealtimeConnectionException
 from agent_framework_openai._realtime_session import OpenAIRealtimeConnection, OpenAIRealtimeSession
 from azure.ai.projects.aio import AIProjectClient
@@ -219,7 +219,7 @@ class FoundryVoiceAgentClient:
             )
         # Every session opens running the definition, and handing back to the agent re-declares its tools, so the
         # definition is refused whichever participant starts.
-        refuse_hosted_approvals(
+        _refuse_hosted_approvals(
             self.definition.get("tools", []), declared_in=f"the definition of Foundry voice agent {self.agent_name!r}"
         )
         manager = self.project_client.beta.voice_agents.realtime.connect(

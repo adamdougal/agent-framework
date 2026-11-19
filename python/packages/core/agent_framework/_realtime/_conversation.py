@@ -15,7 +15,7 @@ from dataclasses import replace
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, Self, cast
 
-from .._agents import append_tools_with_mcp_functions
+from .._agents import _append_tools_with_mcp_functions  # pyright: ignore[reportPrivateUsage]
 from .._feature_stage import ExperimentalFeature, experimental
 from .._mcp import MCPTool
 from .._middleware import categorize_middleware
@@ -261,8 +261,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         abandoned, so a hung server can't hold up close, and the connection never joins an agent that has already
         exited. Without MCP tools nothing is awaited, so an update keeps its place among control calls.
         """
-        refuse_hosted_approvals(tools)
-        resolving = append_tools_with_mcp_functions(
+        _refuse_hosted_approvals(tools)
+        resolving = _append_tools_with_mcp_functions(
             [], tools, exit_stack=self._mcp_exit_stack, connection_kwargs=self._mcp_connection_kwargs
         )
         if not any(isinstance(tool, MCPTool) for tool in tools):
@@ -1001,7 +1001,7 @@ async def _close_after_failed_entry(session: RealtimeClientSessionProtocol[Any])
         logger.warning("Closing the realtime session after entry failed also failed: %s", error)
 
 
-def refuse_hosted_approvals(tools: Sequence[ToolTypes], *, declared_in: str | None = None) -> None:
+def _refuse_hosted_approvals(tools: Sequence[ToolTypes], *, declared_in: str | None = None) -> None:
     """Nothing answers a hosted tool's approval request yet, so its call would wait forever.
 
     ``declared_in`` names where a declaration the app didn't write is set up, so the error points there.

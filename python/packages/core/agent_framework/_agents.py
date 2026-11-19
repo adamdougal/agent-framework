@@ -183,7 +183,7 @@ def _append_unique_tools(
 _MCP_DUPLICATE_TOOL_NAME_MESSAGE = "Tool names must be unique. Consider setting `tool_name_prefix` on the MCPTool."
 
 
-async def append_tools_with_mcp_functions(
+async def _append_tools_with_mcp_functions(
     existing_tools: list[ToolTypes],
     new_tools: Sequence[ToolTypes],
     *,
@@ -1783,7 +1783,7 @@ class RawAgent(BaseAgent, Generic[OptionsCoT]):
         additional_function_arguments = {**effective_function_invocation_kwargs, **existing_additional_args}
 
         # Resolve final tool list (configured tools + runtime provided tools + local MCP server tools)
-        final_tools = await append_tools_with_mcp_functions(
+        final_tools = await _append_tools_with_mcp_functions(
             list(base_tools),
             [*normalized_tools, *self.mcp_tools],
             exit_stack=self._async_exit_stack,
