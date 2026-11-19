@@ -177,6 +177,11 @@ version, so an injected `AsyncAzureOpenAI` client is rejected; inject an `AsyncO
 `truncation`, `reasoning_effort`, `parallel_tool_calls`, semantic VAD `eagerness`, an `idle_timeout_ms` and a
 transcription `prompt`.
 
+A task still reading a conversation's updates when the app leaves `async with` keeps getting them, such as reply audio,
+until the conversation has closed and the queued updates are read. An app that relays them to a transport, such as a
+websocket, must stop writing once the transport has closed. This is most likely on Azure OpenAI, which sends a reply's
+audio faster than real time.
+
 ### Realtime sessions
 
 `OpenAIRealtimeSession` implements the realtime session protocol for any service that speaks the OpenAI Realtime

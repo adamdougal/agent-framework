@@ -119,15 +119,17 @@ async with AzureCliCredential() as credential:
 
 - Enter the agent with `async with`, or enter the `RealtimeHandoffBuilder` agent it belongs to, before starting a
   conversation. Entering reads the definition once, through Foundry's agents API, and every call is pinned to that
-  version. Pin `agent_version` to choose the version yourself.
+  version. Pin `agent_version` to choose the version yourself. Each `FoundryVoiceAgent` reads its own, so an app that
+  creates one per call gets the latest version on every call unless it pins one.
 - Any tool in a call can implement a definition function, such as a handoff tool. The definition's published
   declarations are the ones sent, and a function nothing implements gets an error result, with a warning when a
   session starts. Definitions published by Semantic Kernel name their tools `<Plugin>-<function>`, so republish them
   with your Agent Framework tool names.
 - Settings your options don't set, such as transcription, turn detection and audio formats, stay the definition's.
 - In a handoff topology, other participants are realtime agents on `foundry_agent.client`, and handing back restores
-  the definition. Foundry rejects a change from an Azure voice to an OpenAI voice, which the client drops with a
-  warning, so keep a topology's voices in one family.
+  the definition. The handoff agent's instructions are appended to the definition's, so a definition that already
+  contains them gets them twice. Foundry rejects a change from an Azure voice to an OpenAI voice, which the client
+  drops with a warning, so keep a topology's voices in one family.
 - Hosted tools in the definition are re-sent as the agents API returns them. Keep their authorization in project
   connections rather than inline secrets.
 - With instrumentation enabled, calls are traced as `RealtimeAgent`'s are, and each session's handshake carries the

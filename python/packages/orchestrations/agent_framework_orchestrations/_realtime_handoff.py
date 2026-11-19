@@ -86,7 +86,9 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
                 ``participants(...)``.
             context_providers: The built agent's context providers, which keep the call's history and context.
             default_options: Session settings for every call. Their instructions are appended to every
-                participant's. Their voice and tool choice apply to a participant that sets neither.
+                participant's, so a participant whose own instructions already contain them, such as a Foundry voice
+                agent whose definition does, gets them twice, so leave them out of the participant's. Their voice and
+                tool choice apply to a participant that sets neither.
             function_invocation_configuration: The tool-loop limits for every call, whichever participant is speaking.
             middleware: The built agent's middleware. Its conversation middleware wraps every call, and its function
                 middleware wraps every tool call, outside the participant's own.

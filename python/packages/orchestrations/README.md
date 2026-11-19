@@ -69,7 +69,9 @@ workflow = (
 The same topology API for realtime agents. `build()` returns a realtime agent whose live calls move between
 participants in the same realtime session: a handoff swaps instructions, tools, voice and tool choice without
 reconnecting. The built agent owns the call's history, context providers and tool-loop limits, and its instructions
-are appended to every participant's. Participants must share one realtime client instance.
+are appended to every participant's. A participant whose own instructions already contain them, such as a Foundry
+voice agent whose definition does, gets them twice, so leave them out of the participant's. Participants must share
+one realtime client instance.
 
 ```python
 from agent_framework.orchestrations import RealtimeHandoffBuilder
