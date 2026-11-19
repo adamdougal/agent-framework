@@ -3,11 +3,13 @@
 """The live realtime conversation: updates, the update queue, send, control calls and close."""
 
 import asyncio
+from collections.abc import Awaitable
 from typing import Any
 
 import pytest
 
 from agent_framework import AgentResponseUpdate, Content, Message, RealtimeAgent, RealtimeEvent, RealtimeKind
+from agent_framework._realtime import _conversation as realtime_conversation
 from agent_framework.exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -568,10 +570,20 @@ async def test_a_timed_out_control_call_finishes_cleaning_up_before_it_raises() 
         assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
 
 
-async def test_cancelling_a_timed_out_control_call_still_waits_for_its_cleanup() -> None:
+async def test_cancelling_a_timed_out_control_call_still_waits_for_its_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.02) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        # Entering waits under the default timeout, because a loaded runner can take longer than this test's short
+        # timeout to start the session. Only the control call races it.
+        acknowledge = realtime_conversation.await_acknowledgement
+
+        def acknowledge_within_a_short_timeout(
+            acknowledgement: Awaitable[Any], *, action: str, timeout: float | None, closing: asyncio.Event
+        ) -> Awaitable[Any]:
+            return acknowledge(acknowledgement, action=action, timeout=0.02, closing=closing)
+
+        monkeypatch.setattr(realtime_conversation, "await_acknowledgement", acknowledge_within_a_short_timeout)
         client.session.hold("create_response")
         client.session.cleanup_delays["create_response"] = 0.2
         requesting = asyncio.create_task(conversation.create_response())
