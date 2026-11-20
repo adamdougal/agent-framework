@@ -181,15 +181,22 @@ def _recorder(label: str, seen: list[str]) -> Any:
 # region driving
 
 
-async def test_build_returns_a_realtime_agent_whose_conversations_start_with_the_start_agent_active() -> None:
+async def test_every_conversation_on_a_built_agent_starts_afresh_with_the_start_agent() -> None:
     client = FakeRealtimeClient()
     receptionist, billing = _receptionist(client), _billing(client)
 
     agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
 
+    async with agent.start_conversation(options={"voice": "sage"}) as first:
+        await first.handoff(billing)
+    async with agent.start_conversation() as second:
+        speaker = second.active_agent
+
+    first_call, second_call = (session.start_options for session in client.sessions)
     assert isinstance(agent, RealtimeAgent)
-    async with agent.start_conversation() as conversation:
-        assert conversation.active_agent is receptionist
+    assert speaker is receptionist
+    assert first_call["voice"] == "sage"
+    assert second_call == {**first_call, "voice": "alloy"}
 
 
 async def test_the_session_opens_with_the_start_agents_instructions_voice_and_tool_choice() -> None:
@@ -258,15 +265,29 @@ async def test_calling_a_handoff_tool_hands_off_and_returns_handoff_to() -> None
     assert _results(client.session) == [("call_1", '{"handoff_to": "billing"}')]
 
 
-async def test_a_handoff_tools_description_defaults_to_naming_its_target() -> None:
+@pytest.mark.parametrize(
+    ("add_handoff_description", "billing_description", "expected"),
+    [
+        pytest.param("Bills and refunds.", "Billing questions.", "Bills and refunds.", id="explicit_description"),
+        pytest.param(None, "Billing questions.", "Billing questions.", id="target_fallback"),
+        pytest.param(None, None, "Handoff to the billing agent.", id="generated_default"),
+    ],
+)
+async def test_a_handoff_tools_description_falls_back_from_add_handoff_to_the_target_to_a_default(
+    add_handoff_description: str | None, billing_description: str | None, expected: str
+) -> None:
     client = FakeRealtimeClient()
     receptionist = _receptionist(client)
-    agent = RealtimeHandoffBuilder(participants=[receptionist, _billing(client)]).with_start_agent(receptionist).build()
+    billing = RealtimeAgent(client, name="billing", description=billing_description)  # type: ignore[arg-type]
+    builder = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist)
+    # The fallback rows keep the default topology, which resolves descriptions separately from add_handoff.
+    if add_handoff_description is not None:
+        builder.add_handoff(receptionist, [billing], description=add_handoff_description)
 
-    async with agent.start_conversation():
+    async with builder.build().start_conversation():
         [_, handoff_tool] = client.session.start_tools
 
-    assert cast(FunctionTool, handoff_tool).description == "Handoff to the billing agent."
+    assert cast(FunctionTool, handoff_tool).description == expected
 
 
 async def test_a_rejected_handoff_returns_a_result_telling_the_model_to_carry_on() -> None:
@@ -656,33 +677,6 @@ class TestVerification:
             await asyncio.wait_for(anext(aiter(conversation)), 5)
 
         assert (seen, billing_opened) == (["handoff_completed"], [])
-
-    async def test_a_handoff_tools_description_falls_back_to_the_targets(self) -> None:
-        client = FakeRealtimeClient()
-        receptionist = _receptionist(client)
-        billing = RealtimeAgent(client, name="billing", description="Answers billing questions.")  # type: ignore[arg-type]
-        agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
-
-        async with agent.start_conversation():
-            [_, handoff_tool] = client.session.start_tools
-
-        assert cast(FunctionTool, handoff_tool).description == "Answers billing questions."
-
-    async def test_an_add_handoff_description_wins_over_the_targets(self) -> None:
-        client = FakeRealtimeClient()
-        receptionist = _receptionist(client)
-        billing = RealtimeAgent(client, name="billing", description="Answers billing questions.")  # type: ignore[arg-type]
-        agent = (
-            RealtimeHandoffBuilder(participants=[receptionist, billing])
-            .with_start_agent(receptionist)
-            .add_handoff(receptionist, [billing], description="Bills and refunds.")
-            .build()
-        )
-
-        async with agent.start_conversation():
-            [_, handoff_tool] = client.session.start_tools
-
-        assert cast(FunctionTool, handoff_tool).description == "Bills and refunds."
 
     async def test_a_handoff_installs_the_targets_handoff_tools(self) -> None:
         client = FakeRealtimeClient()
