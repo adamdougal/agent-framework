@@ -579,16 +579,16 @@ async def test_cancelling_a_timed_out_control_call_still_waits_for_its_cleanup()
         client.session.hold("create_response")
         release_cleanup = client.session.cleanup_holds["create_response"] = asyncio.Event()
         requesting = asyncio.create_task(conversation.create_response())
-        await eventually(lambda: client.session.cleaning_up == ["create_response"])
-
-        requesting.cancel()
-        await asyncio.sleep(0.01)
-        still_cleaning_up = not requesting.done()
-        release_cleanup.set()
+        try:
+            await eventually(lambda: client.session.cleaning_up == ["create_response"])
+            requesting.cancel()
+            await asyncio.sleep(0.01)
+            assert not requesting.done()
+        finally:
+            release_cleanup.set()
         with pytest.raises(asyncio.CancelledError):
             await requesting
 
-        assert still_cleaning_up
         assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
 
 
