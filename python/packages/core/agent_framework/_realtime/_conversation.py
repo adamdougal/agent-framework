@@ -815,10 +815,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             if played_ms is not None:
                 truncations = self._audio.cut(playing, played_ms)
                 unheard = self._mark_unheard_text(playing)
-                cut_failure = await self._send_truncations(session, truncations)
-                delete_failure = await self._delete_items(session, unheard)
-                if (failure := cut_failure or delete_failure) is not None:
-                    raise failure
+                await self._send_cuts(session, truncations, unheard)
 
     def _mark_unheard_text(self, response_id: str | None) -> list[str]:
         """A message without audio is unheard once its response has a cut and can't produce audio for it any more.
@@ -850,17 +847,17 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             async with self._control_lock:
                 if self._closing.is_set():
                     return
-                cut_failure = await self._send_truncations(session, truncations)
-                delete_failure = await self._delete_items(session, unheard)
-        except RealtimeException as error:
-            cut_failure, delete_failure = error, None
-        if (failure := cut_failure or delete_failure) is not None:
+                await self._send_cuts(session, truncations, unheard)
+        except RealtimeException as failure:
             logger.warning("Couldn't cut what the caller didn't hear after a provider truncation: %s", failure)
 
-    async def _send_truncations(
-        self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], truncations: Sequence[Truncation]
-    ) -> RealtimeControlException | None:
-        """A cut the provider rejects mustn't stop the cuts after it, so the first failure is returned at the end."""
+    async def _send_cuts(
+        self,
+        session: RealtimeClientSessionProtocol[RealtimeOptionsT],
+        truncations: Sequence[Truncation],
+        unheard: Sequence[str],
+    ) -> None:
+        """A cut or delete the provider rejects mustn't stop the ones after it, so the first failure is raised last."""
         first_failure: RealtimeControlException | None = None
         for truncation in truncations:
             if not self._audio.is_owed(truncation):
@@ -873,20 +870,15 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             except RealtimeControlException as failure:
                 # The cut stays owed, so a later interrupt() retries it.
                 first_failure = first_failure or failure
-                continue
-            self._audio.acknowledged(truncation)
-        return first_failure
-
-    async def _delete_items(
-        self, session: RealtimeClientSessionProtocol[RealtimeOptionsT], item_ids: Sequence[str]
-    ) -> RealtimeControlException | None:
-        first_failure: RealtimeControlException | None = None
-        for item_id in item_ids:
+            else:
+                self._audio.acknowledged(truncation)
+        for item_id in unheard:
             try:
                 await self._acknowledged(session.delete_item(item_id), "delete a message the caller didn't hear")
             except RealtimeControlException as failure:
                 first_failure = first_failure or failure
-        return first_failure
+        if first_failure is not None:
+            raise first_failure
 
     async def _acknowledged(self, acknowledgement: Awaitable[AcknowledgedT], action: str) -> AcknowledgedT:
         return await await_acknowledgement(
