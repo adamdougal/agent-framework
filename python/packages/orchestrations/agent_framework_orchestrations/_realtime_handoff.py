@@ -5,7 +5,7 @@
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Any, Generic, Self
+from typing import Any, Self
 from weakref import WeakKeyDictionary
 
 from agent_framework import (
@@ -25,15 +25,19 @@ from agent_framework._middleware import categorize_middleware
 from agent_framework._realtime._handoffs import PER_PARTICIPANT_OPTIONS
 from agent_framework._realtime._options import RealtimeOptionsT
 from agent_framework.exceptions import RealtimeException, ToolException, UserInputRequiredException
+from typing_extensions import TypedDict, TypeVar
 
 from ._handoff import HANDOFF_FUNCTION_RESULT_KEY, get_handoff_tool_name, handoff_tool_description
 from ._handoff_topology import HandoffConfiguration, HandoffTopologyBuilder
 
 logger = logging.getLogger(__name__)
 
+# Any by default, because each provider's agents have their own options type and a bare builder takes any of them.
+_ParticipantOptionsT = TypeVar("_ParticipantOptionsT", bound=TypedDict, default=Any)  # type: ignore[valid-type]
+
 
 @experimental(feature_id=ExperimentalFeature.REALTIME)
-class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Generic[RealtimeOptionsT]):
+class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[_ParticipantOptionsT]]):
     """Build a realtime agent whose live calls move between participants in the same realtime session.
 
     It has ``HandoffBuilder``'s topology API: ``participants(...)``, the required ``with_start_agent(...)`` and
@@ -71,9 +75,9 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
         *,
         name: str | None = None,
         description: str | None = None,
-        participants: Sequence[RawRealtimeAgent[RealtimeOptionsT]] | None = None,
+        participants: Sequence[RawRealtimeAgent[_ParticipantOptionsT]] | None = None,
         context_providers: Sequence[ContextProvider] | None = None,
-        default_options: RealtimeOptionsT | None = None,
+        default_options: _ParticipantOptionsT | None = None,
         function_invocation_configuration: FunctionInvocationConfiguration | None = None,
         middleware: Sequence[MiddlewareTypes] | None = None,
     ) -> None:
@@ -112,7 +116,7 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
     def _participant_id(self, participant: RawRealtimeAgent[Any]) -> str:
         return participant.name or participant.id
 
-    def build(self) -> RealtimeAgent[RealtimeOptionsT]:
+    def build(self) -> RealtimeAgent[_ParticipantOptionsT]:
         """Build the realtime handoff agent.
 
         Participant settings that won't apply, such as their context providers or other default options, are named in

@@ -27,7 +27,7 @@ These need the realtime extra: `pip install "agent-framework-openai[realtime]" -
 
 | File | Description |
 |------|-------------|
-| [`openai_realtime_client_with_function_tools.py`](openai_realtime_client_with_function_tools.py) | A realtime agent on an Azure OpenAI realtime deployment with a function tool, using `credential=AzureCliCredential()`: send text, stream the agent's transcript and save its spoken reply to a WAV file. |
+| [`openai_realtime_client_with_function_tools.py`](openai_realtime_client_with_function_tools.py) | A realtime agent on an Azure OpenAI realtime deployment with a function tool, using `credential=AzureCliCredential()`: send text and print the agent's transcript and tool call. |
 
 ## Environment Variables
 
