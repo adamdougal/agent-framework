@@ -54,127 +54,56 @@ async def _cancel_while_running(
     return call
 
 
-async def test_cancelled_call_marks_span_error_with_cancelled_error_type(span_exporter: InMemorySpanExporter) -> None:
-    """A running call cancelled without a message ends its execute_tool span ERROR, error.type 'cancelled'."""
-    slow_tool, started = _slow_tool()
-    span_exporter.clear()
-
-    await _cancel_while_running(slow_tool, started)
-
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].status.status_code == trace.StatusCode.ERROR
-    assert spans[0].attributes is not None
-    assert spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
-
-
-@pytest.mark.usefixtures("span_exporter")
-async def test_cancelled_call_records_duration_with_cancelled_error_type() -> None:
-    """The duration histogram records the cancelled call once, with error.type 'cancelled'."""
-    slow_tool, started = _slow_tool()
-    histogram = Mock()
-    slow_tool._invocation_duration_histogram = histogram
-
-    await _cancel_while_running(slow_tool, started)
-
-    histogram.record.assert_called_once()
-    assert histogram.record.call_args.kwargs["attributes"] == {
-        OtelAttr.OPERATION: OtelAttr.TOOL_EXECUTION_OPERATION,
-        OtelAttr.TOOL_NAME: "slow_tool",
-        OtelAttr.TOOL_TYPE: "function",
-        OtelAttr.MEASUREMENT_FUNCTION_TAG_NAME: "slow_tool",
-        OtelAttr.ERROR_TYPE: "cancelled",
-    }
-
-
-async def test_conversation_closed_cancel_message_becomes_span_error_type(span_exporter: InMemorySpanExporter) -> None:
-    """A call cancelled with the 'conversation_closed' message records that reason as error.type."""
-    slow_tool, started = _slow_tool()
-    span_exporter.clear()
-
-    await _cancel_while_running(slow_tool, started, "conversation_closed")
-
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].attributes is not None
-    assert spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "conversation_closed"
-
-
-async def test_unknown_cancel_message_records_cancelled_on_span(span_exporter: InMemorySpanExporter) -> None:
-    """A cancel message Agent Framework doesn't send records 'cancelled', never the message itself."""
-    slow_tool, started = _slow_tool()
-    span_exporter.clear()
-
-    await _cancel_while_running(slow_tool, started, ANYIO_CANCEL_MESSAGE)
-
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].attributes is not None
-    assert spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
-
-
 class _UnhashableReason(str):
     def __hash__(self) -> int:
         raise TypeError("unhashable reason")
 
 
 @pytest.mark.parametrize(
-    "cancel_message",
-    [{"reason": "conversation_closed"}, _UnhashableReason("conversation_closed")],
-    ids=["dict", "unhashable-str-subclass"],
+    ("cancel_message", "error_type"),
+    [
+        pytest.param(None, "cancelled", id="no-message"),
+        pytest.param("conversation_closed", "conversation_closed", id="conversation-closed"),
+        pytest.param(ANYIO_CANCEL_MESSAGE, "cancelled", id="a-message-agent-framework-does-not-send"),
+        pytest.param({"reason": "conversation_closed"}, "cancelled", id="dict"),
+        pytest.param(_UnhashableReason("conversation_closed"), "cancelled", id="unhashable-str-subclass"),
+    ],
 )
-async def test_unhashable_cancel_message_records_cancelled_on_span(
-    span_exporter: InMemorySpanExporter, cancel_message: object
+async def test_a_call_cancelled_while_running_records_its_reason_and_stays_cancelled(
+    span_exporter: InMemorySpanExporter, cancel_message: Any, error_type: str
 ) -> None:
-    """An unhashable cancel message records 'cancelled' and still propagates CancelledError, not TypeError."""
+    """The call's execute_tool span ends ERROR and the duration histogram records it once, both with error.type set to
+    the cancel message when Agent Framework sends it and 'cancelled' otherwise. Awaiting the call raises
+    CancelledError carrying the original message, never a TypeError."""
     slow_tool, started = _slow_tool()
+    histogram = Mock()
+    slow_tool._invocation_duration_histogram = histogram
     span_exporter.clear()
 
     call = await _cancel_while_running(slow_tool, started, cancel_message)
 
-    assert call.cancelled()
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].attributes is not None
-    assert spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
+    [span] = span_exporter.get_finished_spans()
+    assert span.status.status_code == trace.StatusCode.ERROR
+    assert span.attributes is not None
+    assert span.attributes.get(OtelAttr.ERROR_TYPE) == error_type
+    histogram.record.assert_called_once()
+    assert histogram.record.call_args.kwargs["attributes"] == {
+        OtelAttr.OPERATION: OtelAttr.TOOL_EXECUTION_OPERATION,
+        OtelAttr.TOOL_NAME: "slow_tool",
+        OtelAttr.TOOL_TYPE: "function",
+        OtelAttr.MEASUREMENT_FUNCTION_TAG_NAME: "slow_tool",
+        OtelAttr.ERROR_TYPE: error_type,
+    }
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await call
+    if cancel_message is None:
+        assert raised.value.args == ()
+    else:
+        [reason] = raised.value.args
+        assert reason is cancel_message
 
 
 class TestVerification:
-    @pytest.mark.usefixtures("span_exporter")
-    async def test_cancellation_propagates_unchanged(self) -> None:
-        """Awaiting the cancelled call raises CancelledError carrying its original message."""
-        slow_tool, started = _slow_tool()
-
-        call = await _cancel_while_running(slow_tool, started, "conversation_closed")
-
-        with pytest.raises(asyncio.CancelledError) as raised:
-            await call
-        assert raised.value.args == ("conversation_closed",)
-
-    @pytest.mark.usefixtures("span_exporter")
-    async def test_conversation_closed_recorded_on_duration_metric(self) -> None:
-        """The duration histogram records 'conversation_closed' as error.type."""
-        slow_tool, started = _slow_tool()
-        histogram = Mock()
-        slow_tool._invocation_duration_histogram = histogram
-
-        await _cancel_while_running(slow_tool, started, "conversation_closed")
-
-        histogram.record.assert_called_once()
-        assert histogram.record.call_args.kwargs["attributes"][OtelAttr.ERROR_TYPE] == "conversation_closed"
-
-    @pytest.mark.usefixtures("span_exporter")
-    async def test_unknown_cancel_message_records_cancelled_on_duration_metric(self) -> None:
-        """The duration histogram never records an unknown cancel message as error.type."""
-        slow_tool, started = _slow_tool()
-        histogram = Mock()
-        slow_tool._invocation_duration_histogram = histogram
-
-        await _cancel_while_running(slow_tool, started, ANYIO_CANCEL_MESSAGE)
-
-        histogram.record.assert_called_once()
-        assert histogram.record.call_args.kwargs["attributes"][OtelAttr.ERROR_TYPE] == "cancelled"
-
     @pytest.mark.parametrize("enable_sensitive_data", [True, False], indirect=True)
     async def test_cancelled_span_has_no_status_description_or_exception_event(
         self, span_exporter: InMemorySpanExporter
