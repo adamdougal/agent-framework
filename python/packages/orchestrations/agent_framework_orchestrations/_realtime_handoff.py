@@ -39,13 +39,13 @@ class RealtimeHandoffBuilder(HandoffTopologyBuilder[RawRealtimeAgent[Any]], Gene
     It has ``HandoffBuilder``'s topology API: ``participants(...)``, the required ``with_start_agent(...)`` and
     ``add_handoff(...)``, with every participant able to hand off to every other by default. ``build()`` returns a
     realtime agent. Each of its conversations starts with the start agent speaking, and each participant gets a
-    ``handoff_to_<name>`` tool per target. A handoff swaps the session's instructions, tools, voice and tool choice
-    without reconnecting, so the caller hears no break.
+    ``handoff_to_<name>`` tool per target. A handoff swaps the session's instructions, tools, voice, tool choice and
+    reasoning effort without reconnecting, so the caller hears no break.
 
-    A participant brings who's speaking: its instructions, tools, voice, tool choice and function middleware. The
-    built agent owns the rest of the call: its history and context providers, its conversation middleware, its
-    tool-loop limits, its other session settings, and instructions appended to every participant's. Participants must
-    share one realtime client instance.
+    A participant brings who's speaking: its instructions, tools, voice, tool choice, reasoning effort and function
+    middleware. The built agent owns the rest of the call: its history and context providers, its conversation
+    middleware, its tool-loop limits, its other session settings, and instructions appended to every participant's.
+    Participants must share one realtime client instance.
     ``async with`` the built agent enters every participant, so their MCP tools connect with it and close when it
     exits. On Voice Live, keep the participants' voices in one family, Azure or OpenAI, because Voice Live rejects a
     change between them.

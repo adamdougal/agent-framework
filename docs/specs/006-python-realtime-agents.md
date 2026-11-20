@@ -491,20 +491,21 @@ updates are read. A reader in its own task therefore still gets updates, such as
 
 - **`handoff(agent, *, tools=None)`** has `update_session(...)`'s contract and makes `agent` the active agent.
   `active_agent` starts as the agent that started the conversation, which is then its first participant: handing back
-  to it restores its own instructions, tools, voice and `tool_choice`. `tools` adds tools until the next handoff. On a
-  rejection or timeout it raises, and the previous agent stays active. The target must use the conversation's client
-  instance.
+  to it restores its own instructions, tools, voice, `tool_choice` and `reasoning_effort`. `tools` adds tools until the
+  next handoff. On a rejection or timeout it raises, and the previous agent stays active. The target must use the
+  conversation's client instance.
 - **`handoff_completed`.** On success, `handoff(...)` emits one update carrying `source` and `target`, named as
   `HandoffSentEvent` names agents, by `name`, else `id`, before it returns. Nothing is emitted at start.
-- **What changes.** `handoff(...)` recomputes instructions, tools, voice and `tool_choice` as `start_conversation(...)`
-  computed them, with the target in place of the starting agent:
+- **What changes.** `handoff(...)` recomputes instructions, tools, voice, `tool_choice` and `reasoning_effort` as
+  `start_conversation(...)` computed them, with the target in place of the starting agent:
   - instructions are the target's, with the call-wide instructions appended, meaning those in a built handoff agent's
     `default_options`, in the start options and from context providers;
   - tools are the target's, plus the start tools, context-provider tools and `handoff(tools=...)`;
-  - voice and `tool_choice` are the target's, unless the start options set one, which then holds for the call. A
-    target that sets neither gets a built handoff agent's default voice and `tool_choice`. `tool_choice` then falls back
-    to `"auto"`, so a router's `"required"` never carries over, and with no voice anywhere the current voice stays,
-    because the provider's default isn't known.
+  - voice, `tool_choice` and `reasoning_effort` are the target's, unless the start options set one, which then holds
+    for the call. A target that doesn't set one gets a built handoff agent's default. `tool_choice` then falls back to
+    `"auto"`, so a router's `"required"` never carries over. With no voice or `reasoning_effort` anywhere, the current
+    one stays, because the provider's default isn't known: Foundry voice agent sessions don't report their default
+    effort, and sending `reasoning: null` doesn't clear one.
 
   Nothing else carries over from the previous agent, and every other setting stays as the call started. Where the
   provider refuses the voice change, the client drops the voice with a warning and the handoff still succeeds. Voice
@@ -521,10 +522,11 @@ updates are read. A reader in its own task therefore still gets updates, such as
   return-to-previous and output selection. A built agent can't be a participant.
 - **The built agent** takes `name`, `description`, `context_providers`, call-wide `default_options`, whose instructions
   are appended to every participant's, `function_invocation_configuration` and `middleware`. Participants are realtime
-  agents on one client instance and supply instructions, tools, voice, `tool_choice`, function middleware and MCP tools;
-  `build()` warns about participant settings that won't apply. `build()` returns a realtime agent with `RealtimeAgent`'s
-  layers, whose conversations start with the start agent active and its handoff tools installed. `async with` it enters
-  every participant. On its conversations, `handoff(...)` accepts only participants and adds the target's handoff tools.
+  agents on one client instance and supply instructions, tools, voice, `tool_choice`, `reasoning_effort`, function
+  middleware and MCP tools; `build()` warns about participant settings that won't apply. `build()` returns a realtime
+  agent with `RealtimeAgent`'s layers, whose conversations start with the start agent active and its handoff tools
+  installed. `async with` it enters every participant. On its conversations, `handoff(...)` accepts only participants
+  and adds the target's handoff tools.
 - **Handoff tools** are named `handoff_to_<name>`, take no arguments, never need approval and return
   `{"handoff_to": "<name>"}`. The description comes from `add_handoff(description=...)`, else the target's
   `description`, else "Handoff to the <name> agent.". The tool awaits `handoff(...)`. If the handoff fails, the tool
@@ -534,10 +536,11 @@ updates are read. A reader in its own task therefore still gets updates, such as
 - **Lifetime.** A handoff lasts for its realtime session; each `start_conversation(...)` and `run(...)` starts with the
   start agent.
 - **Foundry voice agents.** A topology has at most one `FoundryVoiceAgent`, because each builds its own client and
-  participants share one; the other participants use `foundry_agent.client`. Its instructions, tools, voice and tool
-  choice are its agent definition's, read when it's entered, so they apply at start, on a handoff to it and on a handoff
-  back, as any participant's own settings do. Every session opens on the definition's settings, so another start agent
-  that sets no tool choice starts with `"auto"`, as after a handoff. Any tool in the call can implement a definition
+  participants share one; the other participants use `foundry_agent.client`. Its instructions, tools, voice, tool
+  choice and reasoning effort are its agent definition's, read when it's entered, so they apply at start, on a handoff
+  to it and on a handoff back, as any participant's own settings do; its `default_options` still win. Every session
+  opens on the definition's settings, so another start agent that sets no tool choice starts with `"auto"`, as after a
+  handoff, and one that sets no reasoning effort keeps the definition's. Any tool in the call can implement a definition
   function, such as a handoff tool. Definitions published by Semantic Kernel use tool names such as
   `<Plugin>-<function>` and `Handoff-handoff_to_<name>`, so they must be republished to match Agent Framework's tool
   names.
@@ -715,7 +718,9 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   `Foundry-Features: VoiceAgents=V1Preview`. Before sending anything, each session waits for the definition's
   unsolicited `session.updated`, raising if it doesn't arrive within the acknowledgement timeout, and its `options`
   start from the audio settings that definition applies. The agent restores the definition's voice as an `AzureVoice`
-  from `voice`, `voice_type` and every other voice field the definition stores. `tools=` supplies implementations
+  from `voice`, `voice_type` and every other voice field the definition stores, and its reasoning effort from the
+  definition's top-level `reasoning.effort`, which the `azure-ai-projects` models don't declare.
+  `FoundryVoiceAgentOptions` takes `reasoning_effort`, sent as `reasoning.effort`. `tools=` supplies implementations
   matched by name; any tool in the call can implement a definition function, its published declaration is the one
   sent, and a definition function nothing implements gets an error result and a warning at start. Added tools are
   declared alongside the definition's tools, re-sent as published; when the session already declares the definition's

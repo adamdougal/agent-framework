@@ -126,9 +126,9 @@ the root package:
   `_middleware.py` in the package root imports them to categorize middleware, so this module imports nothing from it.
 - `_middleware_chain.py` - Runs a conversation's middleware: the chain around opening, which opens the conversation
   once, and the send, update and close hooks in onion order.
-- `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice) and
-  `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both compute the session's
-  settings here.
+- `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice,
+  reasoning effort) and `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both
+  compute the session's settings here.
 - `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls, including `handoff(...)`,
   and the close sequence. It owns the acknowledgement timeout and deduplicates unclaimed errors, tracks the active
   agent, and its `_dispatch` hands each event kind to the concern modules below. Opening runs context providers'
