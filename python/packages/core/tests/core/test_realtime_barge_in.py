@@ -401,6 +401,29 @@ async def test_a_provider_truncation_cuts_the_responses_later_messages_at_0_ms()
     assert client.session.calls == [("truncate", "item_b", 0, 0), ("truncate", "item_c", 0, 0)]
 
 
+async def test_a_rejected_provider_triggered_cut_does_not_stop_later_cuts_or_end_the_conversation() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.truncate_rejections["item_b"] = RealtimeControlException("The item was deleted.")
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            _audio("resp_1", "item_b", 48 * 1000),
+            _audio("resp_1", "item_c", 48 * 1000),
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        await eventually(lambda: len(client.session.calls) == 2)
+        await conversation.interrupt()  # its turn comes only once the cuts have finished
+
+    async for _ in conversation:  # raises the error that ended the conversation, if one did
+        pass
+    assert client.session.calls == [("truncate", "item_b", 0, 0), ("truncate", "item_c", 0, 0)]
+
+
 async def test_a_provider_truncation_queued_when_close_starts_cuts_nothing() -> None:
     client = FakeRealtimeClient()
 

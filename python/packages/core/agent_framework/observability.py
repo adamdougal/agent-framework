@@ -3643,23 +3643,6 @@ def _capture_response(
         operation_duration_histogram.record(duration, attributes=attrs)
 
 
-def _capture_model_response(span: trace.Span, attributes: dict[str, Any], duration: float) -> None:  # pyright: ignore[reportUnusedFunction] - called by realtime telemetry
-    """Set a finished model call's attributes on its span, and record its operation duration and token usage.
-
-    Args:
-        span: The model call's span.
-        attributes: The span's attributes, including any usage, which the metrics take their dimensions from.
-        duration: How long the call took, in seconds.
-    """
-    _capture_response(
-        span=span,
-        attributes=attributes,
-        operation_duration_histogram=_get_duration_histogram(),
-        token_usage_histogram=_get_token_usage_histogram(),
-        duration=duration,
-    )
-
-
 class EdgeGroupDeliveryStatus(Enum):
     """Enum for edge group delivery status values."""
 

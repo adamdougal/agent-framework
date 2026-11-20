@@ -87,7 +87,11 @@ async def main() -> None:
                     for content in update.contents:
                         if content.type == "text" and update.role == "assistant" and content.status == "completed":
                             print(f"{update.author_name}: {content.text}")
-                    if update.finish_reason == "stop":
+                    # A failed reply has no finish reason, and one that called a tool is followed by its answer.
+                    if update.finish_reason != "tool_calls" and any(
+                        content.type == "realtime_event" and content.kind == "response_done"
+                        for content in update.contents
+                    ):
                         break
     finally:
         if credential is not None:
