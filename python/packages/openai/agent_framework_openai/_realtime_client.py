@@ -18,7 +18,7 @@ from agent_framework.exceptions import RealtimeConnectionException, SettingNotFo
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from ._realtime_options import OpenAIRealtimeOptionsT
-from ._realtime_session import OpenAIRealtimeSession, _audio_format  # pyright: ignore[reportPrivateUsage]
+from ._realtime_session import OpenAIRealtimeSession, _check_audio_formats  # pyright: ignore[reportPrivateUsage]
 from ._shared import (
     AzureTokenProvider,
     _resolve_azure_credential_to_token_provider,  # pyright: ignore[reportPrivateUsage]
@@ -155,11 +155,7 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
         """
         from websockets.exceptions import WebSocketException
 
-        requested = cast("Mapping[str, Any]", options or {})
-        for key in ("input_audio_format", "output_audio_format"):
-            if key in requested:
-                # A format the session would only reject after connecting would leave a socket to clean up.
-                _audio_format(requested[key])
+        _check_audio_formats(options or {})
         try:
             sdk_connection = await self._client.realtime.connect(
                 model=self.model,
