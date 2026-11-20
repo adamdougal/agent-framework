@@ -256,6 +256,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             raise
         self._opened_context = contextvars.copy_context()
         self._receive_task = asyncio.create_task(self._receive_loop(session))
+        # Only the reader can deliver a caller transcript, so its end must wake a close waiting for one.
+        self._receive_task.add_done_callback(lambda _: self._history_changed.set())
 
     async def _resolve_tools(self, tools: Sequence[ToolTypes]) -> list[ToolTypes]:
         """The conversation keeps its own list of each MCP tool's functions, so server-side changes wait for an update.
@@ -925,11 +927,11 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
             self._close_task = asyncio.create_task(self._close_sequence(), context=context)
         return self._close_task
 
-    async def _wait_for_caller_transcripts(self) -> None:
+    async def _wait_for_caller_transcripts(self, reader: asyncio.Task[None]) -> None:
         """Transcription runs beside the reply, so a caller's last words can still be on their way when close starts."""
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(CALLER_TRANSCRIPT_WAIT_SECONDS):
-                while self._history.waiting_for_caller_transcripts:
+                while self._history.waiting_for_caller_transcripts and not reader.done():
                     self._history_changed.clear()
                     await self._history_changed.wait()
 
@@ -938,8 +940,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         provider_failures: list[Exception] = []
         close_hook_failures: list[Exception] = []
         try:
-            if self._receive_task is not None and not self._receive_task.done():
-                await self._wait_for_caller_transcripts()
+            if self._receive_task is not None:
+                await self._wait_for_caller_transcripts(self._receive_task)
             if self._session is not None:
                 try:
                     await self._session.close()
