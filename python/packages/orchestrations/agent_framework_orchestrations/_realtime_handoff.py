@@ -24,7 +24,7 @@ from agent_framework._feature_stage import ExperimentalFeature, experimental
 from agent_framework._middleware import categorize_middleware
 from agent_framework._realtime._handoffs import PER_PARTICIPANT_OPTIONS
 from agent_framework._realtime._options import RealtimeOptionsT
-from agent_framework.exceptions import RealtimeException
+from agent_framework.exceptions import RealtimeException, ToolException, UserInputRequiredException
 
 from ._handoff import HANDOFF_FUNCTION_RESULT_KEY, get_handoff_tool_name, handoff_tool_description
 from ._handoff_topology import HandoffConfiguration, HandoffTopologyBuilder
@@ -205,6 +205,12 @@ def _handoff_tool(
                 await conversation.handoff(target)
             except (RealtimeException, ValueError) as error:
                 return _not_handed_off(handoff, str(error))
+            except UserInputRequiredException:
+                # The app answers it, such as with the caller's consent, so it must reach the tool loop.
+                raise
+            except ToolException:
+                # Its message can name the server's command line or endpoint, which the model mustn't see.
+                return _not_handed_off(handoff, f"{handoff.target_id}'s tools couldn't connect")
         return {HANDOFF_FUNCTION_RESULT_KEY: handoff.target_id}
 
     return FunctionTool(
