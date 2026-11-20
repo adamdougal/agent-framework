@@ -356,11 +356,13 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   stops the loop. Responses that tools or middleware request through `say(...)` or `create_response(...)`, such as a
   filler line, don't end it.
 - **Ordering.** Anything a tool awaits completes before its batch's results go out. `ctx.add_tools()` and
-  `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results. That update
-  replaces the live tool list's contents in place, so both mechanisms see the same list. A rejected update follows the
-  claimed-error rules, the live tool list goes back to the tools the provider declares, with a warning, and the results
-  and follow-up still go out. An update that isn't acknowledged keeps the change, with a warning, and the next batch
-  sends it again.
+  `ctx.remove_tools()` reach the realtime session through `update_session(tools=...)` before the results, prepared as
+  the app's tools are, so an MCP tool that a tool adds is declared and run as its server's functions. That update
+  replaces the live tool list's contents in place, so both mechanisms see the same list. A change that
+  `update_session(...)` would refuse, such as a hosted MCP tool that may ask for approval or an MCP tool that can't
+  connect, isn't sent, and a rejected update follows the claimed-error rules. Either way the live tool list goes back
+  to the tools the provider declares, with a warning, and the results and follow-up still go out. An update that isn't
+  acknowledged keeps the change, with a warning, and the next batch sends it again.
 - **Context.** The loop sets `FunctionInvocationContext.realtime_conversation`, in `run(...)` too; elsewhere it's
   `None`. It isn't in the tools' runtime keyword arguments. As in chat, when the app passes no session, tools and
   function middleware that keep per-session state get a conversation-local session, the same one context providers get,
@@ -408,14 +410,15 @@ call events, and Voice Live's `warning`, animation, timestamp, avatar, video, vi
   conversation. A tool connects through `async with agent` or on first use and stays open for the agent's lifetime.
   A realtime agent's `async with` connects only tools that aren't connected, so Agent Framework never closes a tool
   the app connected; chat's still enters every configured MCP tool. The conversation copies MCP tools' functions into
-  its declared and executable sets at start and on `update_session(tools=...)`; server-side tool-list changes wait
-  for the next update. Clashing function names raise `ValueError` when the conversation is entered, or from
-  `update_session(...)`, before anything is sent.
+  its declared and executable sets at start, on `update_session(tools=...)` and when a tool adds one; server-side
+  tool-list changes wait for the next update. Clashing function names raise `ValueError` when the conversation is
+  entered, or from `update_session(...)`, before anything is sent.
 - **Hosted tools.** The app declares them as provider tool dicts, and the loop never runs them. Their call events pass
   through. Hosted approvals come later. Until then a hosted MCP declaration must set `require_approval` to `"never"`;
   otherwise entering the conversation, `update_session(tools=...)` or `handoff(...)` raises `ValueError` before anything
-  is sent. Static helpers on the provider clients come with hosted approvals, as do hosted approval requests as
-  `function_approval_request` content with `hosted=True`, answered to the provider as `mcp_approval_response`.
+  is sent, and one that a tool adds isn't declared. Static helpers on the provider clients come with hosted approvals,
+  as do hosted approval requests as `function_approval_request` content with `hosted=True`, answered to the provider as
+  `mcp_approval_response`.
 
 ## History
 

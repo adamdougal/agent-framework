@@ -354,14 +354,17 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
         return "weather offered"
 
     async with RealtimeAgent(client, tools=[offer_time, offer_weather]).start_conversation():
+        acknowledge = client.session.hold("update_session")
         client.session.emit(
             *_response("resp_1", _call("call_1", "offer_time")),
             *_response("resp_2", _call("call_2", "offer_weather", response_id="resp_2")),
         )
         await eventually(lambda: time_offered.is_set() and weather_offered.is_set())
         release_time.set()
-        await eventually(lambda: len(_results(client.session)) == 1)
+        await eventually(lambda: bool(client.session.calls))
         release_weather.set()
+        await asyncio.sleep(0.01)  # the weather batch's results now wait behind the update
+        acknowledge.set()
         await eventually(lambda: len(_results(client.session)) == 2)
 
     updates = [call for call in client.session.calls if call[0] == "update_session"]
