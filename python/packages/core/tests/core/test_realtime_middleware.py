@@ -170,70 +170,84 @@ async def test_the_agents_conversation_middleware_runs_outside_the_conversations
         assert order == ["agent in", "conversation in", "conversation out", "agent out"]
 
 
-async def test_a_chain_that_never_calls_call_next_refuses_the_session() -> None:
-    """When process() returns without calling call_next(), entering raises MiddlewareTermination and no session
-    starts."""
+async def _return_without_calling_call_next(
+    context: ConversationContext, call_next: Callable[[], Awaitable[None]]
+) -> None:
+    return None
+
+
+async def _raise_middleware_termination(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+    raise MiddlewareTermination("refused")
+
+
+@pytest.mark.parametrize(
+    ("refuse", "outer_order"),
+    [
+        pytest.param(_return_without_calling_call_next, ["outer in", "outer out"], id="by-returning"),
+        pytest.param(_raise_middleware_termination, ["outer in"], id="by-raising"),
+    ],
+)
+async def test_middleware_that_does_not_call_call_next_refuses_the_session(
+    refuse: MiddlewareFunction, outer_order: list[str]
+) -> None:
+    """Inner middleware returning without call_next() lets the outer middleware finish, as chat middleware does, before
+    entering raises MiddlewareTermination; raising MiddlewareTermination unwinds through the outer middleware. Either
+    way no session starts."""
     client = FakeRealtimeClient()
+    order: list[str] = []
 
-    async def refuse(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
-        return None
-
-    with pytest.raises(MiddlewareTermination):
-        async with RealtimeAgent(client, middleware=[refuse]).start_conversation():
+    with pytest.raises(MiddlewareTermination, match="refused"):
+        async with RealtimeAgent(client, middleware=[layer("outer", order), refuse]).start_conversation():
             pass
 
-    assert client.start_session_calls == []
+    assert (client.start_session_calls, order) == ([], outer_order)
 
 
-async def test_calling_call_next_twice_raises_runtime_error() -> None:
-    """A second call_next() raises RuntimeError, and only one session starts."""
+@pytest.mark.parametrize(
+    ("inner_middleware", "inner_runs"),
+    [pytest.param(False, [], id="innermost"), pytest.param(True, ["audit"], id="outside-other-middleware")],
+)
+async def test_calling_call_next_twice_raises_runtime_error_without_rerunning_inner_middleware_or_reopening(
+    inner_middleware: bool, inner_runs: list[str]
+) -> None:
+    """A middleware calling call_next() twice gets RuntimeError from the second call, any middleware inside it runs
+    process() once, and one session starts."""
     client = FakeRealtimeClient()
-
-    async def open_twice(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
-        await call_next()
-        await call_next()
-
-    with pytest.raises(RuntimeError, match="once"):
-        async with RealtimeAgent(client, middleware=[open_twice]).start_conversation():
-            pass
-
-    assert len(client.start_session_calls) == 1
-
-
-async def test_calling_an_outer_call_next_twice_raises_before_inner_middleware_runs_again() -> None:
-    """An outer middleware calling call_next() twice gets RuntimeError from the second call, and the inner middleware's
-    process() runs once."""
-    inner_runs: list[str] = []
+    runs: list[str] = []
 
     async def open_twice(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
         await call_next()
         await call_next()
 
     async def audit(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
-        inner_runs.append("audit")
+        runs.append("audit")
         await call_next()
 
+    middleware = [open_twice, audit] if inner_middleware else [open_twice]
     with pytest.raises(RuntimeError, match="once"):
-        async with RealtimeAgent(FakeRealtimeClient(), middleware=[open_twice, audit]).start_conversation():
+        async with RealtimeAgent(client, middleware=middleware).start_conversation():
             pass
 
-    assert inner_runs == ["audit"]
+    assert (runs, len(client.start_session_calls)) == (inner_runs, 1)
 
 
-async def test_an_exception_after_call_next_closes_the_session_and_entering_raises_it() -> None:
-    """process() raising RuntimeError('audit store down') after call_next() closes the session once, and entering raises
-    that RuntimeError."""
+async def test_an_exception_after_call_next_closes_the_session_and_reaches_its_close_hook() -> None:
+    """process() raising RuntimeError('audit store down') after call_next() closes the session once, passes that
+    RuntimeError to its close hook, and entering raises it."""
     client = FakeRealtimeClient()
+    closed: list[Exception | None] = []
+    audit_store_down = RuntimeError("audit store down")
 
     async def audit(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        context.close_hooks.append(closed.append)
         await call_next()
-        raise RuntimeError("audit store down")
+        raise audit_store_down
 
     with pytest.raises(RuntimeError, match="audit store down"):
         async with RealtimeAgent(client, middleware=[audit]).start_conversation():
             pass
 
-    assert client.session.close_count == 1
+    assert (client.session.close_count, closed) == (1, [audit_store_down])
 
 
 # endregion
@@ -443,29 +457,9 @@ async def test_an_async_update_hooks_replacement_is_yielded() -> None:
         assert [update.text for update in updates if update.text] == ["Hi"]
 
 
-async def test_an_update_hook_failure_closes_the_conversation_then_iteration_raises_it() -> None:
-    """An update hook raising RuntimeError('moderation down') on the first of three queued updates closes the session,
-    and iteration raises that RuntimeError without yielding the other two."""
-    client = FakeRealtimeClient()
-
-    def moderate(update: AgentResponseUpdate) -> None:
-        raise RuntimeError("moderation down")
-
-    async with RealtimeAgent(client, middleware=[update_hook(moderate)]).start_conversation() as conversation:
-        client.session.emit(*reply("resp_1", "item_1", "Hello")[:3])
-        await eventually(lambda: [message.text for message in conversation.history] == ["Hello"])
-        yielded: list[AgentResponseUpdate] = []
-
-        with pytest.raises(RuntimeError, match="moderation down"):
-            async for update in conversation:
-                yielded.append(update)
-
-        assert (yielded, client.session.close_count) == ([], 1)
-
-
-async def test_after_an_update_hook_failure_a_new_iterator_yields_none_of_the_queued_updates() -> None:
-    """An update hook failing with RuntimeError('moderation down') on the first of three queued updates leaves the
-    other two undelivered: reading again raises that RuntimeError instead of yielding them."""
+async def test_an_update_hook_failure_closes_the_conversation_and_none_of_the_queued_updates_is_yielded() -> None:
+    """An update hook failing once with RuntimeError('moderation down') on the first of three queued updates closes the
+    session. Reading raises that RuntimeError, and iterating again raises it without yielding the other two."""
     client = FakeRealtimeClient()
     failures = [RuntimeError("moderation down")]
 
@@ -476,11 +470,16 @@ async def test_after_an_update_hook_failure_a_new_iterator_yields_none_of_the_qu
     async with RealtimeAgent(client, middleware=[update_hook(moderate_once)]).start_conversation() as conversation:
         client.session.emit(*reply("resp_1", "item_1", "Hello")[:3])
         await eventually(lambda: [message.text for message in conversation.history] == ["Hello"])
-        with pytest.raises(RuntimeError):
-            await next_update(conversation)
-
         with pytest.raises(RuntimeError, match="moderation down"):
             await next_update(conversation)
+        assert client.session.close_count == 1
+        yielded: list[AgentResponseUpdate] = []
+
+        with pytest.raises(RuntimeError, match="moderation down"):
+            async for update in conversation:
+                yielded.append(update)
+
+        assert (yielded, client.session.close_count) == ([], 1)
 
 
 # endregion
@@ -602,20 +601,6 @@ async def test_a_bundle_with_a_conversation_member_runs_on_a_realtime_agent() ->
 
 
 class TestVerification:
-    async def test_middleware_termination_before_call_next_refuses_the_session(self) -> None:
-        """process() raising MiddlewareTermination before call_next() makes entering raise it, and no session
-        starts."""
-        client = FakeRealtimeClient()
-
-        async def refuse(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
-            raise MiddlewareTermination("refused")
-
-        with pytest.raises(MiddlewareTermination, match="refused"):
-            async with RealtimeAgent(client, middleware=[refuse]).start_conversation():
-                pass
-
-        assert client.start_session_calls == []
-
     async def test_send_hooks_run_outermost_first(self) -> None:
         """With send hooks registered by an outer then an inner middleware, each message reaches them in the order
         ['outer', 'inner']."""
@@ -679,37 +664,6 @@ class TestVerification:
             await eventually(lambda: [message.text for message in conversation.history] == ["hello"])
 
         assert [update.text async for update in conversation if update.text] == ["HELLO"]
-
-    async def test_close_hooks_do_not_run_for_a_refused_session(self) -> None:
-        """A close hook registered before process() raises MiddlewareTermination never runs."""
-        closed: list[Exception | None] = []
-
-        async def refuse(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
-            context.close_hooks.append(closed.append)
-            raise MiddlewareTermination("refused")
-
-        with pytest.raises(MiddlewareTermination):
-            async with RealtimeAgent(FakeRealtimeClient(), middleware=[refuse]).start_conversation():
-                pass
-
-        assert closed == []
-
-    async def test_an_exception_after_call_next_reaches_the_close_hooks(self) -> None:
-        """process() raising RuntimeError('audit store down') after call_next() passes that RuntimeError to its close
-        hook."""
-        closed: list[Exception | None] = []
-        audit_store_down = RuntimeError("audit store down")
-
-        async def audit(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
-            context.close_hooks.append(closed.append)
-            await call_next()
-            raise audit_store_down
-
-        with pytest.raises(RuntimeError):
-            async with RealtimeAgent(FakeRealtimeClient(), middleware=[audit]).start_conversation():
-                pass
-
-        assert closed == [audit_store_down]
 
     async def test_close_hook_and_context_provider_failures_raise_together(self) -> None:
         """A failing context provider and a failing close hook make close() raise an ExceptionGroup holding both
