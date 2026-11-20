@@ -16,8 +16,10 @@ from .._types import add_usage_details
 from ..observability import (
     OtelAttr,
     _apply_usage_attributes,  # pyright: ignore[reportPrivateUsage]
-    _capture_model_response,  # pyright: ignore[reportPrivateUsage]
+    _capture_response,  # pyright: ignore[reportPrivateUsage]
+    _get_duration_histogram,  # pyright: ignore[reportPrivateUsage]
     _get_span_attributes,  # pyright: ignore[reportPrivateUsage]
+    _get_token_usage_histogram,  # pyright: ignore[reportPrivateUsage]
     _provider_name_attr,  # pyright: ignore[reportPrivateUsage]
     capture_exception,
     get_tracer,
@@ -49,6 +51,8 @@ class ConversationTelemetry:
         self._session_model: str | None = None
         self._usage: UsageDetails = {}
         self._with_calls: set[str] = set()
+        self._duration_histogram = _get_duration_histogram()
+        self._token_usage_histogram = _get_token_usage_histogram()
 
     @contextmanager
     def opened(self) -> Generator[None]:
@@ -124,14 +128,32 @@ class ConversationTelemetry:
     def _response_done(self, core: dict[str, Any]) -> None:
         response_id = core["response_id"]
         if (response := self._responses.pop(response_id, None)) is not None:
-            _end_response(response, *_span_outcome(core, response_id in self._with_calls))
+            self._end_response(response, *_span_outcome(core, response_id in self._with_calls))
+
+    def _end_response(self, response: _Response, finish_reason: str | None, error_type: str | None) -> None:
+        attributes = dict(response.attributes)
+        if finish_reason is not None:
+            attributes[OtelAttr.FINISH_REASONS] = [finish_reason]
+        if response.usage:
+            _apply_usage_attributes(attributes, response.usage)
+        if error_type is not None:
+            attributes[OtelAttr.ERROR_TYPE] = error_type
+            response.span.set_status(trace.StatusCode.ERROR)
+        _capture_response(
+            response.span,
+            attributes,
+            operation_duration_histogram=self._duration_histogram,
+            token_usage_histogram=self._token_usage_histogram,
+            duration=perf_counter() - response.started_at,
+        )
+        response.span.end()
 
     def closed(self, failure: Exception | None) -> None:
         for response in self._responses.values():
             if failure is None:
-                _end_response(response, "interrupted", None)
+                self._end_response(response, "interrupted", None)
             else:
-                _end_response(response, "error", type(failure).__name__)
+                self._end_response(response, "error", type(failure).__name__)
         usage_attributes: dict[str, Any] = {}
         _apply_usage_attributes(usage_attributes, self._usage)
         self._span.set_attributes(usage_attributes)
@@ -152,16 +174,3 @@ def _span_outcome(response_done: dict[str, Any], made_calls: bool) -> tuple[str 
         return "error", response_done.get("error_code") or "server_error"
     finish_reason = _finish_reason_of(response_done, made_calls)
     return "tool_call" if finish_reason == "tool_calls" else finish_reason, None
-
-
-def _end_response(response: _Response, finish_reason: str | None, error_type: str | None) -> None:
-    attributes = dict(response.attributes)
-    if finish_reason is not None:
-        attributes[OtelAttr.FINISH_REASONS] = [finish_reason]
-    if response.usage:
-        _apply_usage_attributes(attributes, response.usage)
-    if error_type is not None:
-        attributes[OtelAttr.ERROR_TYPE] = error_type
-        response.span.set_status(trace.StatusCode.ERROR)
-    _capture_model_response(response.span, attributes, perf_counter() - response.started_at)
-    response.span.end()

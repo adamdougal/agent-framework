@@ -22,9 +22,8 @@ class ResponseLedger:
         self._answers_only_earlier: set[str] = set()
         self._idle = asyncio.Event()
         self._idle.set()
-        self._requests_in_flight = 0
-        self._no_requests_in_flight = asyncio.Event()
-        self._no_requests_in_flight.set()
+        self._no_request_in_flight = asyncio.Event()
+        self._no_request_in_flight.set()
 
     @property
     def any_active(self) -> bool:
@@ -38,17 +37,17 @@ class ResponseLedger:
         await self._idle.wait()
 
     def request_started(self) -> None:
-        """Keep filler classification ahead of batch-limit checks."""
-        self._requests_in_flight += 1
-        self._no_requests_in_flight.clear()
+        """Keep filler classification ahead of batch-limit checks.
+
+        Requests never overlap, since the conversation makes them under its control lock.
+        """
+        self._no_request_in_flight.clear()
 
     def request_settled(self) -> None:
-        self._requests_in_flight -= 1
-        if not self._requests_in_flight:
-            self._no_requests_in_flight.set()
+        self._no_request_in_flight.set()
 
     async def wait_until_requests_settle(self) -> None:
-        await self._no_requests_in_flight.wait()
+        await self._no_request_in_flight.wait()
 
     def created(self, response_id: str, agent: BaseAgent) -> None:
         """A response already finished stays finished.

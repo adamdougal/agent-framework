@@ -56,6 +56,15 @@ async def next_update(updates: Any, timeout: float = 5.0) -> AgentResponseUpdate
     return await asyncio.wait_for(anext(aiter(updates)), timeout)
 
 
+def shorten_timeouts(conversation: Any, seconds: float = 0.05) -> None:
+    """Make the conversation's control calls from now on time out after ``seconds``.
+
+    Entering a conversation waits under its control timeout too, and a loaded runner can take longer than a short one
+    to start even a fake session. So a test enters under the default, then shortens the calls it expects to expire.
+    """
+    conversation._control_timeout = seconds  # pyright: ignore[reportPrivateUsage]
+
+
 class FakeRealtimeSession:
     """A realtime session whose events the test emits, and which records what the conversation sends and calls."""
 
@@ -72,6 +81,8 @@ class FakeRealtimeSession:
         self._holds: dict[str, asyncio.Event] = {}
         self.delays: dict[str, float] = {}
         self.cleanup_delays: dict[str, float] = {}
+        self.cleanup_holds: dict[str, asyncio.Event] = {}
+        self.cleaning_up: list[str] = []
         self.cancel_response_error: BaseException | None = None
         self.truncate_error: BaseException | None = None
         self.truncate_rejections: dict[str, BaseException] = {}
@@ -144,8 +155,13 @@ class FakeRealtimeSession:
                 await release.wait()
         except asyncio.CancelledError:
             # A cancellation-safe session may need a moment to stop tracking the call.
-            if (cleanup := self.cleanup_delays.get(method)) is not None:
-                await asyncio.sleep(cleanup)
+            cleanup = self.cleanup_delays.get(method)
+            release_cleanup = self.cleanup_holds.get(method)
+            if cleanup is not None or release_cleanup is not None:
+                self.cleaning_up.append(method)
+                await asyncio.sleep(cleanup or 0)
+                if release_cleanup is not None:
+                    await release_cleanup.wait()
                 self.calls.append(("cleaned up", method))
             raise
 

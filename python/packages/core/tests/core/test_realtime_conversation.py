@@ -3,13 +3,11 @@
 """The live realtime conversation: updates, the update queue, send, control calls and close."""
 
 import asyncio
-from collections.abc import Awaitable
 from typing import Any
 
 import pytest
 
 from agent_framework import AgentResponseUpdate, Content, Message, RealtimeAgent, RealtimeEvent, RealtimeKind
-from agent_framework._realtime import _conversation as realtime_conversation
 from agent_framework.exceptions import (
     RealtimeActiveResponseException,
     RealtimeBackpressureException,
@@ -19,7 +17,7 @@ from agent_framework.exceptions import (
     RealtimeConversationClosedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
+from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
 
 # region Updates
 
@@ -268,7 +266,7 @@ async def test_errors_with_different_event_level_provider_metadata_both_stream()
 # region Update queue
 
 
-async def _collect(conversation: Any, timeout: float = 1.0) -> list[AgentResponseUpdate]:
+async def _collect(conversation: Any, timeout: float = 5.0) -> list[AgentResponseUpdate]:
     async def read_all() -> list[AgentResponseUpdate]:
         return [update async for update in conversation]
 
@@ -286,7 +284,7 @@ async def test_iteration_ends_after_the_session_ends_and_updates_drain() -> None
     assert _kinds(updates) == ["session_updated", "session_updated"]
 
 
-async def _read_into(received: list[AgentResponseUpdate], conversation: Any, timeout: float = 1.0) -> None:
+async def _read_into(received: list[AgentResponseUpdate], conversation: Any, timeout: float = 5.0) -> None:
     async def read_all() -> None:
         async for update in conversation:
             received.append(update)
@@ -478,7 +476,8 @@ async def test_create_response_passes_its_options_to_the_session() -> None:
 async def test_an_unacknowledged_control_call_raises_control_timeout() -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        shorten_timeouts(conversation)
         client.session.hold("create_response")
 
         with pytest.raises(RealtimeControlTimeoutException):
@@ -510,7 +509,8 @@ async def test_control_calls_run_one_at_a_time_in_call_order() -> None:
 async def test_the_timeout_covers_only_the_acknowledgement_not_the_wait_for_the_lock() -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.2) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        shorten_timeouts(conversation, 0.2)
         client.session.delays = {"create_response": 0.15, "cancel_response": 0.15}
         await asyncio.gather(conversation.create_response(), conversation.interrupt())
 
@@ -561,7 +561,8 @@ async def test_a_send_of_several_messages_stops_when_close_starts_between_them()
 async def test_a_timed_out_control_call_finishes_cleaning_up_before_it_raises() -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        shorten_timeouts(conversation)
         client.session.hold("create_response")
         client.session.cleanup_delays["create_response"] = 0.05
         with pytest.raises(RealtimeControlTimeoutException):
@@ -570,26 +571,21 @@ async def test_a_timed_out_control_call_finishes_cleaning_up_before_it_raises() 
         assert client.session.calls == [("create_response", None), ("cleaned up", "create_response")]
 
 
-async def test_cancelling_a_timed_out_control_call_still_waits_for_its_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cancelling_a_timed_out_control_call_still_waits_for_its_cleanup() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
-        # Entering waits under the default timeout, because a loaded runner can take longer than this test's short
-        # timeout to start the session. Only the control call races it.
-        acknowledge = realtime_conversation.await_acknowledgement
-
-        def acknowledge_within_a_short_timeout(
-            acknowledgement: Awaitable[Any], *, action: str, timeout: float | None, closing: asyncio.Event
-        ) -> Awaitable[Any]:
-            return acknowledge(acknowledgement, action=action, timeout=0.02, closing=closing)
-
-        monkeypatch.setattr(realtime_conversation, "await_acknowledgement", acknowledge_within_a_short_timeout)
+        shorten_timeouts(conversation, 0.02)
         client.session.hold("create_response")
-        client.session.cleanup_delays["create_response"] = 0.2
+        release_cleanup = client.session.cleanup_holds["create_response"] = asyncio.Event()
         requesting = asyncio.create_task(conversation.create_response())
-        await asyncio.sleep(0.06)  # timed out, and now cleaning up
-
-        requesting.cancel()
+        try:
+            await eventually(lambda: client.session.cleaning_up == ["create_response"])
+            requesting.cancel()
+            await asyncio.sleep(0.01)
+            assert not requesting.done()
+        finally:
+            release_cleanup.set()
         with pytest.raises(asyncio.CancelledError):
             await requesting
 
@@ -876,7 +872,8 @@ class TestVerification:
     async def test_an_unacknowledged_cancel_raises_control_timeout(self) -> None:
         client = FakeRealtimeClient()
 
-        async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+        async with RealtimeAgent(client).start_conversation() as conversation:
+            shorten_timeouts(conversation)
             client.session.emit(event("response_created", response_id="resp_1"))
             await next_update(conversation)
             client.session.hold("cancel_response")

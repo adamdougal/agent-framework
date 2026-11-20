@@ -53,7 +53,9 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
             async with agent.start_conversation() as conversation:
                 await conversation.send("Hello!")
                 async for update in conversation:
-                    print(update.text, end="")
+                    for content in update.contents:
+                        if content.type == "text" and update.role == "assistant" and content.merge_mode == "append":
+                            print(content.text, end="")
 
     Attributes:
         model: The model, or on Azure OpenAI the deployment's name.

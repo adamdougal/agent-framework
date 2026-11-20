@@ -12,7 +12,7 @@ from .._types import AgentResponse
 
 if TYPE_CHECKING:
     from .._agents import BaseAgent
-    from .._sessions import AgentSession, ContextProvider
+    from .._sessions import AgentSession
     from ._history import Exchange
 
 
@@ -21,11 +21,12 @@ async def report_exchanges(
 ) -> list[Exception]:
     """A failing provider skips the later exchanges, so one store's outage can't lose the call for the others."""
     providers = list(reversed(agent.context_providers))
-    failures: dict[ContextProvider, Exception] = {}
+    # Keyed by id because a provider need not be hashable; ``providers`` holds each one, so no id is reused meanwhile.
+    failures: dict[int, Exception] = {}
     for index, exchange in enumerate(exchanges):
         context = _context_for(session, start, exchange, first=index == 0)
         for provider in providers:
-            if provider in failures:
+            if id(provider) in failures:
                 continue
             try:
                 await provider.after_run(
@@ -36,7 +37,7 @@ async def report_exchanges(
                     state=session.state.setdefault(provider.source_id, {}),
                 )
             except Exception as error:
-                failures[provider] = error
+                failures[id(provider)] = error
     return list(failures.values())
 
 

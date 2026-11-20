@@ -13,7 +13,7 @@ from agent_framework.exceptions import (
     RealtimeConversationClosedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
+from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
 from .realtime_history_helpers import spoken_then_written
 
 # Audio below is 24 kHz 16-bit mono PCM, 48 bytes per millisecond, unless a test says otherwise.
@@ -316,7 +316,8 @@ async def test_a_cut_the_provider_keeps_rejecting_does_not_stop_later_cuts() -> 
 async def test_a_late_acknowledgement_of_a_timed_out_cut_stops_it_being_retried() -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        shorten_timeouts(conversation)
         await _play(
             conversation,
             client.session,
@@ -398,6 +399,29 @@ async def test_a_provider_truncation_cuts_the_responses_later_messages_at_0_ms()
         )
         await eventually(lambda: len(client.session.calls) == 2)
 
+    assert client.session.calls == [("truncate", "item_b", 0, 0), ("truncate", "item_c", 0, 0)]
+
+
+async def test_a_rejected_provider_triggered_cut_does_not_stop_later_cuts_or_end_the_conversation() -> None:
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.truncate_rejections["item_b"] = RealtimeControlException("The item was deleted.")
+        await _play(
+            conversation,
+            client.session,
+            event("response_created", response_id="resp_1"),
+            _audio("resp_1", "item_a", 48 * 1000),
+            _audio("resp_1", "item_b", 48 * 1000),
+            _audio("resp_1", "item_c", 48 * 1000),
+            event("item_truncated", item_id="item_a", content_index=0, audio_end_ms=300, truncated_by="provider"),
+            event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
+        )
+        await eventually(lambda: len(client.session.calls) == 2)
+        await conversation.interrupt()  # its turn comes only once the cuts have finished
+
+    async for _ in conversation:  # raises the error that ended the conversation, if one did
+        pass
     assert client.session.calls == [("truncate", "item_b", 0, 0), ("truncate", "item_c", 0, 0)]
 
 
@@ -695,7 +719,8 @@ class TestVerification:
     async def test_an_unacknowledged_truncate_raises_control_timeout(self) -> None:
         client = FakeRealtimeClient()
 
-        async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+        async with RealtimeAgent(client).start_conversation() as conversation:
+            shorten_timeouts(conversation)
             await _play(
                 conversation,
                 client.session,

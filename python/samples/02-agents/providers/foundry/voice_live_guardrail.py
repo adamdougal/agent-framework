@@ -27,9 +27,10 @@ Voice Live Guardrail Example
 
 This sample puts a guardrail around a live call with conversation middleware. Its hooks see the whole call:
 
-- a send hook removes card numbers from what the caller says before it reaches the model;
-- an update hook stops a reply that gives investment advice: it interrupts the reply, drops the rest of it, and has
-  the agent say a fixed line instead;
+- a send hook redacts card-number patterns in typed text passed to send(), before it reaches the model. It sees
+  the caller's speech only as audio, so it can't redact numbers the caller says aloud;
+- an update hook stops a reply whose transcript mentions stocks, shares or investing: it interrupts the reply, drops
+  the rest of it, and has the agent say a fixed line instead;
 - a close hook reports what the guardrail did once the call ends.
 
 The sample sends text and saves the spoken replies to voice_live_guardrail.wav, so it needs no microphone or speaker.
@@ -53,7 +54,7 @@ BLOCKED_WORDS = ("stock", "invest", "shares")
 
 
 class BankingGuardrail(ConversationMiddleware):
-    """Keeps card numbers away from the model, and investment advice away from the caller."""
+    """Redacts card numbers in typed text, and stops replies that mention stocks, shares or investing."""
 
     def __init__(self) -> None:
         self.redacted = 0
