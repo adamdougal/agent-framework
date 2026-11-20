@@ -44,7 +44,7 @@ These need the realtime extra: `pip install "agent-framework-foundry[realtime]" 
 | [`voice_live_handoff.py`](voice_live_handoff.py) | Hand a live call from a receptionist to a billing specialist in the same session with `RealtimeHandoffBuilder`, each in its own voice |
 | [`voice_live_tool_approval.py`](voice_live_tool_approval.py) | Ask for approval before a realtime agent's tool runs: the call waits for the app's decision, sent with `send()`, while the caller keeps talking |
 | [`voice_live_app_tool.py`](voice_live_app_tool.py) | Answer a declaration-only tool from the app's own state: the call waits for the app's result, sent with `send()` |
-| [`voice_live_guardrail.py`](voice_live_guardrail.py) | Guard a live call with conversation middleware: remove card numbers before the model hears them, stop a reply that gives investment advice, and report what was blocked when the call ends |
+| [`voice_live_guardrail.py`](voice_live_guardrail.py) | Guard a live call with conversation middleware: redact card-number patterns in typed text before the model sees it, stop a reply that mentions investing, and report what was blocked when the call ends |
 
 ## FoundryVoiceAgent Samples
 

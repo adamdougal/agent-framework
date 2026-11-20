@@ -66,7 +66,10 @@ async def main() -> None:
                         print(f"[tool result: {content.result}]")
                     elif content.type == "error":
                         print(f"[error: {content.message}]")
-                if update.finish_reason == "stop":
+                # A failed reply has no finish reason, and one that called a tool is followed by its answer.
+                if update.finish_reason != "tool_calls" and any(
+                    content.type == "realtime_event" and content.kind == "response_done" for content in update.contents
+                ):
                     break
 
     with wave.open(REPLY_PATH, "wb") as reply_file:

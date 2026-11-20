@@ -53,7 +53,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             async with agent.start_conversation() as conversation:
                 await conversation.send("What's the weather in Paris?")
                 async for update in conversation:
-                    print(update.text)
+                    for content in update.contents:
+                        if content.type == "text" and update.role == "assistant" and content.status == "completed":
+                            print(content.text)
 
         With an MCP tool, enter the agent so its connection closes with it:
 
@@ -65,7 +67,9 @@ class RawRealtimeAgent(BaseAgent, Generic[RealtimeOptionsT]):
             async with agent, agent.start_conversation() as conversation:
                 await conversation.send("When can order 1234 be delivered?")
                 async for update in conversation:
-                    print(update.text)
+                    for content in update.contents:
+                        if content.type == "text" and update.role == "assistant" and content.status == "completed":
+                            print(content.text)
     """
 
     def __init__(

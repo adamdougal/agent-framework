@@ -45,7 +45,7 @@ def get_balance() -> str:
 
 
 async def read_until_answered(conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray) -> None:
-    """Print who says what, and keep the audio, until an agent finishes a reply without calling a tool."""
+    """Print who says what, and keep the audio, until a reply ends without calling a tool, even a failed one."""
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -60,8 +60,12 @@ async def read_until_answered(conversation: RealtimeConversation[VoiceLiveOption
                 print(f"[tool result: {content.result}]")
             elif content.type == "error":
                 print(f"[error: {content.message}]")
-        if update.finish_reason == "stop":
-            return
+            elif (
+                content.type == "realtime_event"
+                and content.kind == "response_done"
+                and update.finish_reason != "tool_calls"
+            ):
+                return
 
 
 async def main() -> None:
