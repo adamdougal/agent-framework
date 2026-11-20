@@ -130,11 +130,13 @@ the contract. See [API shapes](../specs/006-python-realtime-agents.md#api-shapes
 ### Acknowledged control calls
 
 `update_session(...)`, `create_response(...)`, `say(...)`, `interrupt(played_ms=...)` and `handoff(...)` are typed
-methods on the conversation and on the provider session, so provider clients own the wire translation. Everything else
-stays a raw provider event sent through `send(...)`. Control calls are serialized, and each waits for the provider's
-acknowledgement, so a response requested after `update_session(...)` returns uses the new session, and rejections reach
-the caller, such as a handoff tool. The cost is one round trip per call, 53 to 376 ms for `session.updated`.
-Fire-and-forget updates were rejected, because their ordering would rest on undocumented in-order processing.
+methods on the conversation. The provider session has the first three, plus the lower-level `cancel_response()`,
+`truncate(...)` and `delete_item(...)` that `interrupt(...)` uses, so provider clients own the wire translation.
+Everything else stays a raw provider event sent through `send(...)`. Control calls are serialized, and each waits for
+the provider's acknowledgement, so a response requested after `update_session(...)` returns uses the new session, and
+rejections reach the caller, such as a handoff tool. The cost is one round trip per call, 53 to 376 ms for
+`session.updated`. Fire-and-forget updates were rejected, because their ordering would rest on undocumented in-order
+processing.
 
 Many Azure errors carry no client `event_id`, so the call that's waiting claims them. Barge-in cuts every unheard
 message of the response. `interrupt(...)` waits for its truncate acknowledgements. Not waiting would stop it holding up
@@ -217,11 +219,12 @@ Middleware sees audio as `data` content and must not assume an update has text.
 
 Conversation middleware, `ConversationMiddleware`, is a new category, so one guardrail covers live calls and `run()`.
 Agent middleware can't wrap a live call safely, because it reads a final result and may re-enter `call_next()`.
-Telemetry lives at the agent layer, in core. Each call is one `invoke_agent` span, with a `realtime_inference` span per
-response and its tool spans beneath it, following semantic-conventions-genai at `750e42c`, which is unreleased. The
-first upstream PR ships only that call-level trace and its metrics, because every further attribute or event may change
-with the conventions; control spans and the rest come later. Client-level spans, the Microsoft.Extensions.AI model,
-were rejected, because they have no agent context. A cancelled tool call now counts as a failure. See
+Telemetry lives at the agent layer, in core. Each call is one `invoke_agent` span. Its children, siblings of each other,
+are a `realtime_inference` span per response and an `execute_tool` span per tool call it runs. It follows
+semantic-conventions-genai at `750e42c`, which is unreleased. The first upstream PR ships only that call-level trace and
+its metrics, because every further attribute or event may change with the conventions; control spans and the rest come
+later. Client-level spans, the Microsoft.Extensions.AI model, were rejected, because they have no agent context. A
+cancelled tool call now counts as a failure. See
 [Middleware](../specs/006-python-realtime-agents.md#middleware) and
 [Telemetry](../specs/006-python-realtime-agents.md#telemetry).
 
