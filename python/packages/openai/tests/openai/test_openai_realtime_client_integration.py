@@ -11,13 +11,14 @@ can only assume.
 import asyncio
 import contextlib
 import os
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from agent_framework import Content, Message, RealtimeEvent
 from agent_framework.exceptions import RealtimeControlException
+from realtime_live_reader import Reader, core  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports]
 
 from agent_framework_openai import OpenAIRealtimeClient, OpenAIRealtimeOptions
 
@@ -37,47 +38,6 @@ CHUNK_BYTES = PCM_24K_BYTES_PER_SECOND // 50
 INTERRUPT_CLIP = Path(__file__).parent.parent / "assets" / "interrupt.pcm"
 
 
-class Reader:
-    """Reads a session's events in the background, as the conversation's receive loop does."""
-
-    def __init__(self, session: Any) -> None:
-        self.events: list[Any] = []
-        self._task = asyncio.create_task(self._read(session))
-
-    async def _read(self, session: Any) -> None:
-        async for event in session.receive():
-            self.events.append(event)
-
-    def of_response(self, response_id: str) -> list[Any]:
-        return [event for event in self.events if _core(event).get("response_id") == response_id]
-
-    def response_done(self, response_id: str) -> Any | None:
-        return next((event for event in self.of_response(response_id) if event.kind == "response_done"), None)
-
-    def of_type(self, service_event_type: str) -> list[Any]:
-        return [event for event in self.events if event.service_event_type == service_event_type]
-
-    def audio_bytes(self, response_id: str) -> int:
-        audio = [event for event in self.of_response(response_id) if event.kind == "output_audio"]
-        return sum(len(event.content.get_data_bytes()) for event in audio)
-
-    async def until(self, condition: Callable[[], Any]) -> None:
-        while not condition():
-            if self._task.done():
-                self._task.result()
-                raise AssertionError("The session ended before the condition held.")
-            await asyncio.sleep(0.02)
-
-    async def stop(self) -> None:
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
-
-
-def _core(event: Any) -> dict[str, Any]:
-    return (event.additional_properties or {}).get("core", {})
-
-
 def _raw(event_type: str, **fields: Any) -> RealtimeEvent:
     return RealtimeEvent("passthrough", raw_representation={"type": event_type, **fields})
 
@@ -91,11 +51,6 @@ async def live_session(options: OpenAIRealtimeOptions | None = None) -> AsyncGen
         reader = Reader(session)
         stack.push_async_callback(reader.stop)
         yield session, reader
-
-
-def _final_text(events: list[Any]) -> str:
-    finals = [event for event in events if event.kind == "output_text" and event.content.status == "completed"]
-    return " ".join(event.content.text for event in finals)
 
 
 async def test_text_in_and_out() -> None:
@@ -128,7 +83,7 @@ async def test_text_in_and_out() -> None:
 
     created = next(event for event in reader.of_response(counting) if event.kind == "response_created")
     assert created.raw_representation["response"]["metadata"]["af_request_id"]
-    assert _final_text(reader.of_response(counting))
+    assert reader.final_text(counting)
     errors = {
         event.raw_representation["error"]["event_id"]: event.content.error_code
         for event in reader.of_type("error")
@@ -143,7 +98,7 @@ async def test_text_in_and_out() -> None:
     assert claimed[0].raw_representation["error"]["event_id"].startswith("af_")
     assert rejected.value.code is not None
     assert auto_truncate_rejected.value.code is not None
-    capped_done = _core(reader.response_done(capped))
+    capped_done = core(reader.response_done(capped))
     assert (capped_done["status"], capped_done.get("reason")) == ("incomplete", "max_output_tokens")
 
 
@@ -169,17 +124,17 @@ async def test_short_audio_out() -> None:
         await reader.until(lambda: reader.audio_bytes(story) >= PCM_24K_BYTES_PER_SECOND // 2)
         await session.cancel_response()
         await reader.until(lambda: reader.response_done(story))
-        item_id = next(_core(event)["item_id"] for event in reader.of_response(story) if event.kind == "output_audio")
+        item_id = next(core(event)["item_id"] for event in reader.of_response(story) if event.kind == "output_audio")
         await session.truncate(item_id, 0, 200)
         await session.send(_raw("conversation.item.retrieve", item_id=item_id))
         await reader.until(lambda: reader.of_type("conversation.item.retrieved"))
 
-    assert "thanks for calling" in _final_text(reader.of_response(thanks)).lower()
+    assert "thanks for calling" in reader.final_text(thanks).lower()
     usage = next(event for event in reader.of_response(thanks) if event.kind == "usage")
     assert usage.content.usage_details["audio_output_token_count"] > 0
     voice_error = next(event for event in reader.events if event.kind == "error")
     assert voice_error.content.error_code == "cannot_update_voice"
-    assert _core(reader.response_done(story))["reason"] == "client_cancelled"
+    assert core(reader.response_done(story))["reason"] == "client_cancelled"
     retrieved = reader.of_type("conversation.item.retrieved")[0].raw_representation["item"]
     assert [part.get("transcript") for part in retrieved["content"]] == [""]
 
@@ -201,5 +156,5 @@ async def test_speech_cancels_a_response_as_turn_detected() -> None:
         await reader.until(lambda: reader.response_done(story))
 
     assert any(event.kind == "speech_started" for event in reader.events)
-    done = _core(reader.response_done(story))
+    done = core(reader.response_done(story))
     assert (done["status"], done.get("reason")) == ("cancelled", "turn_detected")
