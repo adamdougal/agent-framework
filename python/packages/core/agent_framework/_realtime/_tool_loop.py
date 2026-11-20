@@ -36,6 +36,7 @@ from ..exceptions import (
     ToolException,
     ToolExecutionException,
 )
+from ..observability import OBSERVABILITY_SETTINGS
 from ._events import RealtimeEvent
 from ._updates import app_request_update, core_attributes
 
@@ -425,10 +426,14 @@ class ToolLoop:
                 try:
                     declaring = await self._conversation._resolve_tools(proposed)  # pyright: ignore[reportPrivateUsage]
                 except (ValueError, ToolException) as refusal:
+                    reason: object = refusal
+                    if isinstance(refusal, ToolException) and not OBSERVABILITY_SETTINGS.SENSITIVE_DATA_ENABLED:
+                        # An MCP connection error can carry credentials, such as the server's command-line arguments.
+                        reason = type(refusal).__name__
                     logger.warning(
                         "The tool changes a tool call made can't be declared, so the conversation keeps the tools it "
                         "declared before: %s",
-                        refusal,
+                        reason,
                     )
                     self.on_tools_declared(self._declared)
                     return
