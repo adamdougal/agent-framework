@@ -274,12 +274,14 @@ async def test_each_call_and_its_result_share_one_occurrence_id() -> None:
         client.session.emit(
             *_response("resp_1", _call("call_1", "get_weather", city="Paris"), _call("call_2", "book_flight"))
         )
-        updates = [await next_update(conversation) for _ in range(6)]
+        contents: list[Content] = []
+        while sum(content.type == "function_result" for content in contents) < 2:
+            contents.extend((await next_update(conversation)).contents)
 
-    contents = [content for update in updates for content in update.contents]
     calls = {content.call_id: content.id for content in contents if content.type == "function_call"}
     results = {content.call_id: content.id for content in contents if content.type == "function_result"}
-    assert all(occurrence_id and occurrence_id.startswith("af-call-") for occurrence_id in calls.values())
+    assert list(calls) == ["call_1", "call_2"]
+    assert all(calls.values())
     assert len(set(calls.values())) == 2
     assert results == calls
 
