@@ -48,6 +48,12 @@ from agent_framework_foundry import (
 )
 from agent_framework_foundry._voice_live import VoiceLiveClient, _VoiceLiveConnection, _VoiceLiveSession
 
+# A client's first start in a process imports the Voice Live SDK, and its User-Agent's hosted-environment check imports
+# the agent server SDK when that's installed. On a loaded runner those one-time imports can take longer than 5 s, so
+# they happen here rather than inside whichever test's bounded start runs first.
+importlib.import_module("azure.ai.voicelive.aio")
+get_user_agent()
+
 ENDPOINT = "https://vl.services.ai.azure.com/"
 MODEL = "gpt-realtime"
 
