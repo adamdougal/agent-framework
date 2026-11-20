@@ -19,6 +19,7 @@ from agent_framework import (
     FunctionTool,
     InMemoryHistoryProvider,
     MCPStdioTool,
+    MCPStreamableHTTPTool,
     Message,
     MiddlewareBundle,
     RealtimeAgent,
@@ -29,7 +30,12 @@ from agent_framework import (
     function_middleware,
     tool,
 )
-from agent_framework.exceptions import MiddlewareException, RealtimeControlException, ToolException
+from agent_framework.exceptions import (
+    MiddlewareException,
+    RealtimeControlException,
+    ToolException,
+    UserInputRequiredException,
+)
 from agent_framework.orchestrations import RealtimeHandoffBuilder
 
 
@@ -330,6 +336,36 @@ async def test_a_handoff_whose_target_tools_cannot_connect_returns_a_result_tell
     assert result.exception is None
     assert "carry on" in str(result.result).lower()
     assert "sk-test" not in str(result.result)
+
+
+async def test_a_handoff_whose_target_tools_need_the_callers_consent_asks_the_app() -> None:
+    def needs_consent(kwargs: dict[str, Any]) -> dict[str, str]:
+        raise UserInputRequiredException([Content.from_oauth_consent_request("https://consent.example")])
+
+    calendar = MCPStreamableHTTPTool(
+        name="calendar", url="https://mcp.example", header_provider=needs_consent, load_prompts=False
+    )
+    calendar.is_connected = True
+    client = FakeRealtimeClient()
+    receptionist = _receptionist(client)
+    billing = RealtimeAgent(client, name="billing", tools=[calendar])  # type: ignore[arg-type]
+    agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+
+    async with agent.start_conversation() as conversation:
+
+        async def first_consent_request() -> Content:
+            async for update in conversation:
+                for content in update.contents:
+                    if content.type == "oauth_consent_request":
+                        return content
+            raise AssertionError("The conversation ended without asking for consent.")
+
+        asking = asyncio.create_task(first_consent_request())
+        client.session.emit(*_response("resp_1", _call("call_1", "handoff_to_billing")))
+        async with asyncio.timeout(5):
+            request = await asking
+
+    assert request.consent_link == "https://consent.example"
 
 
 async def test_of_two_handoffs_in_one_response_the_first_wins() -> None:
