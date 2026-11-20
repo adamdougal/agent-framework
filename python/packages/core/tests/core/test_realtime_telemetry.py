@@ -74,12 +74,15 @@ def _finish_reasons(span_exporter: InMemorySpanExporter) -> Any:
 
 
 async def _spans_of_response_ending(span_exporter: InMemorySpanExporter, **done: Any) -> list[ReadableSpan]:
-    """The realtime_inference spans after resp_1 is created and then done with the ``done`` attributes."""
+    """The realtime_inference spans finished once resp_1 is created and then done with the ``done`` attributes.
+
+    They're read before the conversation closes, since closing would end a span that response_done left open.
+    """
     client = FakeRealtimeClient()
     async with RealtimeAgent(client).start_conversation() as conversation:
         client.session.emit(*_response("resp_1", **done))
         await _until_response_done(conversation)
-    return _spans(span_exporter, "realtime_inference")
+        return _spans(span_exporter, "realtime_inference")
 
 
 def _metric_points(reader: InMemoryMetricReader, name: str) -> list[HistogramDataPoint]:
@@ -368,26 +371,70 @@ async def test_a_completed_response_that_called_a_tool_finishes_with_tool_call(
     assert _finish_reasons(span_exporter) == ("tool_call",)
 
 
-async def test_a_content_filtered_response_finishes_with_content_filter_and_no_error_status(
+@pytest.mark.parametrize(
+    ("done", "finish_reasons", "error_type", "status_code"),
+    [
+        pytest.param(
+            {"status": "cancelled", "reason": "turn_detected"},
+            ("turn_detected",),
+            None,
+            trace.StatusCode.UNSET,
+            id="cancelled-for-the-providers-reason",
+        ),
+        pytest.param(
+            {"status": "cancelled", "reason": "client_cancelled"},
+            ("client_cancelled",),
+            None,
+            trace.StatusCode.UNSET,
+            id="cancelled-by-the-client",
+        ),
+        pytest.param(
+            {"status": "cancelled"}, ("interrupted",), None, trace.StatusCode.UNSET, id="cancelled-without-a-reason"
+        ),
+        pytest.param(
+            {"status": "incomplete", "reason": "content_filter"},
+            ("content_filter",),
+            None,
+            trace.StatusCode.UNSET,
+            id="content-filtered",
+        ),
+        pytest.param(
+            {"status": "incomplete", "reason": "max_output_tokens"},
+            ("length",),
+            None,
+            trace.StatusCode.UNSET,
+            id="cut-at-max-output-tokens",
+        ),
+        pytest.param(
+            {"status": "incomplete", "reason": "something_else"},
+            None,
+            None,
+            trace.StatusCode.UNSET,
+            id="incomplete-for-a-reason-with-no-finish-reason",
+        ),
+        pytest.param(
+            {"status": "failed", "error_code": "rate_limit_exceeded"},
+            ("error",),
+            "rate_limit_exceeded",
+            trace.StatusCode.ERROR,
+            id="failed-with-the-providers-code",
+        ),
+        pytest.param(
+            {"status": "failed"}, ("error",), "server_error", trace.StatusCode.ERROR, id="failed-without-a-code"
+        ),
+    ],
+)
+async def test_how_a_response_ended_sets_its_spans_finish_reasons_error_type_and_status(
     span_exporter: InMemorySpanExporter,
+    done: dict[str, Any],
+    finish_reasons: tuple[str, ...] | None,
+    error_type: str | None,
+    status_code: trace.StatusCode,
 ) -> None:
-    """resp_1 ends incomplete with reason "content_filter": finish reasons ("content_filter",), status UNSET, and no
-    error.type."""
-    [span] = await _spans_of_response_ending(span_exporter, status="incomplete", reason="content_filter")
+    [span] = await _spans_of_response_ending(span_exporter, **done)
 
-    assert _attributes(span, OtelAttr.FINISH_REASONS, OtelAttr.ERROR_TYPE) == (("content_filter",), None)
-    assert span.status.status_code == trace.StatusCode.UNSET
-
-
-async def test_an_incomplete_response_with_an_unknown_reason_records_no_finish_reasons(
-    span_exporter: InMemorySpanExporter,
-) -> None:
-    """resp_1 ends incomplete with reason "something_else", which has no finish reason: its span carries no
-    gen_ai.response.finish_reasons, and its status is UNSET."""
-    [span] = await _spans_of_response_ending(span_exporter, status="incomplete", reason="something_else")
-
-    assert _attributes(span, OtelAttr.FINISH_REASONS) == (None,)
-    assert span.status.status_code == trace.StatusCode.UNSET
+    assert _attributes(span, OtelAttr.FINISH_REASONS, OtelAttr.ERROR_TYPE) == (finish_reasons, error_type)
+    assert span.status.status_code == status_code
 
 
 async def test_a_response_done_without_a_status_ends_its_span_and_the_call_goes_on(
@@ -408,43 +455,6 @@ async def test_a_response_done_without_a_status_ends_its_span_and_the_call_goes_
     spans = {_attributes(span, OtelAttr.RESPONSE_ID)[0]: span for span in _spans(span_exporter, "realtime_inference")}
     assert _attributes(spans["resp_1"], OtelAttr.FINISH_REASONS) == (None,)
     assert _attributes(spans["resp_2"], OtelAttr.FINISH_REASONS) == (("stop",),)
-
-
-async def test_a_cancelled_response_finishes_with_the_providers_reason(span_exporter: InMemorySpanExporter) -> None:
-    """resp_1 ends cancelled with reason "turn_detected": finish reasons ("turn_detected",), status UNSET."""
-    [span] = await _spans_of_response_ending(span_exporter, status="cancelled", reason="turn_detected")
-
-    assert _attributes(span, OtelAttr.FINISH_REASONS) == (("turn_detected",),)
-    assert span.status.status_code == trace.StatusCode.UNSET
-
-
-async def test_a_cancelled_response_without_a_reason_finishes_as_interrupted(
-    span_exporter: InMemorySpanExporter,
-) -> None:
-    """resp_1 ends cancelled with no reason: finish reasons ("interrupted",), status UNSET."""
-    [span] = await _spans_of_response_ending(span_exporter, status="cancelled")
-
-    assert _attributes(span, OtelAttr.FINISH_REASONS) == (("interrupted",),)
-    assert span.status.status_code == trace.StatusCode.UNSET
-
-
-async def test_a_failed_response_finishes_with_error_and_the_providers_code(
-    span_exporter: InMemorySpanExporter,
-) -> None:
-    """resp_1 ends failed with error code "rate_limit_exceeded": finish reasons ("error",), error.type
-    "rate_limit_exceeded", status ERROR."""
-    [span] = await _spans_of_response_ending(span_exporter, status="failed", error_code="rate_limit_exceeded")
-
-    assert _attributes(span, OtelAttr.FINISH_REASONS, OtelAttr.ERROR_TYPE) == (("error",), "rate_limit_exceeded")
-    assert span.status.status_code == trace.StatusCode.ERROR
-
-
-async def test_a_failed_response_without_a_code_records_server_error(span_exporter: InMemorySpanExporter) -> None:
-    """resp_1 ends failed with no error code: finish reasons ("error",), error.type "server_error", status ERROR."""
-    [span] = await _spans_of_response_ending(span_exporter, status="failed")
-
-    assert _attributes(span, OtelAttr.FINISH_REASONS, OtelAttr.ERROR_TYPE) == (("error",), "server_error")
-    assert span.status.status_code == trace.StatusCode.ERROR
 
 
 async def test_a_response_still_running_at_a_normal_close_finishes_as_interrupted(
@@ -697,23 +707,6 @@ class TestVerification:
 
         spans = {span.name.split(" ")[0]: span for span in span_exporter.get_finished_spans()}
         assert _parent_id(spans["invoke_agent"]) == _span_id(spans["guardrail"])
-
-    async def test_a_response_cancelled_by_the_client_finishes_with_client_cancelled(
-        self, span_exporter: InMemorySpanExporter
-    ) -> None:
-        """resp_1 ends cancelled with reason "client_cancelled": finish reasons ("client_cancelled",)."""
-        [span] = await _spans_of_response_ending(span_exporter, status="cancelled", reason="client_cancelled")
-
-        assert _attributes(span, OtelAttr.FINISH_REASONS) == (("client_cancelled",),)
-
-    async def test_a_response_cut_at_max_output_tokens_finishes_with_length(
-        self, span_exporter: InMemorySpanExporter
-    ) -> None:
-        """resp_1 ends incomplete with reason "max_output_tokens": finish reasons ("length",), status UNSET."""
-        [span] = await _spans_of_response_ending(span_exporter, status="incomplete", reason="max_output_tokens")
-
-        assert _attributes(span, OtelAttr.FINISH_REASONS) == (("length",),)
-        assert span.status.status_code == trace.StatusCode.UNSET
 
     async def test_a_topology_agents_conversation_span_names_it_rather_than_its_first_speaker(
         self, span_exporter: InMemorySpanExporter
