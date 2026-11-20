@@ -57,10 +57,10 @@ async def filler_line(context: FunctionInvocationContext, call_next: Callable[[]
 
 
 async def read_replies(conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray) -> None:
-    """Print each spoken line, and keep the audio, until the agent answers with the tool's result."""
-    has_result = False
-    # The filler line can still be finishing when the result arrives, so only a response created after it answers.
-    answers: set[str | None] = set()
+    """Print each spoken line, and keep the audio, until a reply other than the filler ends without calling a tool."""
+    tool_running = False
+    # A reply created while the tool runs is the filler line, which can still be finishing when the result arrives.
+    filler_responses: set[str | None] = set()
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -71,13 +71,16 @@ async def read_replies(conversation: RealtimeConversation[VoiceLiveOptions], rep
                 reply_audio.extend(base64.b64decode(content.uri.split(";base64,", 1)[1]))
             elif content.type == "function_result":
                 print(f"Tool: {content.result}")
-                has_result = True
+                tool_running = False
             elif content.type == "error":
                 print(f"Error: {content.message}")
-            elif content.type == "realtime_event" and content.kind == "response_created" and has_result:
-                answers.add(update.response_id)
-            elif content.type == "realtime_event" and content.kind == "response_done" and update.response_id in answers:
-                return
+            elif content.type == "realtime_event" and content.kind == "response_created" and tool_running:
+                filler_responses.add(update.response_id)
+            elif content.type == "realtime_event" and content.kind == "response_done":
+                if update.finish_reason == "tool_calls":
+                    tool_running = True
+                elif update.response_id not in filler_responses:
+                    return
 
 
 async def main() -> None:

@@ -53,7 +53,11 @@ async def read_reply(conversation: RealtimeConversation[OpenAIRealtimeOptions], 
                 print(f"\n[calling {content.name}({content.arguments})]\nAgent: ", end="", flush=True)
             elif content.type == "error":
                 print(f"[error: {content.message}]", end="")
-            elif content.type == "realtime_event" and content.kind == "response_done" and update.finish_reason != "tool_calls":
+            elif (
+                content.type == "realtime_event"
+                and content.kind == "response_done"
+                and update.finish_reason != "tool_calls"
+            ):
                 print()
                 return
 
