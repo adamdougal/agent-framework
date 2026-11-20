@@ -43,9 +43,8 @@ async def ask_the_supervisor(conversation: RealtimeConversation[VoiceLiveOptions
 
 
 async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> None:
-    """Print the transcript and ask for approval until the agent answers with the refund's result."""
+    """Print the transcript and ask for approval until a reply ends without calling a tool, even a failed one."""
     decisions: list[asyncio.Task[None]] = []
-    has_result = False
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -55,11 +54,13 @@ async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> No
                 decisions.append(asyncio.create_task(ask_the_supervisor(conversation, content)))
             elif content.type == "function_result":
                 print(f"Result: {content.result}")
-                has_result = True
             elif content.type == "error":
                 print(f"Error: {content.message}")
-            elif content.type == "realtime_event" and content.kind == "response_done" and has_result:
-                # The first response to finish after the result is the agent's answer.
+            elif (
+                content.type == "realtime_event"
+                and content.kind == "response_done"
+                and update.finish_reason != "tool_calls"
+            ):
                 await asyncio.gather(*decisions)
                 return
 

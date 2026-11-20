@@ -58,8 +58,7 @@ def run_orders_server() -> None:
 
 
 async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> None:
-    """Print the transcript and the MCP call until the agent answers with the tool's result."""
-    has_result = False
+    """Print the transcript and the MCP call until a reply ends without calling a tool, even a failed one."""
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -69,11 +68,13 @@ async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> No
                 print(f"MCP call: {content.name}({content.arguments})")
             elif content.type == "function_result":
                 print(f"MCP result: {content.result}")
-                has_result = True
             elif content.type == "error":
                 print(f"Error: {content.message}")
-            elif content.type == "realtime_event" and content.kind == "response_done" and has_result:
-                # The first response to finish after the result is the agent's answer.
+            elif (
+                content.type == "realtime_event"
+                and content.kind == "response_done"
+                and update.finish_reason != "tool_calls"
+            ):
                 return
 
 

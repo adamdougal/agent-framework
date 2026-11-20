@@ -38,8 +38,7 @@ get_caller_account = FunctionTool(
 
 
 async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> None:
-    """Print the transcript and answer the app-run call until the agent answers with the result."""
-    has_result = False
+    """Print the transcript and answer the app-run call until a reply ends without calling a tool, even a failed one."""
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
@@ -50,12 +49,13 @@ async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> No
                 await conversation.send(
                     Content.from_function_result(call_id=content.call_id or "", result=CALLER_ACCOUNT)
                 )
-            elif content.type == "function_result":
-                has_result = True
             elif content.type == "error":
                 print(f"Error: {content.message}")
-            elif content.type == "realtime_event" and content.kind == "response_done" and has_result:
-                # The first response to finish after the result is the agent's answer.
+            elif (
+                content.type == "realtime_event"
+                and content.kind == "response_done"
+                and update.finish_reason != "tool_calls"
+            ):
                 return
 
 
