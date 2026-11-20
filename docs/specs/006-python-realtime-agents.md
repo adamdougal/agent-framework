@@ -475,8 +475,8 @@ conversation. Entering a conversation after close starts raises `RealtimeConvers
 that starts as close begins is closed rather than adopted. Close also ends any results still waiting to be sent.
 
 1. Stop accepting input.
-2. If the socket is open, wait for pending caller transcripts, up to about 3 seconds. Skip caller turns whose response
-   ended `content_filter`.
+2. While the socket is open, wait for pending caller transcripts, up to about 3 seconds. Skip caller turns whose
+   response ended `content_filter`.
 3. Close the socket.
 4. Settle unfinished tool calls ([Tool loop](#tool-loop)).
 5. Report each exchange to the context providers ([History](#history)).

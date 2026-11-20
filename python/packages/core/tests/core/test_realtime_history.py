@@ -12,6 +12,7 @@ from agent_framework import (
     AgentSession,
     Content,
     ContextProvider,
+    ConversationContext,
     FunctionInvocationContext,
     FunctionMiddleware,
     InMemoryHistoryProvider,
@@ -404,6 +405,36 @@ async def test_a_failing_provider_skips_the_calls_later_exchanges_while_the_othe
         ([("user", "Bye")], [("assistant", "Goodbye")]),
     ]
     assert not any(content.type == "error" for update in await read_all(conversation) for content in update.contents)
+
+
+async def test_a_provider_without_a_hash_cannot_stop_the_other_providers_or_the_close_hooks() -> None:
+    class ComparedByValue(Failing):
+        """Equality without a hash, as a mutable dataclass or a pydantic model has, makes a provider unhashable."""
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, ComparedByValue) and other.source_id == self.source_id
+
+    closed: list[Exception | None] = []
+
+    async def audit(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        context.close_hooks.append(closed.append)
+        await call_next()
+
+    client = FakeRealtimeClient()
+    recorder = Recorder()
+    agent = RealtimeAgent(client, context_providers=[recorder, ComparedByValue("flaky")], middleware=[audit])
+
+    with pytest.raises(RuntimeError, match="flaky store down"):
+        async with agent.start_conversation(options=_TRANSCRIBED) as conversation:
+            await streamed(
+                conversation,
+                caller_item("item_1"),
+                caller_transcript("item_1", "Hi"),
+                *reply("resp_1", "item_2", "Hello"),
+            )
+
+    assert [texts(report) for report in recorder.reports] == [([("user", "Hi")], [("assistant", "Hello")])]
+    assert closed == [None]
 
 
 async def test_every_report_shares_one_metadata_even_when_start_left_it_empty() -> None:
@@ -840,6 +871,24 @@ async def test_close_stops_waiting_after_the_transcript_wait_and_records_the_tur
     assert dicts(conversation.history) == dicts([
         Message("user", [], message_id="item_1", additional_properties={"core": {"text_less": True}})
     ])
+
+
+async def test_close_stops_waiting_for_a_caller_transcript_once_the_session_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(realtime_conversation, "CALLER_TRANSCRIPT_WAIT_SECONDS", 10.0)
+    client = FakeRealtimeClient()
+
+    async with RealtimeAgent(client).start_conversation(options=_TRANSCRIBED) as conversation:
+        await streamed(conversation, caller_item("item_1"))
+        closing = asyncio.create_task(conversation.close())
+        await asyncio.sleep(0.05)
+        assert client.session.close_count == 0
+
+        client.session.end()
+        await asyncio.wait_for(closing, 5)
+
+    assert conversation.history[0].additional_properties == {"core": {"text_less": True}}
 
 
 # endregion

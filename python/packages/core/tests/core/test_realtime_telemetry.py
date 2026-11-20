@@ -651,6 +651,33 @@ async def test_each_response_records_operation_duration_and_token_usage(
     } == {("realtime_inference", "openai")}
 
 
+async def test_every_response_in_a_conversation_records_its_own_duration_and_token_usage(
+    span_exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """resp_1 reports 10 input and 20 output tokens, then resp_2 in the same conversation reports 30 and 40:
+    gen_ai.client.operation.duration records two values, and gen_ai.client.token.usage records two input values
+    totalling 40 and two output values totalling 60."""
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(observability, "get_meter", lambda *args, **kwargs: meter_provider.get_meter("test"))
+    client = _ModelClient("gpt-realtime")
+
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        client.session.emit(
+            *_response("resp_1", _usage("resp_1", UsageDetails(input_token_count=10, output_token_count=20))),
+            *_response("resp_2", _usage("resp_2", UsageDetails(input_token_count=30, output_token_count=40))),
+        )
+        await _until_response_done(conversation, "resp_2")
+
+    durations = _metric_points(reader, OtelAttr.LLM_OPERATION_DURATION)
+    tokens = _metric_points(reader, OtelAttr.LLM_TOKEN_USAGE)
+    assert [point.count for point in durations] == [2]
+    assert sorted((_point_attribute(point, OtelAttr.T_TYPE), point.count, point.sum) for point in tokens) == [
+        ("input", 2, 40),
+        ("output", 2, 60),
+    ]
+
+
 # endregion
 
 

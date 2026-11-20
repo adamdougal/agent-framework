@@ -68,7 +68,9 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
                 async with agent, agent.start_conversation() as conversation:
                     await conversation.send("What time is it?")
                     async for update in conversation:
-                        print(update.text)
+                        for content in update.contents:
+                            if content.type == "text" and update.role == "assistant" and content.status == "completed":
+                                print(content.text)
     """
 
     client: FoundryVoiceAgentClient

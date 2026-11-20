@@ -18,6 +18,8 @@ from agent_framework import (
     FunctionInvocationContext,
     FunctionTool,
     InMemoryHistoryProvider,
+    MCPStdioTool,
+    MCPStreamableHTTPTool,
     Message,
     MiddlewareBundle,
     RealtimeAgent,
@@ -28,7 +30,12 @@ from agent_framework import (
     function_middleware,
     tool,
 )
-from agent_framework.exceptions import MiddlewareException, RealtimeControlException
+from agent_framework.exceptions import (
+    MiddlewareException,
+    RealtimeControlException,
+    ToolException,
+    UserInputRequiredException,
+)
 from agent_framework.orchestrations import RealtimeHandoffBuilder
 
 
@@ -300,6 +307,65 @@ async def test_a_handoff_refused_before_sending_returns_a_result_telling_the_mod
     [(_, result)] = _results(client.session)
     assert active is receptionist
     assert "carry on" in str(result).lower()
+
+
+class _UnreachableMCPTool(MCPStdioTool):
+    def __init__(self) -> None:
+        super().__init__(name="accounts", command="accounts-mcp", args=["--api-key", "sk-test"], load_prompts=False)
+
+    async def connect(self, *, reset: bool = False) -> None:
+        raise ToolException("Failed to create MCP session for server 'accounts-mcp --api-key sk-test'.")
+
+
+async def test_a_handoff_whose_target_tools_cannot_connect_returns_a_result_telling_the_model_to_carry_on() -> None:
+    client = FakeRealtimeClient()
+    receptionist = _receptionist(client)
+    billing = RealtimeAgent(client, name="billing", tools=[_UnreachableMCPTool()])  # type: ignore[arg-type]
+    agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+
+    async with agent.start_conversation() as conversation:
+        client.session.emit(*_response("resp_1", _call("call_1", "handoff_to_billing")))
+        await _eventually(lambda: bool(_results(client.session)))
+        active = conversation.active_agent
+
+    [result] = [
+        content for message in client.session.sent if isinstance(message, Message) for content in message.contents
+    ]
+    assert active is receptionist
+    assert [call for call in client.session.calls if call[0] == "update_session"] == []
+    assert result.exception is None
+    assert "carry on" in str(result.result).lower()
+    assert "sk-test" not in str(result.result)
+
+
+async def test_a_handoff_whose_target_tools_need_the_callers_consent_asks_the_app() -> None:
+    def needs_consent(kwargs: dict[str, Any]) -> dict[str, str]:
+        raise UserInputRequiredException([Content.from_oauth_consent_request("https://consent.example")])
+
+    calendar = MCPStreamableHTTPTool(
+        name="calendar", url="https://mcp.example", header_provider=needs_consent, load_prompts=False
+    )
+    calendar.is_connected = True
+    client = FakeRealtimeClient()
+    receptionist = _receptionist(client)
+    billing = RealtimeAgent(client, name="billing", tools=[calendar])  # type: ignore[arg-type]
+    agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+
+    async with agent.start_conversation() as conversation:
+
+        async def first_consent_request() -> Content:
+            async for update in conversation:
+                for content in update.contents:
+                    if content.type == "oauth_consent_request":
+                        return content
+            raise AssertionError("The conversation ended without asking for consent.")
+
+        asking = asyncio.create_task(first_consent_request())
+        client.session.emit(*_response("resp_1", _call("call_1", "handoff_to_billing")))
+        async with asyncio.timeout(5):
+            request = await asking
+
+    assert request.consent_link == "https://consent.example"
 
 
 async def test_of_two_handoffs_in_one_response_the_first_wins() -> None:
