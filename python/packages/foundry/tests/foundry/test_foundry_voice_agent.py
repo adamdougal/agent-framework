@@ -28,7 +28,7 @@ from agent_framework_orchestrations import RealtimeHandoffBuilder
 from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import RealtimeServerEventResponseCreated
 from azure.core.credentials import AccessToken
-from foundry_realtime_waits import (  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports]
+from foundry_realtime_waits import (  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports] # ty: ignore[unresolved-import]
     read_all,
     reading,
     until,

@@ -29,7 +29,7 @@ from agent_framework.exceptions import (
 from aiohttp import WSMsgType, web
 from azure.core.credentials import AccessToken, AzureKeyCredential
 from azure.core.exceptions import AzureError
-from foundry_realtime_waits import (  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports]
+from foundry_realtime_waits import (  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports] # ty: ignore[unresolved-import]
     read_all,
     reading,
     until,

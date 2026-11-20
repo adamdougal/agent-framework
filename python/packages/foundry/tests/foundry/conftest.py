@@ -12,13 +12,14 @@ from pytest import MonkeyPatch, fixture
 
 
 def pytest_configure() -> None:
-    """Put this directory on sys.path so the tests can import their shared helpers by name.
+    """Put the helpers directory on sys.path so the tests can import their shared helpers by name.
 
-    Under importlib import mode, which the workspace test run uses, pytest doesn't add a test's directory itself.
+    Under importlib import mode, which the workspace test run uses, pytest doesn't add a test's directory itself. Only
+    the helpers directory goes on the path, so this conftest can't shadow another package's conftest imported by name.
     """
-    test_dir = str(Path(__file__).resolve().parent)
-    if test_dir not in sys.path:
-        sys.path.insert(0, test_dir)
+    helpers_dir = str(Path(__file__).resolve().parent / "helpers")
+    if helpers_dir not in sys.path:
+        sys.path.insert(0, helpers_dir)
 
 
 @fixture
