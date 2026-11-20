@@ -116,12 +116,13 @@ def _receptionist(client: FakeRealtimeClient, **settings: Any) -> RealtimeAgent:
     )
 
 
-def _billing(client: FakeRealtimeClient, **settings: Any) -> RealtimeAgent:
+def _billing(client: FakeRealtimeClient, description: str | None = None, **settings: Any) -> RealtimeAgent:
     default_options = cast(RealtimeOptions, {"voice": "verse", **settings})
     return RealtimeAgent(
         client,  # type: ignore[arg-type]
         name="billing",
         instructions="Answer billing questions.",
+        description=description,
         tools=[get_balance],
         default_options=default_options,
     )
@@ -185,18 +186,22 @@ async def test_every_conversation_on_a_built_agent_starts_afresh_with_the_start_
     client = FakeRealtimeClient()
     receptionist, billing = _receptionist(client), _billing(client)
 
-    agent = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist).build()
+    agent = RealtimeHandoffBuilder(participants=[billing, receptionist]).with_start_agent(receptionist).build()
 
     async with agent.start_conversation(options={"voice": "sage"}) as first:
         await first.handoff(billing)
     async with agent.start_conversation() as second:
         speaker = second.active_agent
+        await second.handoff(billing)
 
-    first_call, second_call = (session.start_options for session in client.sessions)
+    first_call, second_call = client.sessions
+    [(_, first_handoff, _)] = first_call.calls
+    [(_, second_handoff, _)] = second_call.calls
     assert isinstance(agent, RealtimeAgent)
     assert speaker is receptionist
-    assert first_call["voice"] == "sage"
-    assert second_call == {**first_call, "voice": "alloy"}
+    assert (first_call.start_options["voice"], first_handoff["voice"]) == ("sage", "sage")
+    assert second_call.start_options == {**first_call.start_options, "voice": "alloy"}
+    assert second_handoff == {**first_handoff, "voice": "verse"}
 
 
 async def test_the_session_opens_with_the_start_agents_instructions_voice_and_tool_choice() -> None:
@@ -278,7 +283,7 @@ async def test_a_handoff_tools_description_falls_back_from_add_handoff_to_the_ta
 ) -> None:
     client = FakeRealtimeClient()
     receptionist = _receptionist(client)
-    billing = RealtimeAgent(client, name="billing", description=billing_description)  # type: ignore[arg-type]
+    billing = _billing(client, description=billing_description)
     builder = RealtimeHandoffBuilder(participants=[receptionist, billing]).with_start_agent(receptionist)
     # The fallback rows keep the default topology, which resolves descriptions separately from add_handoff.
     if add_handoff_description is not None:
