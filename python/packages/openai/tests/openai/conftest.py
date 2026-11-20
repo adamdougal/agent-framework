@@ -19,10 +19,11 @@ OPENAI_INTEGRATION_TESTS_SKIP_REASON: str | None = (
 
 
 def pytest_configure() -> None:
-    """CI's importlib import mode leaves this directory off sys.path, and the live modules import a helper by name."""
-    test_dir = str(Path(__file__).resolve().parent)
-    if test_dir not in sys.path:
-        sys.path.insert(0, test_dir)
+    """CI's importlib import mode leaves the live modules' helper off sys.path. Only the helper directory goes on it,
+    so another package's bare ``from conftest import`` can't find this conftest."""
+    helpers = str(Path(__file__).resolve().parent / "helpers")
+    if helpers not in sys.path:
+        sys.path.insert(0, helpers)
 
 
 @fixture(autouse=True)

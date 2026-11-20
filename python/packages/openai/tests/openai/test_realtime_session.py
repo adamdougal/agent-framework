@@ -604,12 +604,15 @@ async def test_a_cancelled_updates_late_acknowledgement_does_not_answer_the_next
     assert session.options == {"max_tokens": 100, "instructions": "B."}
 
 
+@pytest.mark.parametrize("speech_first", [False, True], ids=["rejection first", "speech first"])
 @pytest.mark.parametrize("echoing", ["no id", "a server id", "its own id"])
-async def test_a_cancelled_updates_late_rejection_retires_it_without_failing_the_next_update(echoing: str) -> None:
-    """update_session A is cancelled after it's sent, then update B is sent. A speech_started arrives, then A's
-    rejection echoing no event_id as on Voice Live, the server's own "evt_srv_9", or A's event_id as GA providers do:
-    the rejection streams as an error and retires A without failing B, which resolves on the next session.updated
-    without A's settings."""
+async def test_a_cancelled_updates_late_rejection_retires_it_without_failing_the_next_update(
+    echoing: str, speech_first: bool
+) -> None:
+    """update_session A is cancelled after it's sent, then update B is sent. A's rejection, echoing no event_id as on
+    Voice Live, the server's own "evt_srv_9", or A's event_id as GA providers do, arrives first or behind a
+    speech_started: it streams as an error and retires A without failing B, which then resolves on the next
+    session.updated without A's settings."""
     session, connection = await started()
     connection.responder = None
     speech_started = {
@@ -628,13 +631,14 @@ async def test_a_cancelled_updates_late_rejection_retires_it_without_failing_the
         updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
         await connection.wait_sent("session.update")
         echoed = {"no id": None, "a server id": "evt_srv_9", "its own id": abandoned_request["event_id"]}[echoing]
-        await read_through(connection, reader, speech_started, rejection("invalid_value", event_id=echoed))
+        before = [speech_started] if speech_first else []
+        await read_through(connection, reader, *before, rejection("invalid_value", event_id=echoed))
+        assert [event.content.error_code for event in reader.of_kind("error")] == ["invalid_value"]
         assert not updating.done()
 
         connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
         await asyncio.wait_for(updating, 5)
 
-    assert [event.content.error_code for event in reader.of_kind("error")] == ["invalid_value"]
     assert session.options == {"instructions": "B."}
 
 

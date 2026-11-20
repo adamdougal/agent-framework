@@ -17,7 +17,7 @@ import pytest
 from agent_framework import Content, Message, RealtimeEvent, tool
 from agent_framework.exceptions import RealtimeConnectionException, RealtimeControlException
 from azure.identity.aio import AzureCliCredential
-from realtime_live_reader import Reader, core  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports]
+from realtime_live_reader import Reader, core  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports] # ty: ignore[unresolved-import]
 
 from agent_framework_openai import OpenAIRealtimeClient, OpenAIRealtimeOptions
 
