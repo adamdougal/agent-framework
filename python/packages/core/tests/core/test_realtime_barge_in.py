@@ -44,7 +44,28 @@ async def _play(conversation: object, session: FakeRealtimeSession, *events: Rea
         await next_update(conversation)
 
 
-async def test_interrupt_cuts_a_partly_heard_message_at_played_ms() -> None:
+@pytest.mark.parametrize(
+    ("messages", "played_ms", "cuts"),
+    [
+        pytest.param(["item_1"], 959, [("item_1", 959)], id="cut-41-ms-before-the-end"),
+        pytest.param(["item_1"], 960, [], id="heard-to-within-40-ms-of-the-end-is-cancelled-but-not-cut"),
+        pytest.param(
+            ["item_a", "item_b", "item_c"],
+            400,
+            [("item_a", 400), ("item_b", 0), ("item_c", 0)],
+            id="cut-inside-the-first-message-and-all-after-it",
+        ),
+        pytest.param(["item_a", "item_b"], 1500, [("item_b", 500)], id="played-ms-carries-into-the-second-message"),
+        pytest.param(
+            ["item_a", "item_b"], 980, [("item_b", 0)], id="a-message-heard-within-its-slack-uses-up-played-ms"
+        ),
+    ],
+)
+async def test_interrupt_spends_played_ms_across_the_playing_responses_messages_in_order(
+    messages: list[str], played_ms: int, cuts: list[tuple[str, int]]
+) -> None:
+    """The playing response's messages are each one second long. Interrupting cancels it, cuts the message played_ms
+    ends in unless that was heard to within 40 ms of its end, and truncates every later one at 0 ms."""
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
@@ -52,80 +73,11 @@ async def test_interrupt_cuts_a_partly_heard_message_at_played_ms() -> None:
             conversation,
             client.session,
             event("response_created", response_id="resp_1"),
-            _audio("resp_1", "item_1", 48 * 1000),
+            *(_audio("resp_1", item_id, 48 * 1000) for item_id in messages),
         )
-        await conversation.interrupt(played_ms=400)
+        await conversation.interrupt(played_ms=played_ms)
 
-    assert client.session.calls == [("cancel_response",), ("truncate", "item_1", 0, 400)]
-
-
-async def test_a_message_heard_to_within_40_ms_of_its_end_is_not_cut() -> None:
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        await _play(
-            conversation,
-            client.session,
-            event("response_created", response_id="resp_1"),
-            _audio("resp_1", "item_1", 48 * 1000),
-        )
-        await conversation.interrupt(played_ms=960)
-
-    assert client.session.calls == [("cancel_response",)]
-
-
-async def test_played_ms_carries_across_the_responses_messages() -> None:
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        await _play(
-            conversation,
-            client.session,
-            event("response_created", response_id="resp_1"),
-            _audio("resp_1", "item_a", 48 * 1000),
-            _audio("resp_1", "item_b", 48 * 1000),
-        )
-        await conversation.interrupt(played_ms=1500)
-
-    assert client.session.calls == [("cancel_response",), ("truncate", "item_b", 0, 500)]
-
-
-async def test_messages_after_the_cut_are_truncated_at_0_ms() -> None:
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        await _play(
-            conversation,
-            client.session,
-            event("response_created", response_id="resp_1"),
-            _audio("resp_1", "item_a", 48 * 1000),
-            _audio("resp_1", "item_b", 48 * 1000),
-            _audio("resp_1", "item_c", 48 * 1000),
-        )
-        await conversation.interrupt(played_ms=400)
-
-    assert client.session.calls == [
-        ("cancel_response",),
-        ("truncate", "item_a", 0, 400),
-        ("truncate", "item_b", 0, 0),
-        ("truncate", "item_c", 0, 0),
-    ]
-
-
-async def test_a_message_heard_within_its_slack_leaves_none_of_played_ms_for_the_next() -> None:
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client).start_conversation() as conversation:
-        await _play(
-            conversation,
-            client.session,
-            event("response_created", response_id="resp_1"),
-            _audio("resp_1", "item_a", 48 * 1000),
-            _audio("resp_1", "item_b", 48 * 1000),
-        )
-        await conversation.interrupt(played_ms=980)
-
-    assert client.session.calls == [("cancel_response",), ("truncate", "item_b", 0, 0)]
+    assert client.session.calls == [("cancel_response",), *(("truncate", item_id, 0, end) for item_id, end in cuts)]
 
 
 async def test_each_audio_part_of_a_message_is_measured_and_cut_on_its_own() -> None:
@@ -340,8 +292,28 @@ async def test_a_late_acknowledgement_of_a_timed_out_cut_stops_it_being_retried(
     assert client.session.calls == [("truncate", "item_a", 0, 400)]
 
 
-async def _cut_after_400_ms(media_type: str, byte_count: int) -> list[tuple[object, ...]]:
-    """Play one message in ``media_type`` and interrupt it after 400 ms; return the session's calls."""
+@pytest.mark.parametrize(
+    ("media_type", "half_second_bytes"),
+    [
+        pytest.param("audio/pcm;rate=16000", 16000, id="pcm-16khz"),
+        pytest.param("audio/pcm;rate=8000", 8000, id="pcm-8khz"),
+        pytest.param("audio/pcm", 24000, id="pcm-without-a-rate-is-24khz"),
+        pytest.param("audio/pcmu", 4000, id="g711-mu-law-is-8khz-8-bit"),
+        pytest.param("audio/pcma", 4000, id="g711-a-law-is-8khz-8-bit"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("played_ms", "cuts"),
+    [
+        pytest.param(459, [("truncate", "item_1", 0, 459)], id="cut-41-ms-before-its-end"),
+        pytest.param(460, [], id="heard-to-within-40-ms-of-its-end"),
+    ],
+)
+async def test_half_a_second_of_audio_is_cut_at_played_ms_unless_heard_to_within_40_ms_of_its_end(
+    media_type: str, half_second_bytes: int, played_ms: int, cuts: list[tuple[object, ...]]
+) -> None:
+    """Half a second of audio in each format barge-in can measure is cut at played_ms 41 ms before its end, and counts
+    as heard 40 ms before it."""
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client).start_conversation() as conversation:
@@ -349,24 +321,12 @@ async def _cut_after_400_ms(media_type: str, byte_count: int) -> list[tuple[obje
             conversation,
             client.session,
             event("response_created", response_id="resp_1"),
-            _audio("resp_1", "item_1", byte_count, media_type=media_type),
+            _audio("resp_1", "item_1", half_second_bytes, media_type=media_type),
             event("response_done", response_id="resp_1", status="cancelled", reason="turn_detected"),
         )
-        await conversation.interrupt(played_ms=400)
+        await conversation.interrupt(played_ms=played_ms)
 
-    return client.session.calls
-
-
-async def test_audio_length_follows_the_pcm_rate() -> None:
-    assert await _cut_after_400_ms("audio/pcm;rate=16000", 16000) == [("truncate", "item_1", 0, 400)]
-
-
-async def test_pcm_without_a_rate_is_24_khz() -> None:
-    assert await _cut_after_400_ms("audio/pcm", 24000) == [("truncate", "item_1", 0, 400)]
-
-
-async def test_g711_audio_is_8_khz_8_bit() -> None:
-    assert await _cut_after_400_ms("audio/pcmu", 4000) == [("truncate", "item_1", 0, 400)]
+    assert client.session.calls == cuts
 
 
 async def test_audio_in_an_unknown_format_is_not_cut() -> None:
@@ -673,26 +633,6 @@ async def test_unheard_text_leaves_history_as_soon_as_the_cut_response_has_finis
 
 
 class TestVerification:
-    async def test_a_message_heard_to_41_ms_before_its_end_is_cut_there(self) -> None:
-        client = FakeRealtimeClient()
-
-        async with RealtimeAgent(client).start_conversation() as conversation:
-            await _play(
-                conversation,
-                client.session,
-                event("response_created", response_id="resp_1"),
-                _audio("resp_1", "item_1", 48 * 1000),
-            )
-            await conversation.interrupt(played_ms=959)
-
-        assert client.session.calls == [("cancel_response",), ("truncate", "item_1", 0, 959)]
-
-    async def test_8_khz_pcm_audio_length(self) -> None:
-        assert await _cut_after_400_ms("audio/pcm;rate=8000", 8000) == [("truncate", "item_1", 0, 400)]
-
-    async def test_pcma_audio_is_8_khz_8_bit(self) -> None:
-        assert await _cut_after_400_ms("audio/pcma", 4000) == [("truncate", "item_1", 0, 400)]
-
     async def test_each_truncate_waits_for_its_acknowledgement(self) -> None:
         client = FakeRealtimeClient()
 
