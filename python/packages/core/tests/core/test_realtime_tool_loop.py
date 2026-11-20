@@ -121,6 +121,16 @@ def _results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
     return [(content.call_id, content.result) for message in _tool_messages(session) for content in message.contents]
 
 
+def _writes(session: FakeRealtimeSession) -> list[object]:
+    """What ``session`` was sent, with each message's role and ``(call_id, result)`` pairs copied as they are now."""
+    return [
+        (item.role, [(content.call_id, content.result) for content in item.contents])
+        if isinstance(item, Message)
+        else item
+        for item in session.sent
+    ]
+
+
 # region Batches
 
 
@@ -155,19 +165,6 @@ async def test_a_call_does_not_run_before_its_response_finishes() -> None:
         assert runs == []
 
 
-async def test_a_batch_requests_one_follow_up_after_its_results() -> None:
-    client = FakeRealtimeClient()
-
-    async with RealtimeAgent(client, tools=[get_weather]).start_conversation():
-        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
-        await eventually(lambda: bool(client.session.calls))
-        await asyncio.sleep(0.01)
-
-    assert client.session.calls == [("create_response", None)]
-    assert isinstance(client.session.sent[-1], Message)
-    assert client.session.sent[-1].role == "tool"
-
-
 async def test_each_settled_call_streams_a_function_result_update() -> None:
     client = FakeRealtimeClient()
     agent = RealtimeAgent(client, tools=[get_weather], name="receptionist")
@@ -185,51 +182,50 @@ async def test_each_settled_call_streams_a_function_result_update() -> None:
     assert [(content.call_id, content.result) for content in update.contents] == [("call_1", "Sunny in Paris")]
 
 
-async def test_results_go_out_in_model_order_in_one_message() -> None:
+async def test_concurrent_calls_send_their_results_in_model_order_in_one_message_before_one_follow_up() -> None:
+    """call_1 and call_3 each wait on the other, so neither finishes unless they run at once, and call_3 finishes
+    first. call_2 is synchronous, so it runs on a worker thread. When the only follow-up is requested, every write so
+    far is one tool message holding the three results in model order, and nothing is written after it."""
     client = FakeRealtimeClient()
+    slow_started, fast_finished = asyncio.Event(), asyncio.Event()
 
     @tool
-    async def slow_lookup() -> str:
-        """Look something up slowly."""
-        await asyncio.sleep(0.02)
-        return "slow"
+    async def slow() -> str:
+        """Finish after the fast call."""
+        slow_started.set()
+        await fast_finished.wait()
+        return "slow done"
 
     @tool
-    def fast_lookup() -> str:
-        """Look something up quickly."""
-        return "fast"
-
-    async with RealtimeAgent(client, tools=[slow_lookup, fast_lookup]).start_conversation():
-        client.session.emit(*_response("resp_1", _call("call_1", "slow_lookup"), _call("call_2", "fast_lookup")))
-        await eventually(lambda: bool(_tool_messages(client.session)))
-
-    assert len(_tool_messages(client.session)) == 1
-    assert _results(client.session) == [("call_1", "slow"), ("call_2", "fast")]
-
-
-async def test_calls_run_concurrently_by_default() -> None:
-    client = FakeRealtimeClient()
-    started = {"first": asyncio.Event(), "second": asyncio.Event()}
+    def synchronous() -> str:
+        """Finish at once."""
+        return "synchronous done"
 
     @tool
-    async def first() -> str:
-        """Wait for the second call to start."""
-        started["first"].set()
-        await started["second"].wait()
-        return "first done"
+    async def fast() -> str:
+        """Finish once the slow call has started."""
+        await slow_started.wait()
+        fast_finished.set()
+        return "fast done"
 
-    @tool
-    async def second() -> str:
-        """Wait for the first call to start."""
-        started["second"].set()
-        await started["first"].wait()
-        return "second done"
+    async with RealtimeAgent(client, tools=[slow, synchronous, fast]).start_conversation():
+        session = client.session
+        writes_as_each_follow_up_began: list[list[object]] = []
+        session.on_call("create_response", lambda options: writes_as_each_follow_up_began.append(_writes(session)))
+        session.emit(
+            *_response(
+                "resp_1",
+                _call("call_1", "slow"),
+                _call("call_2", "synchronous"),
+                _call("call_3", "fast"),
+            )
+        )
+        await eventually(lambda: bool(session.calls))
+        await asyncio.sleep(0.01)  # room for a second follow-up or a later write
 
-    async with RealtimeAgent(client, tools=[first, second]).start_conversation():
-        client.session.emit(*_response("resp_1", _call("call_1", "first"), _call("call_2", "second")))
-        await eventually(lambda: bool(_tool_messages(client.session)))
-
-    assert _results(client.session) == [("call_1", "first done"), ("call_2", "second done")]
+    results = [("tool", [("call_1", "slow done"), ("call_2", "synchronous done"), ("call_3", "fast done")])]
+    assert writes_as_each_follow_up_began == [results]
+    assert (_writes(session), session.calls) == (results, [("create_response", None)])
 
 
 async def test_calls_run_in_model_order_without_concurrent_invocation() -> None:

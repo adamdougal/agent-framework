@@ -79,6 +79,7 @@ class FakeRealtimeSession:
         self.send_error: BaseException | None = None
         self._response_count = 0
         self._holds: dict[str, asyncio.Event] = {}
+        self._observers: dict[str, Callable[..., None]] = {}
         self.delays: dict[str, float] = {}
         self.cleanup_delays: dict[str, float] = {}
         self.cleanup_holds: dict[str, asyncio.Event] = {}
@@ -121,6 +122,7 @@ class FakeRealtimeSession:
         await self.close()
 
     async def send(self, value: RealtimeEvent | Message) -> None:
+        self._observe("send", value)
         self.send_attempts += 1
         await asyncio.sleep(0)  # a wire write yields to the event loop
         await self._acknowledge("send")
@@ -140,6 +142,15 @@ class FakeRealtimeSession:
             if isinstance(event, BaseException):
                 raise event
             yield event
+
+    def on_call(self, method: str, observe: Callable[..., None]) -> None:
+        """Run ``observe`` with the call's arguments as each ``send`` or ``create_response`` call starts, before it
+        yields."""
+        self._observers[method] = observe
+
+    def _observe(self, method: str, *arguments: Any) -> None:
+        if (observe := self._observers.get(method)) is not None:
+            observe(*arguments)
 
     def hold(self, method: str) -> asyncio.Event:
         """Make calls to ``method`` wait, as for an acknowledgement, until the returned event is set."""
@@ -181,6 +192,7 @@ class FakeRealtimeSession:
         return "resp_said"
 
     async def create_response(self, options: RealtimeOptions | None = None) -> str:
+        self._observe("create_response", options)
         self.calls.append(("create_response", options))
         # The response this call creates, or the error it ends with, fixed when the call is made.
         events = list(self.create_response_events)
