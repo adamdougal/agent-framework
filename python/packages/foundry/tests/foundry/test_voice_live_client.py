@@ -7,13 +7,12 @@ payload and mapping tests drive the Voice Live session through a scripted in-mem
 """
 
 import asyncio
-import contextlib
 import importlib.util
 import json
 import re
 import threading
 import time
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import Mapping
 from types import TracebackType
 from typing import Any, cast
 
@@ -30,6 +29,12 @@ from agent_framework.exceptions import (
 from aiohttp import WSMsgType, web
 from azure.core.credentials import AccessToken, AzureKeyCredential
 from azure.core.exceptions import AzureError
+from foundry_realtime_waits import (  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports] # ty: ignore[unresolved-import]
+    read_all,
+    reading,
+    until,
+    wait_sent,
+)
 
 from agent_framework_foundry import (
     AzureAnimation,
@@ -42,6 +47,12 @@ from agent_framework_foundry import (
     VoiceLiveOptions,
 )
 from agent_framework_foundry._voice_live import VoiceLiveClient, _VoiceLiveConnection, _VoiceLiveSession
+
+# A client's first start in a process imports the Voice Live SDK, and its User-Agent's hosted-environment check imports
+# the agent server SDK when that's installed. On a loaded runner those one-time imports can take longer than 5 s, so
+# they happen here rather than inside whichever test's bounded start runs first.
+importlib.import_module("azure.ai.voicelive.aio")
+get_user_agent()
 
 ENDPOINT = "https://vl.services.ai.azure.com/"
 MODEL = "gpt-realtime"
@@ -138,11 +149,6 @@ class VoiceLiveServer:
         await self._websocket.close(code=code)
 
 
-async def read_all(session: Any) -> list[Any]:
-    """Every realtime event the session yields until its connection ends."""
-    return [event async for event in session.receive()]
-
-
 class FakeConnection:
     """A scripted connection: records what's sent, answers each session.update with an echoing session.updated, and
     serves pushed server events in order.
@@ -175,19 +181,6 @@ class FakeConnection:
         for event in events:
             self._incoming.put_nowait(event)
 
-    async def wait_sent(self, event_type: str, timeout: float = 5.0) -> dict[str, Any]:
-        """Wait for the next event of ``event_type`` sent after this call, and return it."""
-        already_sent = len(self.sent)
-
-        async def poll() -> dict[str, Any]:
-            while True:
-                for event in self.sent[already_sent:]:
-                    if event["type"] == event_type:
-                        return event
-                await asyncio.sleep(0.005)
-
-        return await asyncio.wait_for(poll(), timeout)
-
 
 def response_created(response_id: str, request_id: str | None = None) -> dict[str, Any]:
     """A response.created event, echoing ``request_id`` in its metadata when given."""
@@ -197,34 +190,6 @@ def response_created(response_id: str, request_id: str | None = None) -> dict[st
         "event_id": "evt_created",
         "response": {"id": response_id, "metadata": metadata},
     }
-
-
-@contextlib.asynccontextmanager
-async def reading(session: Any) -> AsyncGenerator[list[Any]]:
-    """Read the session's events in the background for the duration of the block, as the conversation does."""
-    events: list[Any] = []
-
-    async def read() -> None:
-        async for event in session.receive():
-            events.append(event)
-
-    task = asyncio.create_task(read())
-    try:
-        yield events
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-
-async def until(condition: Any, timeout: float = 5.0) -> None:
-    """Wait until ``condition()`` holds."""
-
-    async def poll() -> None:
-        while not condition():  # noqa: ASYNC110 - the condition reads state another task updates
-            await asyncio.sleep(0.005)
-
-    await asyncio.wait_for(poll(), timeout)
 
 
 async def voice_live_session(options: VoiceLiveOptions | None = None) -> tuple[Any, FakeConnection]:
@@ -348,9 +313,10 @@ def test_missing_sdk_raises_the_install_hint(monkeypatch: pytest.MonkeyPatch) ->
 # region Connecting (loopback server)
 
 
-async def test_start_session_connects_with_version_model_and_key() -> None:
+async def test_start_session_connects_with_version_model_key_and_user_agent() -> None:
     """start_session() against the loopback server connects with query api-version "2026-07-15" and model
-    "gpt-realtime", header api-key "k", and returns once the server acknowledges the first session.update."""
+    "gpt-realtime", header api-key "k" and a User-Agent that starts with the agent-framework-python user agent, and
+    returns once the server acknowledges the first session.update."""
     async with VoiceLiveServer() as server:
         client = VoiceLiveClient(endpoint=server.endpoint, model=MODEL, api_key="k")
         session = await asyncio.wait_for(client.start_session(), 5)
@@ -359,6 +325,7 @@ async def test_start_session_connects_with_version_model_and_key() -> None:
     assert server.query["api-version"] == "2026-07-15"
     assert server.query["model"] == MODEL
     assert server.headers["api-key"] == "k"
+    assert server.headers["User-Agent"].startswith(get_user_agent())
 
 
 async def test_first_event_sent_is_a_session_update_even_without_options() -> None:
@@ -467,16 +434,6 @@ async def test_token_provider_callable_sends_a_bearer_token() -> None:
             await session.close()
 
         assert server.headers["Authorization"] == f"Bearer {token}"
-
-
-async def test_user_agent_carries_the_agent_framework_prefix() -> None:
-    """The handshake's User-Agent starts with the agent-framework-python user agent."""
-    async with VoiceLiveServer() as server:
-        client = VoiceLiveClient(endpoint=server.endpoint, model=MODEL, api_key="k")
-        session = await asyncio.wait_for(client.start_session(), 5)
-        await session.close()
-
-    assert server.headers["User-Agent"].startswith(get_user_agent())
 
 
 async def test_rejected_handshake_raises_a_connection_exception() -> None:
@@ -799,7 +756,7 @@ async def test_per_response_instructions_are_dropped() -> None:
 
     async with reading(session):
         creating = asyncio.create_task(session.create_response({"instructions": "Short.", "max_tokens": 50}))
-        request = await connection.wait_sent("response.create")
+        request = await wait_sent(connection.sent, "response.create")
         connection.push(response_created("resp_1", request["response"]["metadata"]["af_request_id"]))
         await asyncio.wait_for(creating, 5)
 
@@ -816,7 +773,7 @@ async def test_per_response_output_modalities_are_sent_as_modalities() -> None:
 
     async with reading(session):
         creating = asyncio.create_task(session.create_response({"output_modalities": ["audio"]}))
-        request = await connection.wait_sent("response.create")
+        request = await wait_sent(connection.sent, "response.create")
         connection.push(response_created("resp_1", request["response"]["metadata"]["af_request_id"]))
         await asyncio.wait_for(creating, 5)
 
@@ -838,7 +795,7 @@ async def test_say_with_an_azure_voice_sends_a_pre_generated_message() -> None:
 
     async with reading(session):
         saying = asyncio.create_task(session.say("Hi."))
-        request = await connection.wait_sent("response.create")
+        request = await wait_sent(connection.sent, "response.create")
         connection.push(response_created("resp_1"))
 
         assert await asyncio.wait_for(saying, 5) == "resp_1"
@@ -978,7 +935,7 @@ async def test_cancel_response_sends_no_response_id() -> None:
         connection.push(response_created("resp_1"))
         await until(lambda: any(event.kind == "response_created" for event in events))
         cancelling = asyncio.create_task(session.cancel_response())
-        cancel = await connection.wait_sent("response.cancel")
+        cancel = await wait_sent(connection.sent, "response.cancel")
         connection.push({"type": "response.done", "event_id": "evt_done", "response": {"id": "resp_1"}})
         await asyncio.wait_for(cancelling, 5)
 
