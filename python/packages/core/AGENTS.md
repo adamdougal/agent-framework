@@ -131,8 +131,8 @@ Ownership:
   and `interrupt(played_ms=...)` are built from the session's `update_session(...)`, `cancel_response()`,
   `truncate(...)` and `delete_item(...)`. The tools and the active agent change only once the provider acknowledges.
 - Provider clients own the wire protocol; core acts on event kinds.
-- `RealtimeAgent`, not the client, is the middleware and telemetry layer. History and telemetry record inputs after the
-  send hooks and provider events before the update hooks.
+- `RealtimeAgent`, not the client, is the middleware and telemetry layer. History records app input after the send
+  hooks, and history and telemetry record provider events before the update hooks.
 - Realtime reuses chat's private helpers, such as `_append_tools_with_mcp_functions(...)`,
   `_execute_function_calls(...)` and `observability`'s span and metric helpers, through line-level `reportPrivateUsage`
   suppressions. It never makes a helper public just for the checker.
