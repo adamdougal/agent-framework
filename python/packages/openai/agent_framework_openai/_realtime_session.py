@@ -1021,13 +1021,6 @@ def _audio_format(media_type: str) -> dict[str, Any]:
     return dict(_GA_AUDIO_FORMATS[media_type])
 
 
-def _check_audio_formats(options: Mapping[str, Any]) -> None:  # pyright: ignore[reportUnusedFunction]
-    """Raise before connecting for an audio format the session would only reject with a socket to clean up."""
-    for key in ("input_audio_format", "output_audio_format"):
-        if key in options:
-            _audio_format(options[key])
-
-
 def _item_create(item: dict[str, Any]) -> dict[str, Any]:
     return {"type": "conversation.item.create", "item": item}
 

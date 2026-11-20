@@ -14,11 +14,8 @@ from agent_framework import FunctionTool, load_settings, prepend_agent_framework
 from agent_framework._feature_stage import ExperimentalFeature, experimental
 from agent_framework._realtime._conversation import _refuse_hosted_approvals  # pyright: ignore[reportPrivateUsage]
 from agent_framework.exceptions import RealtimeConnectionException
-from agent_framework_openai._realtime_session import (
-    OpenAIRealtimeConnection,
-    OpenAIRealtimeSession,
-    _check_audio_formats,  # pyright: ignore[reportPrivateUsage]
-)
+from agent_framework_openai._realtime_client import _check_audio_formats  # pyright: ignore[reportPrivateUsage]
+from agent_framework_openai._realtime_session import OpenAIRealtimeConnection, OpenAIRealtimeSession
 from azure.ai.projects.aio import AIProjectClient
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 

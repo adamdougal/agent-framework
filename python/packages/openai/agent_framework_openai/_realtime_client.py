@@ -18,7 +18,7 @@ from agent_framework.exceptions import RealtimeConnectionException, SettingNotFo
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from ._realtime_options import OpenAIRealtimeOptionsT
-from ._realtime_session import OpenAIRealtimeSession, _check_audio_formats  # pyright: ignore[reportPrivateUsage]
+from ._realtime_session import OpenAIRealtimeSession, _audio_format  # pyright: ignore[reportPrivateUsage]
 from ._shared import (
     AzureTokenProvider,
     _resolve_azure_credential_to_token_provider,  # pyright: ignore[reportPrivateUsage]
@@ -227,6 +227,13 @@ def _off_the_event_loop(provider: AzureTokenProvider) -> Callable[[], Awaitable[
         return token
 
     return fetch_token
+
+
+def _check_audio_formats(options: Mapping[str, Any]) -> None:
+    """Raise before connecting for an audio format the session would only reject with a socket to clean up."""
+    for key in ("input_audio_format", "output_audio_format"):
+        if key in options:
+            _audio_format(options[key])
 
 
 def _close_code(closed: Any) -> int | None:
