@@ -16,33 +16,23 @@ from agent_framework import (
     FunctionTool,
     Message,
     RealtimeAgent,
-    RealtimeEvent,
     function_middleware,
     tool,
 )
 from agent_framework._mcp import MCPTool
 from agent_framework.exceptions import RealtimeConversationClosedException, UserInputRequiredException
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually
+from .realtime_helpers import (
+    FakeRealtimeClient,
+    call_event,
+    event,
+    eventually,
+    response_events,
+    sent_results,
+    tool_messages,
+)
 
 _READERS: set[asyncio.Task[None]] = set()
-
-
-def _call(call_id: str, name: str, *, response_id: str = "resp_1", **arguments: Any) -> RealtimeEvent:
-    return event(
-        "function_call",
-        content=Content.from_function_call(call_id=call_id, name=name, arguments=arguments),
-        response_id=response_id,
-        item_id=f"item_{call_id}",
-    )
-
-
-def _response(response_id: str, *calls: RealtimeEvent) -> list[RealtimeEvent]:
-    return [
-        event("response_created", response_id=response_id),
-        *calls,
-        event("response_done", response_id=response_id, status="completed"),
-    ]
 
 
 class _InProcessMCPTool(MCPTool):
@@ -74,14 +64,6 @@ def _of_type(updates: list[AgentResponseUpdate], content_type: str) -> list[Agen
     return [update for update in updates if any(content.type == content_type for content in update.contents)]
 
 
-def _tool_messages(session: FakeRealtimeSession) -> list[Message]:
-    return [message for message in session.sent if isinstance(message, Message) and message.role == "tool"]
-
-
-def _results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
-    return [(content.call_id, content.result) for message in _tool_messages(session) for content in message.contents]
-
-
 # region Approvals
 
 
@@ -98,16 +80,16 @@ async def test_a_call_needing_approval_streams_one_approval_request_and_does_not
         return f"refunded {amount}"
 
     client = FakeRealtimeClient()
-    call = _call("call_1", "issue_refund", amount=5)
+    call = call_event("call_1", "issue_refund", amount=5)
 
     async with RealtimeAgent(client, tools=[issue_refund], name="billing").start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", call))
+        client.session.emit(*response_events("resp_1", call))
         await eventually(lambda: bool(_of_type(updates, "function_approval_request")))
         await asyncio.sleep(0.01)
 
         assert runs == []
-        assert _tool_messages(client.session) == []
+        assert tool_messages(client.session) == []
 
     [request_update] = _of_type(updates, "function_approval_request")
     [request] = request_update.contents
@@ -149,14 +131,14 @@ async def test_an_approved_call_runs_and_its_result_and_follow_up_go_out() -> No
 
     async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         request = await _approval_request(updates)
 
         await conversation.send(request.to_function_approval_response(approved=True))
         await eventually(lambda: bool(client.session.calls))
 
     assert runs == [5]
-    assert _results(client.session) == [("call_1", "refunded 5")]
+    assert sent_results(client.session) == [("call_1", "refunded 5")]
     assert client.session.calls == [("create_response", None)]
 
 
@@ -168,14 +150,14 @@ async def test_a_rejected_call_gets_the_rejection_result_and_does_not_run() -> N
 
     async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         request = await _approval_request(updates)
 
         await conversation.send(request.to_function_approval_response(approved=False))
         await eventually(lambda: bool(client.session.calls))
 
     assert runs == []
-    assert _results(client.session) == [("call_1", "Error: Tool call invocation was rejected by user.")]
+    assert sent_results(client.session) == [("call_1", "Error: Tool call invocation was rejected by user.")]
     assert client.session.calls == [("create_response", None)]
 
 
@@ -187,14 +169,14 @@ async def test_an_approval_runs_the_recorded_call_whatever_the_answer_embeds() -
 
     async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         request = await _approval_request(updates)
         tampered = Content.from_function_call(call_id="call_1", name="issue_refund", arguments={"amount": 5000})
 
         await conversation.send(
             Content.from_function_approval_response(approved=True, id=request.id or "", function_call=tampered)
         )
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
     assert runs == [5]
 
@@ -204,7 +186,7 @@ async def test_answering_a_call_twice_raises() -> None:
 
     async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         request = await _approval_request(updates)
         await conversation.send(request.to_function_approval_response(approved=True))
 
@@ -228,7 +210,9 @@ async def test_a_batchs_other_calls_wait_for_its_approvals() -> None:
     async with RealtimeAgent(client, tools=[_refund_tool(runs), look_up]).start_conversation() as conversation:
         updates = _collect(conversation)
         client.session.emit(
-            *_response("resp_1", _call("call_1", "issue_refund", amount=5), _call("call_2", "look_up", order_id="42"))
+            *response_events(
+                "resp_1", call_event("call_1", "issue_refund", amount=5), call_event("call_2", "look_up", order_id="42")
+            )
         )
         request = await _approval_request(updates)
         await asyncio.sleep(0.01)
@@ -236,10 +220,10 @@ async def test_a_batchs_other_calls_wait_for_its_approvals() -> None:
         assert runs == []
 
         await conversation.send(request.to_function_approval_response(approved=True))
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-    assert [message.role for message in _tool_messages(client.session)] == ["tool"]
-    assert _results(client.session) == [("call_1", "refunded 5"), ("call_2", "order 42 found")]
+    assert [message.role for message in tool_messages(client.session)] == ["tool"]
+    assert sent_results(client.session) == [("call_1", "refunded 5"), ("call_2", "order 42 found")]
 
 
 async def test_two_batches_can_wait_for_approval_at_once() -> None:
@@ -249,20 +233,22 @@ async def test_two_batches_can_wait_for_approval_at_once() -> None:
 
     async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         first = await _approval_request(updates)
-        client.session.emit(*_response("resp_2", _call("call_2", "issue_refund", amount=7, response_id="resp_2")))
+        client.session.emit(
+            *response_events("resp_2", call_event("call_2", "issue_refund", amount=7, response_id="resp_2"))
+        )
         second = await _approval_request(updates, 1)
 
         await conversation.send(second.to_function_approval_response(approved=True))
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-        assert _results(client.session) == [("call_2", "refunded 7")]
+        assert sent_results(client.session) == [("call_2", "refunded 7")]
 
         await conversation.send(first.to_function_approval_response(approved=True))
-        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+        await eventually(lambda: len(tool_messages(client.session)) == 2)
 
-    assert _results(client.session) == [("call_2", "refunded 7"), ("call_1", "refunded 5")]
+    assert sent_results(client.session) == [("call_2", "refunded 7"), ("call_1", "refunded 5")]
 
 
 # region App-run calls
@@ -280,15 +266,15 @@ async def test_an_app_run_call_waits_for_the_apps_result() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
-        client.session.emit(*_response("resp_1", _call("call_1", "look_up_account")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "look_up_account")))
         await asyncio.sleep(0.02)
 
-        assert _tool_messages(client.session) == []
+        assert tool_messages(client.session) == []
 
         await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
         await eventually(lambda: bool(client.session.calls))
 
-    assert _results(client.session) == [("call_1", "Account 42")]
+    assert sent_results(client.session) == [("call_1", "Account 42")]
     assert client.session.calls == [("create_response", None)]
 
 
@@ -299,14 +285,14 @@ async def test_an_app_result_sent_before_the_response_finishes_is_used() -> None
 
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(event("response_created", response_id="resp_1"), _call("call_1", "look_up_account"))
+        client.session.emit(event("response_created", response_id="resp_1"), call_event("call_1", "look_up_account"))
         await eventually(lambda: bool(_of_type(updates, "function_call")))
 
         await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
         client.session.emit(event("response_done", response_id="resp_1", status="completed"))
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-    assert _results(client.session) == [("call_1", "Account 42")]
+    assert sent_results(client.session) == [("call_1", "Account 42")]
 
 
 async def test_an_answer_for_an_app_run_call_whose_response_did_not_complete_raises() -> None:
@@ -317,10 +303,10 @@ async def test_an_answer_for_an_app_run_call_whose_response_did_not_complete_rai
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
         client.session.emit(
             event("response_created", response_id="resp_1"),
-            _call("call_1", "look_up_account"),
+            call_event("call_1", "look_up_account"),
             event("response_done", response_id="resp_1", status="cancelled"),
         )
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
         with pytest.raises(ValueError):
             await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
@@ -341,43 +327,45 @@ async def test_a_batchs_other_calls_run_without_waiting_for_an_app_run_call() ->
 
     async with RealtimeAgent(client, tools=[_account_tool(), look_up]).start_conversation() as conversation:
         client.session.emit(
-            *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "look_up", order_id="42"))
+            *response_events(
+                "resp_1", call_event("call_1", "look_up_account"), call_event("call_2", "look_up", order_id="42")
+            )
         )
         await asyncio.wait_for(looked_up.wait(), 5)
 
-        assert _tool_messages(client.session) == []
+        assert tool_messages(client.session) == []
 
         await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-    assert _results(client.session) == [("call_1", "Account 42"), ("call_2", "order 42 found")]
+    assert sent_results(client.session) == [("call_1", "Account 42"), ("call_2", "order 42 found")]
 
 
 async def test_an_app_result_with_an_occurrence_id_answers_that_call() -> None:
     """Two responses each make an app-run call with call_id "call_1". A result carrying the second call's occurrence id
     answers the second call, and the first still waits."""
     client = FakeRealtimeClient()
-    first = _call("call_1", "look_up_account")
-    second = _call("call_1", "look_up_account", response_id="resp_2")
+    first = call_event("call_1", "look_up_account")
+    second = call_event("call_1", "look_up_account", response_id="resp_2")
 
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
-        client.session.emit(*_response("resp_1", first), *_response("resp_2", second))
+        client.session.emit(*response_events("resp_1", first), *response_events("resp_2", second))
         await eventually(lambda: second.content is not None and second.content.id is not None)
         assert first.content is not None and second.content is not None
 
         await conversation.send(
             Content.from_function_result(call_id="call_1", id=second.content.id, result="second account")
         )
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-        assert _results(client.session) == [("call_1", "second account")]
+        assert sent_results(client.session) == [("call_1", "second account")]
 
         await conversation.send(
             Content.from_function_result(call_id="call_1", id=first.content.id, result="first account")
         )
-        await eventually(lambda: len(_tool_messages(client.session)) == 2)
+        await eventually(lambda: len(tool_messages(client.session)) == 2)
 
-    assert _results(client.session) == [("call_1", "second account"), ("call_1", "first account")]
+    assert sent_results(client.session) == [("call_1", "second account"), ("call_1", "first account")]
 
 
 async def test_close_keeps_a_result_the_app_sent_while_another_call_waits() -> None:
@@ -388,7 +376,7 @@ async def test_close_keeps_a_result_the_app_sent_while_another_call_waits() -> N
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
         updates = _collect(conversation)
         client.session.emit(
-            *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "look_up_account"))
+            *response_events("resp_1", call_event("call_1", "look_up_account"), call_event("call_2", "look_up_account"))
         )
         await eventually(lambda: len(_of_type(updates, "function_call")) == 2)
         await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
@@ -409,15 +397,15 @@ async def test_an_app_run_tool_that_needs_approval_uses_the_result_the_app_sent(
 
     async with RealtimeAgent(client, tools=[transfer]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "transfer_to_person")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "transfer_to_person")))
         request = await _approval_request(updates)
         await conversation.send([
             request.to_function_approval_response(approved=True),
             Content.from_function_result(call_id="call_1", result="transferred"),
         ])
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-    assert _results(client.session) == [("call_1", "transferred")]
+    assert sent_results(client.session) == [("call_1", "transferred")]
     assert len(_of_type(updates, "function_call")) == 1
 
 
@@ -431,7 +419,7 @@ async def test_close_drops_an_early_result_for_a_call_still_waiting_for_approval
 
     async with RealtimeAgent(client, tools=[transfer]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "transfer_to_person")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "transfer_to_person")))
         await _approval_request(updates)
         await conversation.send(Content.from_function_result(call_id="call_1", result="transferred"))
 
@@ -448,16 +436,18 @@ async def test_changing_a_result_after_sending_it_changes_nothing() -> None:
     async with RealtimeAgent(client, tools=[_account_tool(), _refund_tool([])]).start_conversation() as conversation:
         updates = _collect(conversation)
         client.session.emit(
-            *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "issue_refund", amount=5))
+            *response_events(
+                "resp_1", call_event("call_1", "look_up_account"), call_event("call_2", "issue_refund", amount=5)
+            )
         )
         request = await _approval_request(updates)
         answer = Content.from_function_result(call_id="call_1", result="Account 42")
         await conversation.send(answer)
         answer.result = "changed"
         await conversation.send(request.to_function_approval_response(approved=True))
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
-    assert _results(client.session) == [("call_1", "Account 42"), ("call_2", "refunded 5")]
+    assert sent_results(client.session) == [("call_1", "Account 42"), ("call_2", "refunded 5")]
 
 
 async def test_a_send_answering_one_call_twice_raises_and_answers_nothing() -> None:
@@ -467,7 +457,7 @@ async def test_a_send_answering_one_call_twice_raises_and_answers_nothing() -> N
 
     async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         request = await _approval_request(updates)
         approval = request.to_function_approval_response(approved=True)
 
@@ -476,18 +466,18 @@ async def test_a_send_answering_one_call_twice_raises_and_answers_nothing() -> N
         await asyncio.sleep(0.01)
 
         assert runs == []
-        assert _tool_messages(client.session) == []
+        assert tool_messages(client.session) == []
 
 
 async def test_a_result_naming_an_answered_occurrence_raises_though_another_call_shares_its_call_id() -> None:
     """Two app-run calls share call_id "call_1". After the first is answered by its occurrence id, the same result
     again raises ValueError instead of answering the second."""
     client = FakeRealtimeClient()
-    first = _call("call_1", "look_up_account")
-    second = _call("call_1", "look_up_account", response_id="resp_2")
+    first = call_event("call_1", "look_up_account")
+    second = call_event("call_1", "look_up_account", response_id="resp_2")
 
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
-        client.session.emit(*_response("resp_1", first), *_response("resp_2", second))
+        client.session.emit(*response_events("resp_1", first), *response_events("resp_2", second))
         await eventually(lambda: second.content is not None and second.content.id is not None)
         assert first.content is not None
         answer = Content.from_function_result(call_id="call_1", id=first.content.id, result="first account")
@@ -514,7 +504,9 @@ async def test_close_keeps_a_result_the_app_sent_while_a_sibling_tool_runs() -> 
     async with RealtimeAgent(client, tools=[_account_tool(), look_up]).start_conversation() as conversation:
         updates = _collect(conversation)
         client.session.emit(
-            *_response("resp_1", _call("call_1", "look_up_account"), _call("call_2", "look_up", order_id="42"))
+            *response_events(
+                "resp_1", call_event("call_1", "look_up_account"), call_event("call_2", "look_up", order_id="42")
+            )
         )
         await asyncio.wait_for(started.wait(), 5)
         await conversation.send(Content.from_function_result(call_id="call_1", result="Account 42"))
@@ -534,7 +526,9 @@ async def test_close_keeps_a_rejection_the_app_sent_while_a_sibling_approval_wai
     async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
         updates = _collect(conversation)
         client.session.emit(
-            *_response("resp_1", _call("call_1", "issue_refund", amount=5), _call("call_2", "issue_refund", amount=7))
+            *response_events(
+                "resp_1", call_event("call_1", "issue_refund", amount=5), call_event("call_2", "issue_refund", amount=7)
+            )
         )
         first = await _approval_request(updates)
         await _approval_request(updates, 1)
@@ -552,12 +546,12 @@ async def test_an_answer_of_the_wrong_kind_raises(answering: str) -> None:
     """An approval response for a call waiting for the app's result, and a function result for a call waiting for
     approval, each raise ValueError, and nothing reaches the session."""
     client = FakeRealtimeClient()
-    approval_call = _call("call_1", "issue_refund", amount=5)
-    app_run_call = _call("call_2", "look_up_account")
+    approval_call = call_event("call_1", "issue_refund", amount=5)
+    app_run_call = call_event("call_2", "look_up_account")
 
     async with RealtimeAgent(client, tools=[_refund_tool([]), _account_tool()]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", approval_call, app_run_call))
+        client.session.emit(*response_events("resp_1", approval_call, app_run_call))
         await _approval_request(updates)
         assert app_run_call.content is not None
         if answering == "an approval for the app-run call":
@@ -587,11 +581,11 @@ async def test_a_tool_needing_user_input_streams_its_request_and_waits_for_the_a
 
     async with RealtimeAgent(client, tools=[read_calendar]).start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "read_calendar")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "read_calendar")))
         await eventually(lambda: bool(_of_type(updates, "oauth_consent_request")))
         await asyncio.sleep(0.01)
 
-        assert _tool_messages(client.session) == []
+        assert tool_messages(client.session) == []
 
         await conversation.send(Content.from_function_result(call_id="call_1", result="consented; free at 3pm"))
         await eventually(lambda: bool(client.session.calls))
@@ -599,7 +593,7 @@ async def test_a_tool_needing_user_input_streams_its_request_and_waits_for_the_a
     [request_update] = _of_type(updates, "oauth_consent_request")
     assert request_update.role == "assistant"
     assert request_update.contents[0].consent_link == "https://consent.example"
-    assert _results(client.session) == [("call_1", "consented; free at 3pm")]
+    assert sent_results(client.session) == [("call_1", "consented; free at 3pm")]
     assert client.session.calls == [("create_response", None)]
 
 
@@ -609,19 +603,19 @@ async def test_text_sent_with_an_answer_is_handled_as_input() -> None:
     client = FakeRealtimeClient()
 
     async with RealtimeAgent(client, tools=[_account_tool()]).start_conversation() as conversation:
-        client.session.emit(*_response("resp_1", _call("call_1", "look_up_account")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "look_up_account")))
         await asyncio.sleep(0.01)
 
         await conversation.send(
             Message("user", [Content.from_function_result(call_id="call_1", result="Account 42"), "Thanks, go on."])
         )
-        await eventually(lambda: bool(_tool_messages(client.session)))
+        await eventually(lambda: bool(tool_messages(client.session)))
 
     user_texts = [
         message.text for message in client.session.sent if isinstance(message, Message) and message.role == "user"
     ]
     assert user_texts == ["Thanks, go on."]
-    assert _results(client.session) == [("call_1", "Account 42")]
+    assert sent_results(client.session) == [("call_1", "Account 42")]
     assert ("create_response", None) in client.session.calls
 
 
@@ -635,7 +629,7 @@ async def test_approval_waits_count_toward_max_duration() -> None:
 
     async with agent.start_conversation() as conversation:
         updates = _collect(conversation)
-        client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
         request = await _approval_request(updates)
         await asyncio.sleep(0.1)
 
@@ -680,13 +674,15 @@ class TestVerification:
         async with agent.start_conversation() as conversation:
             updates = _collect(conversation)
             client.session.emit(
-                *_response(
-                    "resp_1", _call("call_1", "look_up", order_id="42"), _call("call_2", "issue_refund", amount=5)
+                *response_events(
+                    "resp_1",
+                    call_event("call_1", "look_up", order_id="42"),
+                    call_event("call_2", "issue_refund", amount=5),
                 )
             )
             request = await _approval_request(updates)
             await conversation.send(request.to_function_approval_response(approved=True))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
         assert runs == ["42", 5]
 
@@ -708,15 +704,17 @@ class TestVerification:
 
         async with agent.start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
             request = await _approval_request(updates)
             await conversation.send(request.to_function_approval_response(approved=True))
             await eventually(lambda: bool(client.session.calls))
-            client.session.emit(*_response("resp_2", _call("call_2", "look_up", order_id="42", response_id="resp_2")))
-            await eventually(lambda: len(_tool_messages(client.session)) == 2)
+            client.session.emit(
+                *response_events("resp_2", call_event("call_2", "look_up", order_id="42", response_id="resp_2"))
+            )
+            await eventually(lambda: len(tool_messages(client.session)) == 2)
 
         assert runs == [5]
-        assert str(_results(client.session)[1][1]).startswith("Error:")
+        assert str(sent_results(client.session)[1][1]).startswith("Error:")
 
     async def test_answering_while_a_response_is_active_does_not_raise(self) -> None:
         """An answer requests no response of its own."""
@@ -724,13 +722,13 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
             request = await _approval_request(updates)
             client.session.emit(event("response_created", response_id="resp_2"))
             await eventually(lambda: bool(_of_type(updates, "realtime_event")) and updates[-1].response_id == "resp_2")
 
             await conversation.send(request.to_function_approval_response(approved=True))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
             await asyncio.sleep(0.01)
 
             assert client.session.calls == []
@@ -753,15 +751,15 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[orders]).start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "cancel_order", order_id="42")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "cancel_order", order_id="42")))
             request = await _approval_request(updates)
 
-            assert _tool_messages(client.session) == []
+            assert tool_messages(client.session) == []
 
             await conversation.send(request.to_function_approval_response(approved=True))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
-        assert "Cancelled order 42" in str(_results(client.session)[0][1])
+        assert "Cancelled order 42" in str(sent_results(client.session)[0][1])
 
     async def test_an_additional_tools_call_waits_for_the_apps_result(self) -> None:
         runs: list[str] = []
@@ -780,13 +778,13 @@ class TestVerification:
         )
 
         async with agent.start_conversation() as conversation:
-            client.session.emit(*_response("resp_1", _call("call_1", "transfer_to_agent")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "transfer_to_agent")))
             await asyncio.sleep(0.01)
             await conversation.send(Content.from_function_result(call_id="call_1", result="queued for a person"))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
         assert runs == []
-        assert _results(client.session) == [("call_1", "queued for a person")]
+        assert sent_results(client.session) == [("call_1", "queued for a person")]
 
     async def test_an_approval_request_from_middleware_settles_the_call_with_an_error(self) -> None:
         """The call's result is an error, and it goes out with the follow-up."""
@@ -805,19 +803,19 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[look_up], middleware=[ask_first]).start_conversation():
-            client.session.emit(*_response("resp_1", _call("call_1", "look_up", order_id="42")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "look_up", order_id="42")))
             await eventually(lambda: bool(client.session.calls))
 
-        assert str(_results(client.session)[0][1]).startswith("Error:")
+        assert str(sent_results(client.session)[0][1]).startswith("Error:")
 
     async def test_a_response_created_while_a_batch_waits_is_not_its_follow_up(self) -> None:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
             request = await _approval_request(updates)
-            client.session.emit(*_response("resp_2"))
+            client.session.emit(*response_events("resp_2"))
 
             await conversation.send(request.to_function_approval_response(approved=True))
             await eventually(lambda: bool(client.session.calls))
@@ -829,7 +827,7 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
             request = await _approval_request(updates)
             client.session.emit(
                 event("speech_started", item_id="item_caller", audio_start_ms=0),
@@ -837,9 +835,9 @@ class TestVerification:
             )
 
             await conversation.send(request.to_function_approval_response(approved=True))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
-        assert _results(client.session) == [("call_1", "refunded 5")]
+        assert sent_results(client.session) == [("call_1", "refunded 5")]
 
     async def test_removing_a_waiting_calls_tool_does_not_stop_it(self) -> None:
         runs: list[int] = []
@@ -847,12 +845,12 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[_refund_tool(runs)]).start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
             request = await _approval_request(updates)
             await conversation.update_session(tools=[])
 
             await conversation.send(request.to_function_approval_response(approved=True))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
         assert runs == [5]
 
@@ -866,7 +864,9 @@ class TestVerification:
         ).start_conversation() as conversation:
             updates = _collect(conversation)
             client.session.emit(
-                *_response("resp_1", _call("call_1", "issue_refund", amount=5), _call("call_2", "look_up_account"))
+                *response_events(
+                    "resp_1", call_event("call_1", "issue_refund", amount=5), call_event("call_2", "look_up_account")
+                )
             )
             await _approval_request(updates)
 
@@ -876,14 +876,14 @@ class TestVerification:
             ("call_1", "conversation_closed"),
             ("call_2", "conversation_closed"),
         }
-        assert _tool_messages(client.session) == []
+        assert tool_messages(client.session) == []
 
     async def test_an_answer_after_close_raises(self) -> None:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[_refund_tool([])]).start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
             request = await _approval_request(updates)
             await conversation.close()
 
@@ -898,12 +898,12 @@ class TestVerification:
             client.session.emit(
                 event("response_created", response_id="resp_1"),
                 event("item_added", item_id="item_call_1", previous_item_id=None),
-                _call("call_1", "issue_refund", amount=5),
+                call_event("call_1", "issue_refund", amount=5),
                 event("response_done", response_id="resp_1", status="completed"),
             )
             request = await _approval_request(updates)
             await conversation.send(request.to_function_approval_response(approved=True))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
         contents = [content for message in conversation.history for content in message.contents]
         assert [content.type for content in contents] == ["function_call", "function_result"]
@@ -933,8 +933,8 @@ class TestVerification:
 
         async with agent.start_conversation() as conversation:
             updates = _collect(conversation)
-            client.session.emit(*_response("resp_1", _call("call_1", "issue_refund", amount=5)))
-            await eventually(lambda: bool(_tool_messages(client.session)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "issue_refund", amount=5)))
+            await eventually(lambda: bool(tool_messages(client.session)))
 
-        assert _results(client.session) == [("call_1", "Error: function invocation is disabled.")]
+        assert sent_results(client.session) == [("call_1", "Error: function invocation is disabled.")]
         assert _of_type(updates, "function_approval_request") == []
