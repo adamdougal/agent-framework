@@ -466,6 +466,32 @@ async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resen
     assert updates == [("update_session", {}, [offer_time, get_time])] * 2
 
 
+async def test_a_hosted_mcp_tool_a_tool_adds_that_may_ask_for_approval_is_never_declared() -> None:
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_search(ctx: FunctionInvocationContext) -> str:
+        """Start offering the hosted search tool."""
+        ctx.add_tools({"type": "mcp", "server_label": "search", "server_url": "https://search.example/mcp"})
+        return "search offered"
+
+    @tool
+    def offer_time(ctx: FunctionInvocationContext) -> str:
+        """Start offering the time tool."""
+        ctx.add_tools(get_time)
+        return "time offered"
+
+    async with RealtimeAgent(client, tools=[offer_search, offer_time]).start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_search")))
+        await eventually(lambda: ("create_response", None) in client.session.calls)
+        client.session.emit(*_response("resp_2", _call("call_2", "offer_time", response_id="resp_2")))
+        await eventually(lambda: len(_results(client.session)) == 2)
+
+    assert _results(client.session) == [("call_1", "search offered"), ("call_2", "time offered")]
+    updates = [call for call in client.session.calls if call[0] == "update_session"]
+    assert updates == [("update_session", {}, [offer_search, offer_time, get_time])]
+
+
 # endregion
 
 

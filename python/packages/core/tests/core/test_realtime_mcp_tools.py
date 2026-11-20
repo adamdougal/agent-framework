@@ -9,7 +9,15 @@ from typing import Any
 import pytest
 from mcp.server.mcpserver import MCPServer
 
-from agent_framework import Content, FunctionTool, Message, RealtimeAgent, RealtimeEvent, tool
+from agent_framework import (
+    Content,
+    FunctionInvocationContext,
+    FunctionTool,
+    Message,
+    RealtimeAgent,
+    RealtimeEvent,
+    tool,
+)
 from agent_framework._mcp import MCPTool
 from agent_framework.exceptions import RealtimeConversationClosedException, ToolException
 
@@ -109,11 +117,11 @@ def hang_up() -> str:
     return "Goodbye."
 
 
-def _call(call_id: str, name: str, **arguments: str) -> RealtimeEvent:
+def _call(call_id: str, name: str, *, response_id: str = "resp_1", **arguments: str) -> RealtimeEvent:
     return event(
         "function_call",
         content=Content.from_function_call(call_id=call_id, name=name, arguments=arguments),
-        response_id="resp_1",
+        response_id=response_id,
         item_id=f"item_{call_id}",
     )
 
@@ -340,6 +348,48 @@ async def test_an_update_after_close_connects_no_mcp_tool() -> None:
             await conversation.update_session(tools=[orders])
 
     assert orders.connections_opened == 0
+
+
+async def test_an_mcp_tool_a_tool_adds_declares_functions_that_run_on_the_server() -> None:
+    """A tool adding orders declares its functions, and a later get_delivery_slots call gets the server's slots."""
+    orders = _InProcessMCPTool(_orders_server())
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_orders(ctx: FunctionInvocationContext) -> str:
+        """Start offering the order tools."""
+        ctx.add_tools(orders)
+        return "offered"
+
+    agent = RealtimeAgent(client, tools=[offer_orders])
+    async with agent, agent.start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_orders")))
+        await eventually(lambda: ("create_response", None) in client.session.calls)
+        client.session.emit(
+            *_response("resp_2", _call("call_2", "get_delivery_slots", response_id="resp_2", order_id="1234"))
+        )
+        await eventually(lambda: len(_results(client.session)) == 2)
+
+    assert _names(client.session.calls[0][2]) == ["offer_orders", "get_delivery_slots", "book_delivery_slot"]
+    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in _results(client.session)[1][1]
+
+
+async def test_an_mcp_tool_a_tool_adds_that_cannot_connect_leaves_the_declared_tools() -> None:
+    """A tool adding an unreachable MCP tool still has its result sent and followed up, with no session update."""
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_unreachable(ctx: FunctionInvocationContext) -> str:
+        """Start offering the unreachable server's tools."""
+        ctx.add_tools(_UnreachableMCPTool())
+        return "offered"
+
+    async with RealtimeAgent(client, tools=[offer_unreachable]).start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_unreachable")))
+        await eventually(lambda: ("create_response", None) in client.session.calls)
+
+    assert _results(client.session) == [("call_1", "offered")]
+    assert [call[0] for call in client.session.calls] == ["create_response"]
 
 
 # endregion
