@@ -157,11 +157,7 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
         """
         from websockets.exceptions import WebSocketException
 
-        requested = cast("Mapping[str, Any]", options or {})
-        for key in ("input_audio_format", "output_audio_format"):
-            if key in requested:
-                # A format the session would only reject after connecting would leave a socket to clean up.
-                _audio_format(requested[key])
+        _check_audio_formats(options or {})
         try:
             sdk_connection = await self._client.realtime.connect(
                 model=self.model,
@@ -233,6 +229,13 @@ def _off_the_event_loop(provider: AzureTokenProvider) -> Callable[[], Awaitable[
         return token
 
     return fetch_token
+
+
+def _check_audio_formats(options: Mapping[str, Any]) -> None:
+    """Raise before connecting for an audio format the session would only reject with a socket to clean up."""
+    for key in ("input_audio_format", "output_audio_format"):
+        if key in options:
+            _audio_format(options[key])
 
 
 def _close_code(closed: Any) -> int | None:
