@@ -38,7 +38,11 @@ async def ask_the_supervisor(conversation: RealtimeConversation[VoiceLiveOptions
     """Asks at the terminal, off the update loop, so the conversation keeps streaming while you decide."""
     call = request.function_call
     assert call is not None
-    answer = await asyncio.to_thread(input, f"Approve {call.name}({call.arguments})? [y/N] ")
+    try:
+        answer = await asyncio.to_thread(input, f"Approve {call.name}({call.arguments})? [y/N] ")
+    except EOFError:
+        # With no input left, the prompt's default applies, so the call is rejected rather than left waiting.
+        answer = ""
     await conversation.send(request.to_function_approval_response(approved=answer.strip().lower() == "y"))
 
 
