@@ -11,6 +11,7 @@ import pytest
 from agent_framework import (
     AgentContext,
     AgentMiddleware,
+    AgentResponseUpdate,
     AgentSession,
     Content,
     ContextProvider,
@@ -542,7 +543,12 @@ class TestVerification:
 
         assert client.session.calls == []
 
-    async def test_the_response_that_made_a_handoff_call_and_its_result_stay_with_the_source(self) -> None:
+    async def test_a_handoff_a_tool_makes_lands_before_its_result_is_written_and_the_call_stays_with_the_source(
+        self,
+    ) -> None:
+        """Until the provider acknowledges the handoff, receptionist is still speaking and no result has been written.
+        Billing is speaking as the result write starts, and the only follow-up comes after that write, on the same
+        connection. The response that made the call, and its result, stay credited to receptionist."""
         client = FakeRealtimeClient()
         billing = _billing(client)
 
@@ -554,34 +560,59 @@ class TestVerification:
             return "transferred"
 
         receptionist = RealtimeAgent(client, name="receptionist", tools=[transfer])
+        updates: list[AgentResponseUpdate] = []
         async with receptionist.start_conversation() as conversation:
-            client.session.emit(*_response("resp_1", _call("call_1", "transfer")))
-            await eventually(lambda: bool(_results(client.session)))
+            session = client.session
+            writes: list[tuple[object, object]] = []
 
-        updates = [update async for update in conversation]
-        made_the_call = [update for update in updates if update.response_id == "resp_1" and update.role is not None]
-        assert made_the_call
-        assert {update.author_name for update in made_the_call} == {"receptionist"}
+            def record_write(written: RealtimeEvent | Message) -> None:
+                if isinstance(written, Message):
+                    written_now = (written.role, [(content.call_id, content.result) for content in written.contents])
+                    writes.append((written_now, conversation.active_agent))
+                else:
+                    writes.append((written, conversation.active_agent))
 
-    async def test_a_handoff_a_tool_makes_lands_before_the_results_and_the_follow_up(self) -> None:
-        client = FakeRealtimeClient()
-        billing = _billing(client)
+            session.on_call("send", record_write)
+            results_as_each_follow_up_began: list[list[tuple[str | None, Any]]] = []
+            session.on_call(
+                "create_response", lambda options: results_as_each_follow_up_began.append(_results(session))
+            )
+            handoff_acknowledged = session.hold("update_session")
+            result_written = session.hold("send")
+            session.emit(*_response("resp_caller", _call("call_1", "transfer", response_id="resp_caller")))
+            await eventually(lambda: bool(session.calls))
+            assert (conversation.active_agent, writes) == (receptionist, [])
 
-        @tool
-        async def transfer(ctx: FunctionInvocationContext) -> str:
-            """Transfer the caller to billing."""
-            assert ctx.realtime_conversation is not None
-            await ctx.realtime_conversation.handoff(billing)
-            return "transferred"
+            handoff_acknowledged.set()
+            await eventually(lambda: bool(writes))
+            assert [call[0] for call in session.calls] == ["update_session"]
 
-        receptionist = RealtimeAgent(client, name="receptionist", tools=[transfer])
-        async with receptionist.start_conversation():
-            client.session.emit(*_response("resp_1", _call("call_1", "transfer")))
-            await eventually(lambda: len(client.session.calls) == 2)
+            result_written.set()
+            await eventually(lambda: len(session.calls) == 2)
+            # A second follow-up would wait for the first, which the fake session numbered resp_1, to finish.
+            session.emit(*_response("resp_1"))
+            while not (
+                updates
+                and updates[-1].response_id == "resp_1"
+                and any(content.kind == "response_done" for content in updates[-1].contents)
+            ):
+                updates.append(await next_update(conversation))
+            await asyncio.sleep(0.01)  # room for that second follow-up
 
-        [(handoff, _, tools), follow_up] = client.session.calls
+        assert writes == [(("tool", [("call_1", "transferred")]), billing)]
+        [(handoff, _, tools), follow_up] = session.calls
         assert (handoff, tools) == ("update_session", [get_balance])
         assert follow_up == ("create_response", {"tool_choice": "auto"})
+        assert (results_as_each_follow_up_began, len(client.start_session_calls)) == ([[("call_1", "transferred")]], 1)
+        updates += [update async for update in conversation]
+        made_the_call = [
+            update for update in updates if update.response_id == "resp_caller" and update.role is not None
+        ]
+        assert {content.type for update in made_the_call for content in update.contents} >= {
+            "function_call",
+            "function_result",
+        }
+        assert {update.author_name for update in made_the_call} == {"receptionist"}
 
     async def test_a_tool_chain_that_spans_a_handoff_counts_as_one_chain(self) -> None:
         client = FakeRealtimeClient()
