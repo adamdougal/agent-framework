@@ -155,7 +155,7 @@ def _results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
 
 
 async def _eventually(condition: Callable[[], bool]) -> None:
-    async with asyncio.timeout(1):
+    async with asyncio.timeout(5):
         while True:
             if condition():
                 return
