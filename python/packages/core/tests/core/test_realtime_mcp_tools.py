@@ -3,13 +3,21 @@
 """Local MCP tools on realtime agents: their lifecycle and the copies of their functions a conversation runs."""
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import pytest
 from mcp.server.mcpserver import MCPServer
 
-from agent_framework import Content, FunctionTool, Message, RealtimeAgent, RealtimeEvent, tool
+from agent_framework import (
+    Content,
+    FunctionInvocationContext,
+    FunctionTool,
+    Message,
+    RealtimeAgent,
+    RealtimeEvent,
+    tool,
+)
 from agent_framework._mcp import MCPTool
 from agent_framework.exceptions import RealtimeConversationClosedException, ToolException
 
@@ -82,6 +90,20 @@ class _SlowToConnectMCPTool(_InProcessMCPTool):
         await super().connect(reset=reset)
 
 
+class _SlowToListMCPTool(_InProcessMCPTool):
+    """Connects at once, then holds its tool listing until the test releases it."""
+
+    def __init__(self, server: Any) -> None:
+        super().__init__(server)
+        self.listing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def load_tools(self) -> None:
+        self.listing.set()
+        await self.release.wait()
+        await super().load_tools()
+
+
 class _UnreachableMCPTool(MCPTool):
     def __init__(self, *, name: str = "unreachable") -> None:
         super().__init__(name=name, load_prompts=False)
@@ -109,11 +131,11 @@ def hang_up() -> str:
     return "Goodbye."
 
 
-def _call(call_id: str, name: str, **arguments: str) -> RealtimeEvent:
+def _call(call_id: str, name: str, *, response_id: str = "resp_1", **arguments: str) -> RealtimeEvent:
     return event(
         "function_call",
         content=Content.from_function_call(call_id=call_id, name=name, arguments=arguments),
-        response_id="resp_1",
+        response_id=response_id,
         item_id=f"item_{call_id}",
     )
 
@@ -340,6 +362,106 @@ async def test_an_update_after_close_connects_no_mcp_tool() -> None:
             await conversation.update_session(tools=[orders])
 
     assert orders.connections_opened == 0
+
+
+async def test_an_mcp_tool_a_tool_adds_declares_functions_that_run_on_the_server() -> None:
+    """A tool adding orders declares its functions, and a later get_delivery_slots call gets the server's slots."""
+    orders = _InProcessMCPTool(_orders_server())
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_orders(ctx: FunctionInvocationContext) -> str:
+        """Start offering the order tools."""
+        ctx.add_tools(orders)
+        return "offered"
+
+    agent = RealtimeAgent(client, tools=[offer_orders])
+    async with agent, agent.start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_orders")))
+        await eventually(lambda: ("create_response", None) in client.session.calls)
+        client.session.emit(
+            *_response("resp_2", _call("call_2", "get_delivery_slots", response_id="resp_2", order_id="1234"))
+        )
+        await eventually(lambda: len(_results(client.session)) == 2)
+
+    assert _names(client.session.calls[0][2]) == ["offer_orders", "get_delivery_slots", "book_delivery_slot"]
+    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in _results(client.session)[1][1]
+
+
+async def test_batches_finishing_while_an_added_mcp_tool_is_declared_leave_its_functions_runnable() -> None:
+    """A get_time batch ends while orders lists its tools, and a refused search batch while orders' update waits for
+    acknowledgement; get_delivery_slots then gets the server's slots."""
+    orders = _SlowToListMCPTool(_orders_server())
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_orders(ctx: FunctionInvocationContext) -> str:
+        """Start offering the order tools."""
+        ctx.add_tools(orders)
+        return "orders offered"
+
+    @tool
+    def offer_search(ctx: FunctionInvocationContext) -> str:
+        """Start offering a hosted search tool that may ask for approval."""
+        ctx.add_tools({"type": "mcp", "server_label": "search", "server_url": "https://search.example/mcp"})
+        return "search offered"
+
+    agent = RealtimeAgent(client, tools=[offer_orders, offer_search, get_time])
+    async with agent, agent.start_conversation():
+        acknowledge = client.session.hold("update_session")
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_orders")))
+        await orders.listing.wait()
+        client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
+        await asyncio.sleep(0.01)  # the time batch has finished its call
+        orders.release.set()
+        await eventually(lambda: bool(client.session.calls))
+        client.session.emit(*_response("resp_3", _call("call_3", "offer_search", response_id="resp_3")))
+        await asyncio.sleep(0.01)  # the search batch has finished its call
+        acknowledge.set()
+        await eventually(lambda: len(_results(client.session)) == 3)
+        client.session.emit(
+            *_response("resp_4", _call("call_4", "get_delivery_slots", response_id="resp_4", order_id="1234"))
+        )
+        await eventually(lambda: len(_results(client.session)) == 4)
+
+    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in dict(_results(client.session))["call_4"]
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        pytest.param(
+            lambda: {"type": "mcp", "server_label": "search", "server_url": "https://search.example/mcp"},
+            id="hosted-mcp-tool-that-may-ask-for-approval",
+        ),
+        pytest.param(_UnreachableMCPTool, id="mcp-tool-that-cannot-connect"),
+    ],
+)
+async def test_a_tool_change_that_cannot_be_declared_leaves_the_declared_tools(refused: Callable[[], Any]) -> None:
+    """The refused tool's adder still has its result sent, and a later addition is declared without the refused tool."""
+    client = FakeRealtimeClient()
+
+    @tool
+    def offer_refused(ctx: FunctionInvocationContext) -> str:
+        """Start offering a tool that can't be declared."""
+        ctx.add_tools(refused())
+        return "refused offered"
+
+    @tool
+    def offer_time(ctx: FunctionInvocationContext) -> str:
+        """Start offering the time tool."""
+        ctx.add_tools(get_time)
+        return "time offered"
+
+    async with RealtimeAgent(client, tools=[offer_refused, offer_time]).start_conversation():
+        client.session.emit(*_response("resp_1", _call("call_1", "offer_refused")))
+        await eventually(lambda: ("create_response", None) in client.session.calls)
+        client.session.emit(*_response("resp_2", _call("call_2", "offer_time", response_id="resp_2")))
+        await eventually(lambda: len(_results(client.session)) == 2)
+
+    assert _results(client.session) == [("call_1", "refused offered"), ("call_2", "time offered")]
+    updates = [call for call in client.session.calls if call[0] == "update_session"]
+    assert updates == [("update_session", {}, [offer_refused, offer_time, get_time])]
 
 
 # endregion

@@ -763,6 +763,23 @@ async def test_a_failed_handshake_raises_realtime_connection_exception() -> None
             await asyncio.wait_for(client.start_session(), 5)
 
 
+@pytest.mark.parametrize("option", ["input_audio_format", "output_audio_format"])
+async def test_an_unsupported_audio_format_raises_before_connecting(option: str) -> None:
+    """Parametrized over input_audio_format and output_audio_format: start_session() with 'audio/pcm;rate=16000', which
+    Voice Live takes but a voice agent doesn't, raises ValueError naming the format, and nothing connects."""
+    project = FakeProjectClient()
+    client = FoundryVoiceAgentClient(
+        project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
+    )
+    options = cast(FoundryVoiceAgentOptions, {option: "audio/pcm;rate=16000"})
+
+    async with client:
+        with pytest.raises(ValueError, match=re.escape("'audio/pcm;rate=16000'")):
+            await asyncio.wait_for(client.start_session(options=options), 5)
+
+    assert project.connect_calls == []
+
+
 async def test_a_rejected_start_closes_the_socket() -> None:
     """When the server answers the start's session.update with an error, start_session() raises
     RealtimeControlException and the SDK connection is closed."""

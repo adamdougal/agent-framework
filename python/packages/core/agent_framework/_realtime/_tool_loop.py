@@ -33,8 +33,10 @@ from ..exceptions import (
     RealtimeControlTimeoutException,
     RealtimeConversationClosedException,
     RealtimeException,
+    ToolException,
     ToolExecutionException,
 )
+from ..observability import OBSERVABILITY_SETTINGS
 from ._events import RealtimeEvent
 from ._updates import app_request_update, core_attributes
 
@@ -138,6 +140,7 @@ class ToolLoop:
     ) -> None:
         self._tools = tools
         self._declared: list[ToolTypes] = []
+        self._declaring = asyncio.Lock()
         self._configuration = configuration
         self._invocation_kwargs = invocation_kwargs
         self._call = call
@@ -409,30 +412,54 @@ class ToolLoop:
     async def _declare_tool_changes(self) -> None:
         """Tools a call added or removed must reach the provider before the results the model acts on.
 
-        Results never wait behind another control call unless there's a change to declare. The change is compared again
-        once its turn comes, so an app's update queued ahead of it is never undone by a stale copy.
+        They're prepared as ``update_session(tools=...)`` prepares the app's, before taking a turn, so a slow MCP
+        server never holds up other control calls. Results never wait unless there's a change to declare. Batches
+        declare one at a time, from preparation to acknowledgement, so none declares an MCP tool another is still
+        connecting, or rolls back or resends a change another is declaring. A list that changed while it was prepared
+        is prepared again, so an app's update queued ahead of it is never undone by a stale copy.
         """
         if not _differ(self._declared, self._tools):
             return
-        async with self._conversation._control_lock:  # pyright: ignore[reportPrivateUsage]
-            if not _differ(self._declared, self._tools):
-                return
-            declaring = list(self._tools)
-            try:
-                await self._conversation._update_session_locked({}, declaring)  # pyright: ignore[reportPrivateUsage]
-            except RealtimeControlTimeoutException as timeout:
-                # The provider may still apply it, so the change stays and the next batch that finishes resends it.
-                logger.warning("The tool changes a tool call made may not have reached the provider: %s", timeout)
-            except RealtimeControlException as rejection:
-                logger.warning(
-                    "The provider rejected the tool changes a tool call made, so the conversation keeps the tools it "
-                    "declared before: %s",
-                    rejection,
-                )
-                self.on_tools_declared(self._declared)
-            else:
-                # Another batch may have changed the live list while this update waited; that change goes out next.
-                self._declared = declaring
+        async with self._declaring:
+            while _differ(self._declared, self._tools):
+                proposed = list(self._tools)
+                try:
+                    declaring = await self._conversation._resolve_tools(proposed)  # pyright: ignore[reportPrivateUsage]
+                except (ValueError, ToolException) as refusal:
+                    reason: object = refusal
+                    if isinstance(refusal, ToolException) and not OBSERVABILITY_SETTINGS.SENSITIVE_DATA_ENABLED:
+                        # An MCP connection error can carry credentials, such as the server's command-line arguments.
+                        reason = type(refusal).__name__
+                    logger.warning(
+                        "The tool changes a tool call made can't be declared, so the conversation keeps the tools it "
+                        "declared before: %s",
+                        reason,
+                    )
+                    self.on_tools_declared(self._declared)
+                    return
+                async with self._conversation._control_lock:  # pyright: ignore[reportPrivateUsage]
+                    if not _differ(proposed, self._tools):
+                        await self._declare_locked(declaring)
+                        return
+
+    async def _declare_locked(self, declaring: list[ToolTypes]) -> None:
+        # The live list runs what's declared, such as an MCP tool's functions, and stays the list tools change.
+        self._tools[:] = declaring
+        try:
+            await self._conversation._update_session_locked({}, declaring)  # pyright: ignore[reportPrivateUsage]
+        except RealtimeControlTimeoutException as timeout:
+            # The provider may still apply it, so the change stays and the next batch that finishes resends it.
+            logger.warning("The tool changes a tool call made may not have reached the provider: %s", timeout)
+        except RealtimeControlException as rejection:
+            logger.warning(
+                "The provider rejected the tool changes a tool call made, so the conversation keeps the tools it "
+                "declared before: %s",
+                rejection,
+            )
+            self.on_tools_declared(self._declared)
+        else:
+            # Another batch may have changed the live list while this update waited; that change goes out next.
+            self._declared = declaring
 
     def _follow_up_due(self, chain: _ToolChain) -> None:
         """Follow-ups due together merge into one request."""
