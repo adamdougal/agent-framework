@@ -1,4 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
+import sys
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,6 +9,16 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pytest import MonkeyPatch, fixture
+
+
+def pytest_configure() -> None:
+    """Put this directory on sys.path so the tests can import their shared helpers by name.
+
+    Under importlib import mode, which the workspace test run uses, pytest doesn't add a test's directory itself.
+    """
+    test_dir = str(Path(__file__).resolve().parent)
+    if test_dir not in sys.path:
+        sys.path.insert(0, test_dir)
 
 
 @fixture

@@ -8,12 +8,11 @@ returns a scripted server that echoes each session.update. No service calls.
 
 import asyncio
 import base64
-import contextlib
 import importlib.util
 import json
 import re
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any, Literal, cast
 
@@ -29,6 +28,12 @@ from agent_framework_orchestrations import RealtimeHandoffBuilder
 from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import RealtimeServerEventResponseCreated
 from azure.core.credentials import AccessToken
+from foundry_realtime_waits import (  # pyrefly: ignore[missing-import] # pyright: ignore[reportMissingImports]
+    read_all,
+    reading,
+    until,
+    wait_sent,
+)
 from opentelemetry import baggage, context, trace
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -265,19 +270,6 @@ class FakeVoiceAgentServer:
         self.closed = True
         self.push(ConnectionResetError("The realtime connection was closed."))
 
-    async def wait_sent(self, event_type: str, timeout: float = 5.0) -> dict[str, Any]:
-        """Wait for the next event of ``event_type`` sent after this call, and return it."""
-        already_sent = len(self.sent)
-
-        async def poll() -> dict[str, Any]:
-            while True:
-                for event in self.sent[already_sent:]:
-                    if event["type"] == event_type:
-                        return event
-                await asyncio.sleep(0.005)
-
-        return await asyncio.wait_for(poll(), timeout)
-
     def answer(self, request: Mapping[str, Any]) -> None:
         """Create and finish the response ``request`` asked for."""
         response_id = f"resp_{len(self.sent)}"
@@ -290,39 +282,6 @@ class FakeVoiceAgentServer:
     def updates(self) -> list[dict[str, Any]]:
         """The sessions of the session.update events sent so far."""
         return [event["session"] for event in self.sent if event["type"] == "session.update"]
-
-
-async def until(condition: Any, timeout: float = 5.0) -> None:
-    """Wait until ``condition()`` holds."""
-
-    async def poll() -> None:
-        while not condition():  # noqa: ASYNC110 - the condition reads state another task updates
-            await asyncio.sleep(0.005)
-
-    await asyncio.wait_for(poll(), timeout)
-
-
-async def read_all(session: Any) -> list[Any]:
-    """Every realtime event the session yields until its connection ends."""
-    return [event async for event in session.receive()]
-
-
-@contextlib.asynccontextmanager
-async def reading(session: Any) -> AsyncGenerator[list[Any]]:
-    """Read the session's events in the background for the duration of the block, as the conversation does."""
-    events: list[Any] = []
-
-    async def read() -> None:
-        async for event in session.receive():
-            events.append(event)
-
-    task = asyncio.create_task(read())
-    try:
-        yield events
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
 
 class FakeConnectionManager:
@@ -583,9 +542,10 @@ async def test_a_failed_definition_read_closes_the_project_client_it_created(mon
 # region The handshake
 
 
-async def test_the_handshake_names_the_agent_and_pins_its_version() -> None:
-    """start_session() connects with agent_name='receptionist', api_version='v1' and the extra header
-    x-agent-version-override: '3', and passes no agent_version keyword."""
+async def test_the_handshake_names_the_agent_pins_its_version_and_carries_the_user_agent() -> None:
+    """start_session() connects with agent_name='receptionist', api_version='v1' and the extra headers
+    x-agent-version-override: '3' and a User-Agent that starts with Agent Framework's user agent, and passes no
+    agent_version keyword."""
     project = FakeProjectClient()
     client = FoundryVoiceAgentClient(
         project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
@@ -598,21 +558,8 @@ async def test_the_handshake_names_the_agent_and_pins_its_version() -> None:
     call = project.connect_calls[0]
     assert (call["agent_name"], call["api_version"]) == ("receptionist", "v1")
     assert call["extra_headers"]["x-agent-version-override"] == "3"
+    assert call["extra_headers"]["User-Agent"].startswith(get_user_agent())
     assert "agent_version" not in call
-
-
-async def test_the_handshake_carries_the_agent_framework_user_agent() -> None:
-    """The extra headers carry a User-Agent that starts with Agent Framework's user agent."""
-    project = FakeProjectClient()
-    client = FoundryVoiceAgentClient(
-        project_client=project.as_project_client(), agent_name="receptionist", agent_version="3"
-    )
-
-    async with client:
-        session = await asyncio.wait_for(client.start_session(), 5)
-        await session.close()
-
-    assert project.connect_calls[0]["extra_headers"]["User-Agent"].startswith(get_user_agent())
 
 
 async def test_the_handshake_carries_the_current_trace_context_and_no_baggage() -> None:
@@ -962,37 +909,38 @@ def lookup_order(order_id: str) -> str:
     return "Shipped"
 
 
-async def test_the_definition_stand_in_declares_the_definitions_tools_as_published() -> None:
-    """With another tool live, update_session() with the definition stand-in alone declares exactly the definition's
-    tools, in order and as published: a function with response_scheduling and a hosted MCP entry."""
-    project = FakeProjectClient()
-    session = await start(project)
-
-    async with reading(session):
-        await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
-        await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS]), 5)
-    await session.close()
-
-    assert project.server.updates()[-1]["tools"] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
-
-
 @tool(name="get_current_time", description="Tells the time in the caller's time zone.")
 def get_current_time(time_zone: str = "UTC") -> str:
     return "12:00"
 
 
-async def test_a_function_tool_the_definition_names_is_declared_as_published() -> None:
-    """With another tool live, update_session() with the stand-in and a function tool 'get_current_time' whose own
-    description differs declares the definition's published 'get_current_time' once, not the tool's own schema."""
+@pytest.mark.parametrize(
+    ("tools", "added"),
+    [
+        ([DEFINITION_TOOLS], []),
+        ([DEFINITION_TOOLS, get_current_time], []),
+        ([DEFINITION_TOOLS, lookup_order], [("lookup_order", "Look up an order.")]),
+    ],
+    ids=["the stand-in alone", "an implementation the definition names", "a function the definition doesn't name"],
+)
+async def test_the_definition_stand_in_declares_its_tools_as_published_then_functions_it_does_not_name(
+    tools: list[Any], added: list[tuple[str, str]]
+) -> None:
+    """Parametrized: with lookup_order live, update_session() with the definition stand-in declares exactly the
+    definition's tools first, in order and as published: a function with response_scheduling and a hosted MCP entry.
+    A 'get_current_time' implementation whose own description differs adds nothing; 'lookup_order', which the
+    definition doesn't name, follows from its own schema."""
     project = FakeProjectClient()
     session = await start(project)
 
     async with reading(session):
         await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
-        await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, get_current_time]), 5)
+        await asyncio.wait_for(session.update_session({}, tools), 5)
     await session.close()
 
-    assert project.server.updates()[-1]["tools"] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
+    declared = project.server.updates()[-1]["tools"]
+    assert declared[:3] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
+    assert [(function["name"], function["description"]) for function in declared[3:]] == added
 
 
 @tool(name="get_office_hours", description="Get the office hours.")
@@ -1164,7 +1112,11 @@ async def test_the_apps_default_instructions_win_over_the_definitions() -> None:
 
 
 def topology(
-    project: FakeProjectClient, *, billing_options: FoundryVoiceAgentOptions | None = None, **builder_settings: Any
+    project: FakeProjectClient,
+    *,
+    receptionist_options: FoundryVoiceAgentOptions | None = None,
+    billing_options: FoundryVoiceAgentOptions | None = None,
+    **builder_settings: Any,
 ) -> tuple[FoundryVoiceAgent, RealtimeAgent[FoundryVoiceAgentOptions], RealtimeAgent[FoundryVoiceAgentOptions]]:
     """The Foundry receptionist, a billing agent on its client, and the handoff agent built from them."""
     receptionist = FoundryVoiceAgent(
@@ -1172,6 +1124,7 @@ def topology(
         agent_name="receptionist",
         agent_version="3",
         tools=[get_current_time],
+        default_options=receptionist_options,
     )
     billing = RealtimeAgent(
         receptionist.client,
@@ -1228,20 +1181,34 @@ async def test_a_plain_start_agent_does_not_inherit_the_definitions_tool_choice(
     assert project.server.updates()[0]["tool_choice"] == expected
 
 
-async def test_handing_back_restores_the_definitions_reasoning_effort() -> None:
-    """With a definition whose reasoning effort is 'high' and billing's own 'low', the handoff to billing sends
-    reasoning.effort 'low', and handing back sends 'high'."""
+@pytest.mark.parametrize(
+    ("receptionist_options", "receptionist_effort"),
+    [(FoundryVoiceAgentOptions(), "high"), (FoundryVoiceAgentOptions(reasoning_effort="minimal"), "minimal")],
+    ids=["inherited from the definition", "the agent's own"],
+)
+async def test_handing_back_restores_the_start_agents_reasoning_effort(
+    receptionist_options: FoundryVoiceAgentOptions, receptionist_effort: str
+) -> None:
+    """Parametrized: with a definition whose reasoning effort is 'high' and billing's own 'low', the start sends the
+    receptionist's effort, the handoff to billing sends 'low', and handing back sends the receptionist's effort
+    again: the definition's 'high' when it sets none, else its own 'minimal'."""
     project = FakeProjectClient({"3": REASONING_DEFINITION})
     receptionist, billing, built = topology(
-        project, billing_options=FoundryVoiceAgentOptions(voice=SONIA, reasoning_effort="low")
+        project,
+        receptionist_options=receptionist_options,
+        billing_options=FoundryVoiceAgentOptions(voice=SONIA, reasoning_effort="low"),
     )
 
     async with built, built.start_conversation() as conversation:
         await asyncio.wait_for(conversation.handoff(billing), 5)
         await asyncio.wait_for(conversation.handoff(receptionist), 5)
 
-    *_, to_billing, handed_back = project.server.updates()
-    assert (to_billing.get("reasoning"), handed_back.get("reasoning")) == ({"effort": "low"}, {"effort": "high"})
+    opened, *_, to_billing, handed_back = project.server.updates()
+    assert [session.get("reasoning") for session in (opened, to_billing, handed_back)] == [
+        {"effort": receptionist_effort},
+        {"effort": "low"},
+        {"effort": receptionist_effort},
+    ]
 
 
 # endregion
@@ -1251,7 +1218,7 @@ async def test_handing_back_restores_the_definitions_reasoning_effort() -> None:
 
 async def answer_one_text_input(project: FakeProjectClient, conversation: Any) -> None:
     """Send "Hi", let the server answer it, and read updates until that response is done."""
-    request = asyncio.ensure_future(project.server.wait_sent("response.create"))
+    request = asyncio.ensure_future(wait_sent(project.server.sent, "response.create"))
     sending = asyncio.ensure_future(conversation.send("Hi"))
     project.server.answer(await request)
     await asyncio.wait_for(sending, 5)
@@ -1352,22 +1319,6 @@ class TestVerification:
 
         assert project.server.updates()[0]["tools"] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
 
-    async def test_function_tools_the_definition_does_not_name_are_declared_after_its_tools(self) -> None:
-        """update_session() with the stand-in and a function tool 'lookup_order' declares the definition's tools, then
-        'lookup_order' from its own schema."""
-        project = FakeProjectClient()
-        session = await start(project)
-
-        async with reading(session):
-            await asyncio.wait_for(session.update_session({}, [lookup_order]), 5)
-            await asyncio.wait_for(session.update_session({}, [DEFINITION_TOOLS, lookup_order]), 5)
-        await session.close()
-
-        declared = project.server.updates()[-1]["tools"]
-        assert declared[:3] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
-        assert (declared[3]["name"], declared[3]["description"]) == ("lookup_order", "Look up an order.")
-        assert len(declared) == 4
-
     async def test_say_with_the_definitions_azure_voice_sends_a_pre_generated_message(self) -> None:
         """With the definition's voice reported flattened (voice 'en-US-AvaMultilingualNeural', voice_type
         'azure-standard'), say('Hello') sends a pre_generated_assistant_message with that text."""
@@ -1376,7 +1327,7 @@ class TestVerification:
 
         async with reading(session):
             saying = asyncio.ensure_future(session.say("Hello"))
-            request = await project.server.wait_sent("response.create")
+            request = await wait_sent(project.server.sent, "response.create")
             project.server.push({"type": "response.created", "response": {"id": "resp_1", "metadata": None}})
             await asyncio.wait_for(saying, 5)
         await session.close()
@@ -1404,7 +1355,7 @@ class TestVerification:
 
         async with reading(session):
             saying = asyncio.ensure_future(session.say("Hello"))
-            request = await project.server.wait_sent("response.create")
+            request = await wait_sent(project.server.sent, "response.create")
             request_id = request["response"]["metadata"]["af_request_id"]
             project.server.push({
                 "type": "response.created",
@@ -1669,7 +1620,7 @@ class TestVerification:
         receptionist, billing, built = topology(project)
 
         async with built, built.start_conversation() as conversation:
-            follow_up = asyncio.ensure_future(project.server.wait_sent("response.create"))
+            follow_up = asyncio.ensure_future(wait_sent(project.server.sent, "response.create"))
             project.server.push(*called("resp_1", "handoff_to_billing"))
             project.server.answer(await follow_up)
             await until(lambda: conversation.active_agent is billing)
@@ -1718,31 +1669,3 @@ class TestVerification:
         assert handed_off["instructions"] == "You are a receptionist."
         assert (handed_off["audio"]["output"]["voice"], handed_off["tool_choice"]) == (AVA, "auto")
         assert handed_off["tools"][:3] == [GET_CURRENT_TIME, GET_OFFICE_HOURS, ORDERS_MCP]
-
-    async def test_the_agents_own_reasoning_effort_wins_over_the_definitions(self) -> None:
-        """With a definition whose reasoning effort is 'high' and the agent's default_options 'minimal', the start and,
-        after billing's 'low', handing back to the agent send reasoning.effort 'minimal'."""
-        project = FakeProjectClient({"3": REASONING_DEFINITION})
-        receptionist = FoundryVoiceAgent(
-            project_client=project.as_project_client(),
-            agent_name="receptionist",
-            agent_version="3",
-            default_options=FoundryVoiceAgentOptions(reasoning_effort="minimal"),
-        )
-        billing = RealtimeAgent(
-            receptionist.client,
-            name="billing",
-            default_options=FoundryVoiceAgentOptions(voice=SONIA, reasoning_effort="low"),
-        )
-        built = (
-            RealtimeHandoffBuilder[FoundryVoiceAgentOptions](participants=[receptionist, billing])
-            .with_start_agent(receptionist)
-            .build()
-        )
-
-        async with built, built.start_conversation() as conversation:
-            await asyncio.wait_for(conversation.handoff(billing), 5)
-            await asyncio.wait_for(conversation.handoff(receptionist), 5)
-
-        opened, *_, handed_back = project.server.updates()
-        assert (opened.get("reasoning"), handed_back.get("reasoning")) == ({"effort": "minimal"}, {"effort": "minimal"})
