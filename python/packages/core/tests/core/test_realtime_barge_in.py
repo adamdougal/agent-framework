@@ -13,7 +13,7 @@ from agent_framework.exceptions import (
     RealtimeConversationClosedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
+from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
 from .realtime_history_helpers import spoken_then_written
 
 # Audio below is 24 kHz 16-bit mono PCM, 48 bytes per millisecond, unless a test says otherwise.
@@ -316,7 +316,8 @@ async def test_a_cut_the_provider_keeps_rejecting_does_not_stop_later_cuts() -> 
 async def test_a_late_acknowledgement_of_a_timed_out_cut_stops_it_being_retried() -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        shorten_timeouts(conversation)
         await _play(
             conversation,
             client.session,
@@ -718,7 +719,8 @@ class TestVerification:
     async def test_an_unacknowledged_truncate_raises_control_timeout(self) -> None:
         client = FakeRealtimeClient()
 
-        async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+        async with RealtimeAgent(client).start_conversation() as conversation:
+            shorten_timeouts(conversation)
             await _play(
                 conversation,
                 client.session,
