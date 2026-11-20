@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import wave
 
 from agent_framework import AgentResponseUpdate, Content, RealtimeAgent, RealtimeConversation, tool
 from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
@@ -18,8 +17,7 @@ This sample gives a realtime agent a tool that needs approval before it runs. A 
 calls issue_refund, and the conversation streams a function_approval_request instead of running it. The sample asks
 you at the terminal, as a supervisor would, and sends your decision back with send(...). Approved, the refund runs and
 the agent confirms it; rejected, the agent tells the caller it couldn't be done. The caller can keep talking while the
-call waits for the decision. The sample sends text and saves the spoken reply to voice_live_tool_approval.wav, so it
-needs no microphone or speaker.
+call waits for the decision. The sample sends text and prints the transcript, so it needs no microphone or speaker.
 
 Prerequisites:
 - Install the realtime extra: pip install "agent-framework-foundry[realtime]" --pre
@@ -28,9 +26,6 @@ Prerequisites:
 
 Realtime agents are experimental.
 """
-
-REPLY_PATH = "voice_live_tool_approval.wav"
-OUTPUT_SAMPLE_RATE = 24_000
 
 
 @tool(approval_mode="always_require")
@@ -47,8 +42,8 @@ async def ask_the_supervisor(conversation: RealtimeConversation[VoiceLiveOptions
     await conversation.send(request.to_function_approval_response(approved=answer.strip().lower() == "y"))
 
 
-async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray) -> None:
-    """Print the transcript, ask for approval, and keep the audio, until the agent answers with the refund's result."""
+async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> None:
+    """Print the transcript and ask for approval until the agent answers with the refund's result."""
     decisions: list[asyncio.Task[None]] = []
     has_result = False
     update: AgentResponseUpdate
@@ -56,9 +51,6 @@ async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions], reply
         for content in update.contents:
             if content.type == "text" and update.role == "assistant" and content.status == "completed":
                 print(f"Agent: {content.text}")
-            elif content.type == "data" and content.has_top_level_media_type("audio"):
-                # The WAV writer needs the 24 kHz, 16-bit mono PCM itself, not the content's data URI.
-                reply_audio.extend(content.get_data_bytes())
             elif content.type == "function_approval_request":
                 decisions.append(asyncio.create_task(ask_the_supervisor(conversation, content)))
             elif content.type == "function_result":
@@ -90,23 +82,15 @@ async def main() -> None:
         tools=[issue_refund],
         default_options=options,
     )
-    reply_audio = bytearray()
 
     try:
         async with agent.start_conversation() as conversation:
             print("Caller: Please refund twenty pounds on order 1234.")
             await conversation.send("Please refund twenty pounds on order 1234.")
-            await read_reply(conversation, reply_audio)
+            await read_reply(conversation)
     finally:
         if credential is not None:
             await credential.close()
-
-    with wave.open(REPLY_PATH, "wb") as reply_file:
-        reply_file.setnchannels(1)
-        reply_file.setsampwidth(2)
-        reply_file.setframerate(OUTPUT_SAMPLE_RATE)
-        reply_file.writeframes(bytes(reply_audio))
-    print(f"Saved {len(reply_audio) / (2 * OUTPUT_SAMPLE_RATE):.1f} seconds of reply audio to {REPLY_PATH}.")
 
 
 if __name__ == "__main__":
@@ -119,7 +103,6 @@ Caller: Please refund twenty pounds on order 1234.
 Approve issue_refund({"amount":20,"order_id":"1234"})? [y/N] y
 Result: Refunded £20.00 on order 1234.
 Agent: The £20 refund has been issued on order 1234.
-Saved 4.0 seconds of reply audio to voice_live_tool_approval.wav.
 
 Sample output (rejected):
 
@@ -127,5 +110,4 @@ Caller: Please refund twenty pounds on order 1234.
 Approve issue_refund({"amount":20,"order_id":"1234"})? [y/N] n
 Result: Error: Tool call invocation was rejected by user.
 Agent: The refund couldn't be processed because the tool call was rejected.
-Saved 4.0 seconds of reply audio to voice_live_tool_approval.wav.
 """

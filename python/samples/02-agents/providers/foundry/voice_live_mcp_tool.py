@@ -3,7 +3,6 @@
 import asyncio
 import os
 import sys
-import wave
 
 from agent_framework import AgentResponseUpdate, MCPStdioTool, RealtimeAgent, RealtimeConversation
 from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
@@ -18,8 +17,8 @@ Voice Live MCP Tool Example
 
 This sample gives a realtime agent a local MCP tool. A caller asks when their order can be delivered, the agent calls
 the orders MCP server's get_delivery_slots tool, and it speaks the slots back. Started with --server, the sample runs
-itself as that small orders server over stdio, so it needs no other process. It sends text and saves the spoken reply
-to voice_live_mcp_tool.wav, so it needs no microphone or speaker.
+itself as that small orders server over stdio, so it needs no other process. It sends text and prints the transcript,
+so it needs no microphone or speaker.
 
 The conversation declares the MCP tool's functions to Voice Live as ordinary function tools and runs them in the app.
 `async with agent` connects the MCP server, and closes it when the agent exits. Without it, the first conversation
@@ -35,8 +34,6 @@ Prerequisites:
 Realtime agents are experimental.
 """
 
-REPLY_PATH = "voice_live_mcp_tool.wav"
-OUTPUT_SAMPLE_RATE = 24_000
 DELIVERY_SLOTS = {"S1": "Thursday from 9 to 11 AM", "S2": "Thursday from 1 to 3 PM", "S3": "Friday from 9 to 11 AM"}
 
 
@@ -60,17 +57,14 @@ def run_orders_server() -> None:
     server.run()
 
 
-async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions], reply_audio: bytearray) -> None:
-    """Print the transcript and the MCP call, and keep the audio, until the agent answers with the tool's result."""
+async def read_reply(conversation: RealtimeConversation[VoiceLiveOptions]) -> None:
+    """Print the transcript and the MCP call until the agent answers with the tool's result."""
     has_result = False
     update: AgentResponseUpdate
     async for update in conversation:
         for content in update.contents:
             if content.type == "text" and update.role == "assistant" and content.status == "completed":
                 print(f"Agent: {content.text}")
-            elif content.type == "data" and content.has_top_level_media_type("audio"):
-                # The WAV writer needs the 24 kHz, 16-bit mono PCM itself, not the content's data URI.
-                reply_audio.extend(content.get_data_bytes())
             elif content.type == "function_call":
                 print(f"MCP call: {content.name}({content.arguments})")
             elif content.type == "function_result":
@@ -102,23 +96,15 @@ async def main() -> None:
         tools=[orders],
         default_options=options,
     )
-    reply_audio = bytearray()
 
     try:
         async with agent, agent.start_conversation() as conversation:
             print("Caller: When can order 1234 be delivered?")
             await conversation.send("When can order 1234 be delivered?")
-            await read_reply(conversation, reply_audio)
+            await read_reply(conversation)
     finally:
         if credential is not None:
             await credential.close()
-
-    with wave.open(REPLY_PATH, "wb") as reply_file:
-        reply_file.setnchannels(1)
-        reply_file.setsampwidth(2)
-        reply_file.setframerate(OUTPUT_SAMPLE_RATE)
-        reply_file.writeframes(bytes(reply_audio))
-    print(f"Saved {len(reply_audio) / (2 * OUTPUT_SAMPLE_RATE):.1f} seconds of reply audio to {REPLY_PATH}.")
 
 
 if __name__ == "__main__":
@@ -134,5 +120,4 @@ Caller: When can order 1234 be delivered?
 MCP call: get_delivery_slots({"order_id":"1234"})
 MCP result: Order 1234 can be delivered in these slots: S1: Thursday from 9 to 11 AM; S2: Thursday from 1 to 3 PM; S3: Friday from 9 to 11 AM.
 Agent: Order 1234 can be delivered Thursday from 9 to 11 AM, Thursday from 1 to 3 PM, or Friday from 9 to 11 AM.
-Saved 9.1 seconds of reply audio to voice_live_mcp_tool.wav.
 """
