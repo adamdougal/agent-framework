@@ -55,11 +55,11 @@ class RealtimeClientSessionProtocol(Protocol[RealtimeOptionsT]):
         A ``RealtimeEvent`` is a raw command: its ``raw_representation`` is the wire event, sent verbatim and untracked.
         A ``Message`` is mapped one content at a time, in order:
 
-        - audio ``data`` or ``uri`` content is appended to the input audio buffer, whatever the role;
+        - audio ``data`` content is appended to the input audio buffer, whatever the role;
         - ``text`` becomes a message item with the message's role, and assistant text is replayed as output text;
         - ``function_call`` content becomes a function-call item;
         - ``function_result`` content becomes a function-call output item with the result as a string;
-        - any other content is dropped with a warning.
+        - any other content, ``uri`` audio included, is dropped with a warning.
 
         Sending never requests a response; callers use ``create_response(...)`` for that.
 

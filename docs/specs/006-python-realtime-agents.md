@@ -159,12 +159,12 @@ class RealtimeOptions(TypedDict, total=False):
   provider can't take raises before connecting. If opening a session fails or is cancelled, the client closes whatever
   it opened before re-raising.
 - A session's `send(...)` takes a raw command or input. A `RealtimeEvent` is a raw command: its `raw_representation`
-  is the wire event, sent verbatim and untracked. A `Message` is mapped one content at a time, in order. Audio `data` or
-  `uri` content is appended to the input audio buffer, whatever the role. `text` becomes a message item with the
-  message's role, and assistant text is replayed as output text. `function_call` and `function_result` content become
-  their own items, with the result as a string. Anything else is dropped with a warning, a hosted
-  `function_approval_response` included until hosted approvals come, when it becomes the provider's approval response.
-  Sending never requests a response.
+  is the wire event, sent verbatim and untracked. A `Message` is mapped one content at a time, in order. Audio `data`
+  content is appended to the input audio buffer, whatever the role; `uri` audio is dropped with a warning, because the
+  session sends only audio the app already holds. `text` becomes a message item with the message's role, and
+  assistant text is replayed as output text. `function_call` and `function_result` content become their own items,
+  with the result as a string. Anything else is dropped with a warning, a hosted `function_approval_response` included
+  until hosted approvals come, when it becomes the provider's approval response. Sending never requests a response.
 - `__aenter__` runs the conversation middleware chain, which opens the provider session. Opening runs `before_run`,
   applies the options, tools and function middleware with what `before_run` added, replays history, sends initial
   `messages` as context and starts the single receive loop. It never requests a response. `close()` is idempotent and
@@ -576,11 +576,13 @@ updates are read. A reader in its own task therefore still gets updates, such as
   requests no response.
   `MiddlewareTermination` in `process()` before `call_next()`, or a chain that returns without calling it, refuses the
   session: entering the conversation, or `run(...)` when it comes, raises `MiddlewareTermination`, and nothing
-  connects. Any other exception ends the conversation fail-closed. An exception raised after `call_next()` closes the
-  conversation and entering raises it; a send or update hook's exception closes it, then `send(...)` or iteration
-  raises it, and after an update hook's exception no update still queued is delivered. Close-hook failures raise from
-  `close()` after cleanup, with context-provider failures: one as it is, several as an `ExceptionGroup`. A hook returns
-  a replacement rather than changing the update in place, whose contents history and the tool loop share.
+  connects. As in chat, middleware that returns without calling `call_next()` lets outer middleware finish, while
+  raising `MiddlewareTermination` skips their code after `call_next()`. Any other exception ends the conversation
+  fail-closed. An exception raised after `call_next()` closes the conversation and entering raises it; a send or update
+  hook's exception closes it, then `send(...)` or iteration raises it, and after an update hook's exception no update
+  still queued is delivered. Close-hook failures raise from `close()` after cleanup, with context-provider failures: one
+  as it is, several as an `ExceptionGroup`. A hook returns a replacement rather than changing the update in place, whose
+  contents history and the tool loop share.
 - **Order.** Hooks run in onion order: send hooks in registration order, and update and close hooks in reverse, so
   middleware that registers its hooks before `call_next()` sees inputs outermost first and updates and the close
   outermost last. History and telemetry record inputs after the send hooks and updates before the update hooks. The
@@ -619,7 +621,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   response was created.
 - **Conventions.** Realtime follows semantic-conventions-genai at commit `750e42c`, unreleased, in Agent Framework's
   latest mode; under the v1.36 baseline it emits the same spans, with mode-dependent attributes following the mode. The
-  [per-provider mapping table](https://github.com/adamdougal/agent-framework/blob/research/realtime-telemetry-mapping/docs/research/realtime-telemetry-mapping.md#mapping-table)
+  [per-provider mapping table](https://github.com/adamdougal/agent-framework/blob/828fc409b42e4b04aebc7da917cf8e94fd0dc248/docs/research/realtime-telemetry-mapping.md#mapping-table)
   is normative, with these corrections: reasoning tokens sit inside `text_tokens`, with an undocumented
   `reasoning_tokens` alongside, `gpt-transcribe` reports `duration`, Voice Live reports no transcription usage, failed
   Voice Live responses report `server_error`, and content-filter blocks never carry a category. Where the table and this
@@ -786,9 +788,8 @@ On stable APIs, all additive: `Content`'s `kind` and `service_event_type` fields
 serializes; `Content.from_text(status=...)` and text merges that keep the latest status; `Content.get_data_bytes()`
 and `Content.get_data_base64()`, which read data content's bytes, or its base64 data as stored, and raise
 `ContentError` for content without a base64 data URI; the audio, text and image `UsageDetails` keys, with their
-telemetry mapping later; `FunctionTool.invoke` recording cancellation as ERROR; `observability`'s public-named,
-unexported helpers that realtime telemetry shares with chat; `OpenAISettings` and `AzureOpenAISettings`'
-`realtime_model`, read from `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`;
+telemetry mapping later; `FunctionTool.invoke` recording cancellation as ERROR; `OpenAISettings` and
+`AzureOpenAISettings`' `realtime_model`, read from `OPENAI_REALTIME_MODEL` and `AZURE_OPENAI_REALTIME_MODEL`;
 the internal MCP helper shared by `RawAgent` and `RawRealtimeAgent`; the internal topology base shared by
 `HandoffBuilder` and `RealtimeHandoffBuilder`; `MiddlewareBundle` accepting conversation members, and a chat `Agent`
 skipping conversation middleware with a warning; and `ExperimentalFeature.REALTIME` and

@@ -38,9 +38,7 @@ package READMEs for other provider differences before relying on one.
 
 - **Audio.** The application owns audio devices, the transport to a browser or phone line, and playback. When the
   caller talks over the agent, stop playback and report what the caller heard with `interrupt(played_ms=...)`, so
-  history keeps only the heard text. When audio is relayed through a client that doesn't report playback, such as a
-  browser or Azure Communication Services, estimate `played_ms` from the audio forwarded and drop the interrupted
-  response's late audio.
+  history keeps only the heard text.
 - **Mid-call changes.** Use `update_session()` when one agent changes its instructions, voice, or tools, and
   `RealtimeHandoffBuilder` for distinct roles. Both keep the same realtime session, so the call doesn't reconnect.
   `HandoffBuilder` is chat-only. The built handoff agent owns the call's history and context providers; participants

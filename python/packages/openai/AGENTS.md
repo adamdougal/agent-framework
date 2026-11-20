@@ -27,16 +27,14 @@ agent_framework_openai/
 | `OpenAIRealtimeClient` | OpenAI Realtime and Azure OpenAI Realtime | Experimental; needs the `[realtime]` extra |
 | `OpenAIRealtimeSession` | OpenAI Realtime protocol | Experimental; base session for realtime provider clients |
 
-All clients follow the Raw + Full-Featured pattern (e.g., `RawOpenAIChatClient` + `OpenAIChatClient`).
+All clients except `OpenAIRealtimeClient` follow the Raw + Full-Featured pattern (e.g., `RawOpenAIChatClient` +
+`OpenAIChatClient`). For realtime, core's `RealtimeAgent` owns the middleware and telemetry layers.
 
 `OpenAIRealtimeSession` is the shared realtime session for every service that speaks the OpenAI Realtime protocol,
 including Azure Voice Live in `agent-framework-foundry`. A provider client opens an `OpenAIRealtimeConnection`, builds
-the session on it and awaits `start(...)`; a service's differences go in a subclass that overrides the protected
-hooks: `_SESSION_OPTION_KEYS` (built from `_NEUTRAL_OPTION_KEYS` and the service's own settings),
-`_ASSISTANT_TEXT_PART`, `_INITIAL_UPDATE_REQUIRED`, `_VOICE_OBJECTS_ACCEPTED`, `_CANCEL_NAMES_RESPONSE`,
-`_EVENT_ALIASES`, `_honored`, `_voice_change_allowed`, `_session_payload`, `_response_payload`, `_say_payload`,
-`_current_voice`, `_event_namespace` and `_before_initial_update`. The module must import without `openai[realtime]` or
-websockets, because Voice Live brings its own transport.
+the session on it and awaits `start(...)`. A service's differences go in a subclass that overrides the base's protected
+class attributes and methods, building `_SESSION_OPTION_KEYS` from `_NEUTRAL_OPTION_KEYS` and the service's own
+settings. The module must import without `openai[realtime]` or websockets, because Voice Live brings its own transport.
 
 `OpenAIRealtimeClient` resolves settings through `load_openai_service_settings` with `azure_v1_route=True`, so its
 routing and model fallbacks match the chat clients' and Azure always gets an `AsyncOpenAI` on `/openai/v1`. It opens the
