@@ -234,14 +234,6 @@ async def mapped(*events: Mapping[str, Any], options: RealtimeOptions | None = N
 AGENT_PART = {"response_id": "resp_1", "item_id": "item_1", "content_index": 0}
 
 
-def assert_agent_text(event: Any, text: str, merge_mode: str, status: str | None) -> None:
-    """Assert ``event`` is agent transcript text for AGENT_PART."""
-    assert event.kind == "output_text"
-    assert (event.content.type, event.content.text, event.content.merge_mode) == ("text", text, merge_mode)
-    assert event.content.status == status
-    assert event.additional_properties["core"] == AGENT_PART
-
-
 def rejection(
     code: str, param: str | None = None, *, event_id: str | None, message: str = "Rejected."
 ) -> dict[str, Any]:
@@ -405,6 +397,42 @@ async def test_audio_settings_nest_under_audio_input_and_output() -> None:
     }
 
 
+async def test_none_turns_an_audio_input_feature_off() -> None:
+    """turn_detection None, transcription None and noise_reduction None are sent as null under audio.input."""
+    sent = await initial_session({"turn_detection": None, "transcription": None, "noise_reduction": None})
+
+    assert sent == {
+        "type": "realtime",
+        "audio": {"input": {"turn_detection": None, "transcription": None, "noise_reduction": None}},
+    }
+
+
+async def test_turn_detection_and_transcription_extras_pass_through() -> None:
+    """start(options={"turn_detection": {"type": "semantic_vad", "eagerness": "low"}, "transcription": {"model":
+    "gpt-4o-transcribe", "prompt": "Contoso"}}) sends both unchanged under audio.input, and a later
+    update_session({"turn_detection": {"type": "server_vad", "idle_timeout_ms": 6000}}) sends idle_timeout_ms
+    6000."""
+    turn_detection = {"type": "semantic_vad", "eagerness": "low"}
+    transcription = {"model": "gpt-4o-transcribe", "prompt": "Contoso"}
+    session, connection = await started(
+        cast(RealtimeOptions, {"turn_detection": turn_detection, "transcription": transcription})
+    )
+
+    async with reading(session):
+        await asyncio.wait_for(
+            session.update_session(
+                cast(RealtimeOptions, {"turn_detection": {"type": "server_vad", "idle_timeout_ms": 6000}}), None
+            ),
+            5,
+        )
+
+    assert connection.sent[0]["session"]["audio"]["input"] == {
+        "turn_detection": turn_detection,
+        "transcription": transcription,
+    }
+    assert connection.sent[1]["session"]["audio"]["input"]["turn_detection"]["idle_timeout_ms"] == 6000
+
+
 async def test_max_tokens_and_output_modalities_translate() -> None:
     """max_tokens 512 becomes max_output_tokens 512, and output_modalities ["audio"] stays output_modalities
     ["audio"]."""
@@ -459,6 +487,29 @@ async def test_tools_are_declared() -> None:
         },
         hosted,
     ]
+
+
+async def test_start_with_only_tools_sends_them() -> None:
+    """start(tools=[lookup]) sends session.update with type "realtime" and the declared function."""
+
+    @tool
+    def lookup(query: str) -> str:
+        """Look something up."""
+        return query
+
+    sent = await initial_session({}, [lookup])
+
+    assert sent == {
+        "type": "realtime",
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "description": "Look something up.",
+                "parameters": lookup.parameters(),
+            }
+        ],
+    }
 
 
 async def test_unsupported_options_are_dropped() -> None:
@@ -553,35 +604,15 @@ async def test_a_cancelled_updates_late_acknowledgement_does_not_answer_the_next
     assert session.options == {"max_tokens": 100, "instructions": "B."}
 
 
-async def test_a_cancelled_updates_late_rejection_does_not_fail_the_next_update() -> None:
+@pytest.mark.parametrize("speech_first", [False, True], ids=["rejection first", "speech first"])
+@pytest.mark.parametrize("echoing", ["no id", "a server id", "its own id"])
+async def test_a_cancelled_updates_late_rejection_retires_it_without_failing_the_next_update(
+    echoing: str, speech_first: bool
+) -> None:
     """update_session A is cancelled after it's sent, then update B is sent. A's rejection, echoing no event_id as on
-    Voice Live, streams as an error and doesn't fail B, which resolves on the session.updated that follows."""
-    session, connection = await started()
-    connection.responder = None
-
-    async with reading(session) as reader:
-        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
-        await connection.wait_sent("session.update")
-        abandoned.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await abandoned
-        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
-        await connection.wait_sent("session.update")
-        connection.push(rejection("invalid_value", event_id=None))
-        await reader.until(lambda: "error" in reader.kinds())
-        assert not updating.done()
-
-        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
-        await asyncio.wait_for(updating, 5)
-
-    assert [event.content.error_code for event in reader.of_kind("error")] == ["invalid_value"]
-    assert session.options == {"instructions": "B."}
-
-
-async def test_a_cancelled_updates_echoed_rejection_retires_it_whatever_arrives_first() -> None:
-    """update_session A is cancelled after it's sent, then update B is sent. A speech_started, then A's rejection
-    echoing A's event_id as GA providers do: the rejection streams as an error, B isn't failed, and B resolves on the
-    next session.updated."""
+    Voice Live, the server's own "evt_srv_9", or A's event_id as GA providers do, arrives first or behind a
+    speech_started: it streams as an error and retires A without failing B, which then resolves on the next
+    session.updated without A's settings."""
     session, connection = await started()
     connection.responder = None
     speech_started = {
@@ -599,33 +630,10 @@ async def test_a_cancelled_updates_echoed_rejection_retires_it_whatever_arrives_
             await abandoned
         updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
         await connection.wait_sent("session.update")
-        connection.push(speech_started, rejection("invalid_value", event_id=abandoned_request["event_id"]))
-        await reader.until(lambda: "error" in reader.kinds())
-        assert not updating.done()
-
-        connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
-        await asyncio.wait_for(updating, 5)
-
-    assert session.options == {"instructions": "B."}
-
-
-async def test_a_cancelled_updates_late_rejection_with_a_server_id_does_not_fail_the_next_update() -> None:
-    """update_session A is cancelled after it's sent, then update B is sent. A's rejection, carrying the server's own
-    event_id "evt_srv_9", streams as an error and retires A; B resolves on the next session.updated without A's
-    settings."""
-    session, connection = await started()
-    connection.responder = None
-
-    async with reading(session) as reader:
-        abandoned = asyncio.create_task(session.update_session({"max_tokens": 100}, None))
-        await connection.wait_sent("session.update")
-        abandoned.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await abandoned
-        updating = asyncio.create_task(session.update_session({"instructions": "B."}, None))
-        await connection.wait_sent("session.update")
-        connection.push(rejection("invalid_value", event_id="evt_srv_9"))
-        await reader.until(lambda: "error" in reader.kinds())
+        echoed = {"no id": None, "a server id": "evt_srv_9", "its own id": abandoned_request["event_id"]}[echoing]
+        before = [speech_started] if speech_first else []
+        await read_through(connection, reader, *before, rejection("invalid_value", event_id=echoed))
+        assert [event.content.error_code for event in reader.of_kind("error")] == ["invalid_value"]
         assert not updating.done()
 
         connection.push({"type": "session.updated", "event_id": "evt_b", "session": {}})
@@ -745,44 +753,46 @@ async def test_update_session_with_nothing_left_returns_without_sending() -> Non
     assert session.options == {"instructions": "A"}
 
 
-async def test_create_response_returns_its_own_response_id() -> None:
-    """create_response() sends response.create whose response.metadata holds an af_request_id; a response.created
-    {id: "resp_1"} echoing that id resolves it to "resp_1"."""
+async def test_update_session_with_empty_tools_clears_them() -> None:
+    """update_session({}, []) sends session.update with tools []."""
     session, connection = await started()
 
     async with reading(session):
-        creating = asyncio.create_task(session.create_response())
+        await asyncio.wait_for(session.update_session({}, []), 5)
+
+    assert connection.sent[-1]["session"] == {"type": "realtime", "tools": []}
+
+
+@pytest.mark.parametrize(
+    ("options", "sent"),
+    [
+        pytest.param(None, {}, id="no options"),
+        pytest.param(
+            {"instructions": "Short.", "max_tokens": 50, "tool_choice": {"mode": "none"}, "metadata": {"k": "v"}},
+            {"instructions": "Short.", "max_output_tokens": 50, "tool_choice": "none", "metadata": {"k": "v"}},
+            id="translated",
+        ),
+        pytest.param({"temperature": 0.9}, {}, id="temperature dropped"),
+        pytest.param({"speed": 1.2}, {}, id="session-only setting dropped"),
+    ],
+)
+async def test_create_response_sends_its_options_and_returns_its_own_response_id(
+    options: RealtimeOptions | None, sent: dict[str, Any]
+) -> None:
+    """create_response(options) sends response.create with the options a GA response takes, translated, and a
+    response.metadata adding an af_request_id to any given; a response.created {id: "resp_1"} echoing that id
+    resolves it to "resp_1"."""
+    session, connection = await started()
+
+    async with reading(session):
+        creating = asyncio.create_task(session.create_response(options))
         request = await connection.wait_sent("response.create")
         connection.push(response_created("resp_1", request_id_of(request)))
 
         assert await asyncio.wait_for(creating, 5) == "resp_1"
 
-
-async def test_create_response_translates_per_response_options() -> None:
-    """create_response({"instructions": "Short.", "max_tokens": 50, "tool_choice": "none", "metadata": {"k": "v"}})
-    sends response {instructions: "Short.", max_output_tokens: 50, tool_choice: "none", metadata: {k: "v",
-    af_request_id: ...}}."""
-    session, connection = await started()
-
-    async with reading(session):
-        creating = asyncio.create_task(
-            session.create_response({
-                "instructions": "Short.",
-                "max_tokens": 50,
-                "tool_choice": {"mode": "none"},
-                "metadata": {"k": "v"},
-            })
-        )
-        request = await connection.wait_sent("response.create")
-        connection.push(response_created("resp_1", request_id_of(request)))
-        await asyncio.wait_for(creating, 5)
-
-    assert request["response"] == {
-        "instructions": "Short.",
-        "max_output_tokens": 50,
-        "tool_choice": "none",
-        "metadata": {"k": "v", "af_request_id": request_id_of(request)},
-    }
+    metadata = {**sent.get("metadata", {}), "af_request_id": request_id_of(request)}
+    assert request["response"] == {**sent, "metadata": metadata}
 
 
 async def test_create_response_raises_while_a_response_is_active() -> None:
@@ -889,37 +899,22 @@ async def test_say_with_an_azure_voice_sends_a_pre_generated_message() -> None:
     assert "instructions" not in request["response"]
 
 
-async def test_cancel_response_resolves_on_that_responses_done() -> None:
-    """With "resp_1" active, cancel_response() sends response.cancel and returns when response.done for "resp_1"
-    arrives with status "cancelled"."""
-    session, connection = await started()
-
-    async with reading(session) as reader:
-        await activate_response(connection, reader, "resp_1")
-        cancelling = asyncio.create_task(session.cancel_response())
-        await connection.wait_sent("response.cancel")
-        await asyncio.sleep(0.01)
-        assert not cancelling.done()
-
-        connection.push(response_done("resp_1", "cancelled"))
-        await asyncio.wait_for(cancelling, 5)
-
-
-async def test_cancel_response_ignores_another_responses_done() -> None:
-    """While cancel_response() waits on active "resp_2", a response.done for an earlier "resp_1" doesn't resolve it;
-    the one for "resp_2" does."""
+async def test_cancel_response_names_the_active_response_and_resolves_on_its_done() -> None:
+    """With "resp_2" active, cancel_response() sends response.cancel {response_id: "resp_2"}. A response.done for an
+    earlier "resp_1" doesn't resolve it; resp_2's response.done with status "cancelled" does."""
     session, connection = await started()
 
     async with reading(session) as reader:
         await activate_response(connection, reader, "resp_2")
         cancelling = asyncio.create_task(session.cancel_response())
-        await connection.wait_sent("response.cancel")
-        connection.push(response_done("resp_1"))
-        await asyncio.sleep(0.01)
+        cancel = await connection.wait_sent("response.cancel")
+        await read_through(connection, reader, response_done("resp_1"))
         assert not cancelling.done()
 
         connection.push(response_done("resp_2", "cancelled"))
         await asyncio.wait_for(cancelling, 5)
+
+    assert without_event_ids([cancel]) == [{"type": "response.cancel", "response_id": "resp_2"}]
 
 
 async def test_a_cancel_whose_response_finishes_before_it_is_sent_sends_nothing() -> None:
@@ -1205,6 +1200,20 @@ async def test_delete_item_sends_the_delete_and_returns_on_its_deletion() -> Non
     assert request["item_id"] == "item_1"
 
 
+async def test_a_rejected_delete_raises_with_the_providers_code() -> None:
+    """Some providers omit request ids, so deletion errors must still be claimed."""
+    session, connection = await started()
+
+    async with reading(session):
+        deleting = asyncio.create_task(session.delete_item("item_9"))
+        await connection.wait_sent("conversation.item.delete")
+        connection.push(rejection("item_not_found", event_id=None))
+        with pytest.raises(RealtimeControlException) as caught:
+            await asyncio.wait_for(deleting, 5)
+
+    assert caught.value.code == "item_not_found"
+
+
 # endregion
 
 # region Error claiming
@@ -1325,6 +1334,53 @@ async def test_late_cancel_not_active_answering_own_cancel_is_passthrough() -> N
     assert [event.service_event_type for event in reader.of_kind("passthrough")] == ["error"]
 
 
+async def test_error_with_the_calls_own_event_id_claims_it() -> None:
+    """While update_session() waits, an error echoing its event_id fails it with RealtimeControlException."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
+        request = await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", "session.instructions", event_id=request["event_id"]))
+
+        with pytest.raises(RealtimeControlException) as caught:
+            await asyncio.wait_for(updating, 5)
+
+    assert (caught.value.code, caught.value.param) == ("invalid_value", "session.instructions")
+
+
+async def test_error_with_a_server_event_id_claims_it() -> None:
+    """An error with event_id "evt_srv_1", never sent by the session, fails the waiting update_session()."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session):
+        updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
+        await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", event_id="evt_srv_1"))
+
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(updating, 5)
+
+
+async def test_claimed_update_error_streams_as_passthrough() -> None:
+    """The error that failed update_session() is yielded as passthrough, not error."""
+    session, connection = await started()
+    connection.responder = None
+
+    async with reading(session) as reader:
+        updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
+        await connection.wait_sent("session.update")
+        connection.push(rejection("invalid_value", event_id=None))
+        with pytest.raises(RealtimeControlException):
+            await asyncio.wait_for(updating, 5)
+        await read_through(connection, reader)
+
+    assert [event.service_event_type for event in reader.of_kind("passthrough")] == ["error"]
+    assert reader.of_kind("error") == []
+
+
 # endregion
 
 # region Out-of-band responses, cancellation safety and the connection
@@ -1370,6 +1426,31 @@ async def test_cancelled_control_call_does_not_claim_a_later_error() -> None:
 
         connection.responder = acknowledge_session_updates
         await asyncio.wait_for(session.update_session({"instructions": "Second."}, None), 5)
+
+
+async def test_cancelled_create_response_leaves_nothing_pending() -> None:
+    """create_response() cancelled while waiting; its response.created arriving later doesn't affect the next
+    call's correlation."""
+    session, connection = await started()
+
+    async with reading(session) as reader:
+        abandoned = asyncio.create_task(session.create_response())
+        abandoned_request = await connection.wait_sent("response.create")
+        abandoned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await abandoned
+        await read_through(
+            connection,
+            reader,
+            response_created("resp_1", request_id_of(abandoned_request)),
+            response_done("resp_1"),
+        )
+
+        creating = asyncio.create_task(session.create_response())
+        request = await connection.wait_sent("response.create")
+        connection.push(response_created("resp_2", request_id_of(request)))
+
+        assert await asyncio.wait_for(creating, 5) == "resp_2"
 
 
 async def test_normal_close_ends_receive_and_fails_a_waiting_call() -> None:
@@ -1600,6 +1681,25 @@ async def test_usage_maps_detail_keys() -> None:
     }
 
 
+async def test_usage_maps_image_token_details() -> None:
+    """input_token_details {image_tokens: 7, cached_tokens_details: {image_tokens: 2}} map to
+    image_input_token_count 7 and image_cache_read_input_token_count 2."""
+    usage, _ = await mapped(
+        response_done(
+            "resp_1",
+            usage={
+                "input_tokens": 9,
+                "output_tokens": 0,
+                "total_tokens": 9,
+                "input_token_details": {"image_tokens": 7, "cached_tokens_details": {"image_tokens": 2}},
+            },
+        )
+    )
+
+    assert usage.content.usage_details["image_input_token_count"] == 7
+    assert usage.content.usage_details["image_cache_read_input_token_count"] == 2
+
+
 async def test_item_added_maps_order_and_role() -> None:
     message, call = await mapped(
         {
@@ -1726,27 +1826,38 @@ async def test_input_transcription_failed_maps_error_fields() -> None:
     }
 
 
-async def test_output_audio_transcript_maps_to_output_text() -> None:
-    """response.output_audio_transcript.delta "Hi" yields output_text "Hi" (append) and .done "Hi there" yields
-    output_text "Hi there" (replace, completed), each with core {response_id, item_id, content_index}."""
-    delta, done = await mapped(
-        {**AGENT_PART, "type": "response.output_audio_transcript.delta", "event_id": "e1", "delta": "Hi"},
-        {**AGENT_PART, "type": "response.output_audio_transcript.done", "event_id": "e2", "transcript": "Hi there"},
-    )
+@pytest.mark.parametrize(
+    ("delta", "done"),
+    [
+        pytest.param(
+            {**AGENT_PART, "type": "response.output_audio_transcript.delta", "event_id": "e1", "delta": "Hi"},
+            {**AGENT_PART, "type": "response.output_audio_transcript.done", "event_id": "e2", "transcript": "Hi there"},
+            id="spoken transcript",
+        ),
+        pytest.param(
+            {**AGENT_PART, "type": "response.output_text.delta", "event_id": "e1", "delta": "Hi"},
+            {**AGENT_PART, "type": "response.output_text.done", "event_id": "e2", "text": "Hi there"},
+            id="written text",
+        ),
+    ],
+)
+async def test_agent_transcript_maps_to_output_text(delta: dict[str, Any], done: dict[str, Any]) -> None:
+    """A delta "Hi" yields output_text "Hi" (append), and the .done "Hi there", under "transcript" when spoken and
+    "text" when written, yields output_text "Hi there" (replace, completed). Each keeps its wire name and has core
+    {response_id, item_id, content_index}."""
+    events = await mapped(delta, done)
 
-    assert_agent_text(delta, "Hi", "append", None)
-    assert_agent_text(done, "Hi there", "replace", "completed")
-
-
-async def test_output_text_maps_to_output_text() -> None:
-    """response.output_text.delta and .done map to output_text exactly as the audio transcript does."""
-    delta, done = await mapped(
-        {**AGENT_PART, "type": "response.output_text.delta", "event_id": "e1", "delta": "Hi"},
-        {**AGENT_PART, "type": "response.output_text.done", "event_id": "e2", "text": "Hi there"},
-    )
-
-    assert_agent_text(delta, "Hi", "append", None)
-    assert_agent_text(done, "Hi there", "replace", "completed")
+    assert [
+        (event.kind, event.content.type, event.content.text, event.content.merge_mode, event.content.status)
+        for event in events
+    ] == [
+        ("output_text", "text", "Hi", "append", None),
+        ("output_text", "text", "Hi there", "replace", "completed"),
+    ]
+    assert [(event.service_event_type, event.additional_properties["core"]) for event in events] == [
+        (delta["type"], AGENT_PART),
+        (done["type"], AGENT_PART),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2042,7 +2153,7 @@ def test_session_module_imports_without_the_realtime_extra() -> None:
 
 # endregion
 
-# region Typed GA settings and the targeted cancel
+# region Typed GA settings
 
 
 async def test_speed_is_sent_as_the_output_speed() -> None:
@@ -2077,223 +2188,20 @@ async def test_parallel_tool_calls_is_sent_as_given() -> None:
     assert session["parallel_tool_calls"] is False
 
 
-async def test_cancel_response_names_the_active_response() -> None:
-    """With "resp_1" active, cancel_response() sends response.cancel with response_id "resp_1"."""
+async def test_update_session_sends_the_typed_settings() -> None:
+    """update_session({"speed": 0.9, "reasoning_effort": "high"}) sends audio.output.speed 0.9 and reasoning
+    {"effort": "high"}, and once acknowledged, options holds speed 0.9 and reasoning_effort "high"."""
     session, connection = await started()
 
-    async with reading(session) as reader:
-        await activate_response(connection, reader, "resp_1")
-        cancelling = asyncio.create_task(session.cancel_response())
-        cancel = await connection.wait_sent("response.cancel")
-        connection.push(response_done("resp_1", "cancelled"))
-        await asyncio.wait_for(cancelling, 5)
+    async with reading(session):
+        await asyncio.wait_for(
+            session.update_session(cast(RealtimeOptions, {"speed": 0.9, "reasoning_effort": "high"}), None), 5
+        )
 
-    assert cancel["response_id"] == "resp_1"
+    update = connection.sent[-1]["session"]
+    assert update["audio"]["output"] == {"speed": 0.9}
+    assert update["reasoning"] == {"effort": "high"}
+    assert cast(dict[str, Any], session.options) == {"speed": 0.9, "reasoning_effort": "high"}
 
 
 # endregion
-
-
-class TestVerification:
-    async def test_a_rejected_delete_raises_with_the_providers_code(self) -> None:
-        """Some providers omit request ids, so deletion errors must still be claimed."""
-        session, connection = await started()
-
-        async with reading(session):
-            deleting = asyncio.create_task(session.delete_item("item_9"))
-            await connection.wait_sent("conversation.item.delete")
-            connection.push(rejection("item_not_found", event_id=None))
-            with pytest.raises(RealtimeControlException) as caught:
-                await asyncio.wait_for(deleting, 5)
-
-        assert caught.value.code == "item_not_found"
-
-    async def test_image_token_details_map(self) -> None:
-        """input_token_details {image_tokens: 7, cached_tokens_details: {image_tokens: 2}} map to
-        image_input_token_count 7 and image_cache_read_input_token_count 2."""
-        usage, _ = await mapped(
-            response_done(
-                "resp_1",
-                usage={
-                    "input_tokens": 9,
-                    "output_tokens": 0,
-                    "total_tokens": 9,
-                    "input_token_details": {"image_tokens": 7, "cached_tokens_details": {"image_tokens": 2}},
-                },
-            )
-        )
-
-        assert usage.content.usage_details["image_input_token_count"] == 7
-        assert usage.content.usage_details["image_cache_read_input_token_count"] == 2
-
-    async def test_none_turns_a_feature_off(self) -> None:
-        """turn_detection None, transcription None and noise_reduction None are sent as null under audio.input."""
-        sent = await initial_session({"turn_detection": None, "transcription": None, "noise_reduction": None})
-
-        assert sent == {
-            "type": "realtime",
-            "audio": {"input": {"turn_detection": None, "transcription": None, "noise_reduction": None}},
-        }
-
-    async def test_error_with_the_calls_own_event_id_claims_it(self) -> None:
-        """While update_session() waits, an error echoing its event_id fails it with RealtimeControlException."""
-        session, connection = await started()
-        connection.responder = None
-
-        async with reading(session):
-            updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
-            request = await connection.wait_sent("session.update")
-            connection.push(rejection("invalid_value", "session.instructions", event_id=request["event_id"]))
-
-            with pytest.raises(RealtimeControlException) as caught:
-                await asyncio.wait_for(updating, 5)
-
-        assert (caught.value.code, caught.value.param) == ("invalid_value", "session.instructions")
-
-    async def test_error_with_a_server_event_id_claims_it(self) -> None:
-        """An error with event_id "evt_srv_1", never sent by the session, fails the waiting update_session()."""
-        session, connection = await started()
-        connection.responder = None
-
-        async with reading(session):
-            updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
-            await connection.wait_sent("session.update")
-            connection.push(rejection("invalid_value", event_id="evt_srv_1"))
-
-            with pytest.raises(RealtimeControlException):
-                await asyncio.wait_for(updating, 5)
-
-    async def test_claimed_update_error_streams_as_passthrough(self) -> None:
-        """The error that failed update_session() is yielded as passthrough, not error."""
-        session, connection = await started()
-        connection.responder = None
-
-        async with reading(session) as reader:
-            updating = asyncio.create_task(session.update_session({"instructions": "New."}, None))
-            await connection.wait_sent("session.update")
-            connection.push(rejection("invalid_value", event_id=None))
-            with pytest.raises(RealtimeControlException):
-                await asyncio.wait_for(updating, 5)
-            await read_through(connection, reader)
-
-        assert [event.service_event_type for event in reader.of_kind("passthrough")] == ["error"]
-        assert reader.of_kind("error") == []
-
-    async def test_update_session_with_empty_tools_clears_them(self) -> None:
-        """update_session({}, []) sends session.update with tools []."""
-        session, connection = await started()
-
-        async with reading(session):
-            await asyncio.wait_for(session.update_session({}, []), 5)
-
-        assert connection.sent[-1]["session"] == {"type": "realtime", "tools": []}
-
-    async def test_start_with_only_tools_sends_them(self) -> None:
-        """start(tools=[lookup]) sends session.update with type "realtime" and the declared function."""
-
-        @tool
-        def lookup(query: str) -> str:
-            """Look something up."""
-            return query
-
-        sent = await initial_session({}, [lookup])
-
-        assert sent == {
-            "type": "realtime",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "lookup",
-                    "description": "Look something up.",
-                    "parameters": lookup.parameters(),
-                }
-            ],
-        }
-
-    async def test_cancelled_create_response_leaves_nothing_pending(self) -> None:
-        """create_response() cancelled while waiting; its response.created arriving later doesn't affect the next
-        call's correlation."""
-        session, connection = await started()
-
-        async with reading(session) as reader:
-            abandoned = asyncio.create_task(session.create_response())
-            abandoned_request = await connection.wait_sent("response.create")
-            abandoned.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await abandoned
-            await read_through(
-                connection,
-                reader,
-                response_created("resp_1", request_id_of(abandoned_request)),
-                response_done("resp_1"),
-            )
-
-            creating = asyncio.create_task(session.create_response())
-            request = await connection.wait_sent("response.create")
-            connection.push(response_created("resp_2", request_id_of(request)))
-
-            assert await asyncio.wait_for(creating, 5) == "resp_2"
-
-    async def test_per_response_temperature_is_dropped(self) -> None:
-        """create_response({"temperature": 0.9}) sends no temperature."""
-        session, connection = await started()
-
-        async with reading(session):
-            creating = asyncio.create_task(session.create_response({"temperature": 0.9}))
-            request = await connection.wait_sent("response.create")
-            connection.push(response_created("resp_1", request_id_of(request)))
-            await asyncio.wait_for(creating, 5)
-
-        assert "temperature" not in request["response"]
-
-    async def test_turn_detection_and_transcription_extras_pass_through(self) -> None:
-        """start(options={"turn_detection": {"type": "semantic_vad", "eagerness": "low"}, "transcription": {"model":
-        "gpt-4o-transcribe", "prompt": "Contoso"}}) sends both unchanged under audio.input, and a later
-        update_session({"turn_detection": {"type": "server_vad", "idle_timeout_ms": 6000}}) sends idle_timeout_ms
-        6000."""
-        turn_detection = {"type": "semantic_vad", "eagerness": "low"}
-        transcription = {"model": "gpt-4o-transcribe", "prompt": "Contoso"}
-        session, connection = await started(
-            cast(RealtimeOptions, {"turn_detection": turn_detection, "transcription": transcription})
-        )
-
-        async with reading(session):
-            await asyncio.wait_for(
-                session.update_session(
-                    cast(RealtimeOptions, {"turn_detection": {"type": "server_vad", "idle_timeout_ms": 6000}}), None
-                ),
-                5,
-            )
-
-        assert connection.sent[0]["session"]["audio"]["input"] == {
-            "turn_detection": turn_detection,
-            "transcription": transcription,
-        }
-        assert connection.sent[1]["session"]["audio"]["input"]["turn_detection"]["idle_timeout_ms"] == 6000
-
-    async def test_update_session_sends_the_typed_settings(self) -> None:
-        """update_session({"speed": 0.9, "reasoning_effort": "high"}) sends audio.output.speed 0.9 and reasoning
-        {"effort": "high"}, and once acknowledged, options holds speed 0.9 and reasoning_effort "high"."""
-        session, connection = await started()
-
-        async with reading(session):
-            await asyncio.wait_for(
-                session.update_session(cast(RealtimeOptions, {"speed": 0.9, "reasoning_effort": "high"}), None), 5
-            )
-
-        update = connection.sent[-1]["session"]
-        assert update["audio"]["output"] == {"speed": 0.9}
-        assert update["reasoning"] == {"effort": "high"}
-        assert cast(dict[str, Any], session.options) == {"speed": 0.9, "reasoning_effort": "high"}
-
-    async def test_typed_settings_per_response_are_dropped(self) -> None:
-        """create_response({"speed": 1.2}) sends no speed."""
-        session, connection = await started()
-
-        async with reading(session):
-            creating = asyncio.create_task(session.create_response(cast(RealtimeOptions, {"speed": 1.2})))
-            request = await connection.wait_sent("response.create")
-            connection.push(response_created("resp_1", request_id_of(request)))
-            await asyncio.wait_for(creating, 5)
-
-        assert "speed" not in request["response"]

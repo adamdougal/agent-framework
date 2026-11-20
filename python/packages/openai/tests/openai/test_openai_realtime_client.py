@@ -293,51 +293,54 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 # region Construction and settings
 
 
-def test_an_explicit_model_is_the_realtime_model() -> None:
-    """OpenAIRealtimeClient("gpt-realtime", api_key="sk-test") has model "gpt-realtime"."""
-    client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test")
-
-    assert client.model == "gpt-realtime"
+OPENAI_MODELS = {"OPENAI_API_KEY": "sk-test", "OPENAI_REALTIME_MODEL": "gpt-realtime-mini", "OPENAI_MODEL": "gpt-5"}
+AZURE_KEY = {"AZURE_OPENAI_ENDPOINT": AZURE_ENDPOINT, "AZURE_OPENAI_API_KEY": "azure-key"}
 
 
-def test_the_openai_realtime_model_variable_comes_before_openai_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With OPENAI_API_KEY, OPENAI_REALTIME_MODEL="gpt-realtime-mini" and OPENAI_MODEL="gpt-5" set, the client's model
-    is "gpt-realtime-mini"."""
+@pytest.mark.parametrize(
+    ("model", "environment", "expected"),
+    [
+        pytest.param("gpt-realtime", OPENAI_MODELS, "gpt-realtime", id="an explicit model first"),
+        pytest.param(None, OPENAI_MODELS, "gpt-realtime-mini", id="OPENAI_REALTIME_MODEL before OPENAI_MODEL"),
+        pytest.param(
+            None, {"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "gpt-realtime"}, "gpt-realtime", id="then OPENAI_MODEL"
+        ),
+        pytest.param(
+            None,
+            {
+                **AZURE_KEY,
+                "AZURE_OPENAI_REALTIME_MODEL": "realtime-deployment",
+                "AZURE_OPENAI_MODEL": "chat-deployment",
+            },
+            "realtime-deployment",
+            id="AZURE_OPENAI_REALTIME_MODEL before AZURE_OPENAI_MODEL",
+        ),
+        pytest.param(
+            None,
+            {**AZURE_KEY, "AZURE_OPENAI_MODEL": "chat-deployment", "OPENAI_REALTIME_MODEL": "gpt-realtime-mini"},
+            "chat-deployment",
+            id="then AZURE_OPENAI_MODEL, never an OpenAI variable",
+        ),
+    ],
+)
+def test_the_model_comes_from_the_routes_own_variables(
+    monkeypatch: pytest.MonkeyPatch, model: str | None, environment: dict[str, str], expected: str
+) -> None:
+    """OpenAI routing (OPENAI_API_KEY) reads OPENAI_REALTIME_MODEL, then OPENAI_MODEL; Azure routing (an endpoint and
+    key, no OPENAI_API_KEY) reads AZURE_OPENAI_REALTIME_MODEL, then AZURE_OPENAI_MODEL. An explicit model wins over
+    both."""
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    assert OpenAIRealtimeClient(model).model == expected
+
+
+def test_no_model_anywhere_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With only OPENAI_API_KEY set, OpenAIRealtimeClient() raises SettingNotFoundError."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-mini")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
 
-    assert OpenAIRealtimeClient().model == "gpt-realtime-mini"
-
-
-def test_the_openai_model_variable_is_the_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With OPENAI_API_KEY and OPENAI_MODEL="gpt-realtime" set and no OPENAI_REALTIME_MODEL, the client's model is
-    "gpt-realtime"."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-realtime")
-
-    assert OpenAIRealtimeClient().model == "gpt-realtime"
-
-
-def test_the_azure_realtime_deployment_variable_comes_before_azure_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no OPENAI_API_KEY, and AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_REALTIME_MODEL=
-    "realtime-deployment" and AZURE_OPENAI_MODEL="chat-deployment" set, the client's model is "realtime-deployment"."""
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", AZURE_ENDPOINT)
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
-    monkeypatch.setenv("AZURE_OPENAI_REALTIME_MODEL", "realtime-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "chat-deployment")
-
-    assert OpenAIRealtimeClient().model == "realtime-deployment"
-
-
-def test_the_azure_model_variable_is_the_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no OPENAI_API_KEY, and AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY and AZURE_OPENAI_MODEL="chat-deployment"
-    set, the client's model is "chat-deployment"."""
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", AZURE_ENDPOINT)
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "chat-deployment")
-
-    assert OpenAIRealtimeClient().model == "chat-deployment"
+    with pytest.raises(SettingNotFoundError):
+        OpenAIRealtimeClient()
 
 
 def test_azure_routing_reports_the_azure_openai_provider_name() -> None:
@@ -348,6 +351,19 @@ def test_azure_routing_reports_the_azure_openai_provider_name() -> None:
 
     assert azure_client.OTEL_PROVIDER_NAME == "azure.ai.openai"
     assert openai_client.OTEL_PROVIDER_NAME == "openai"
+
+
+def test_a_credential_routes_to_azure_even_with_an_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_REALTIME_MODEL set, a client given a credential
+    reports "azure.ai.openai" and the Azure deployment as its model."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", AZURE_ENDPOINT)
+    monkeypatch.setenv("AZURE_OPENAI_REALTIME_MODEL", "realtime-deployment")
+
+    client = OpenAIRealtimeClient(credential=StaticTokenCredential("token-1"))
+
+    assert client.OTEL_PROVIDER_NAME == "azure.ai.openai"
+    assert client.model == "realtime-deployment"
 
 
 def test_an_injected_azure_openai_client_raises() -> None:
@@ -382,6 +398,19 @@ def test_missing_websockets_raises_the_install_hint(monkeypatch: pytest.MonkeyPa
         OpenAIRealtimeClient("gpt-realtime", api_key="sk-test")
 
 
+def test_client_modules_import_without_websockets() -> None:
+    """In a fresh interpreter, importing agent_framework_openai._realtime_client and
+    agent_framework_openai._realtime_options doesn't load websockets."""
+    probe = (
+        "import sys, agent_framework_openai._realtime_client, agent_framework_openai._realtime_options; "
+        "print('websockets' in sys.modules)"
+    )
+
+    completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+
+    assert completed.stdout.strip() == "False"
+
+
 # endregion
 
 # region Connecting (loopback server)
@@ -399,9 +428,10 @@ async def test_unsupported_audio_format_raises_before_connecting() -> None:
     assert server.handshakes == []
 
 
-async def test_openai_connects_to_the_realtime_path_with_its_model_and_key() -> None:
+async def test_openai_connects_to_the_realtime_path_with_its_model_key_and_user_agent_uncompressed() -> None:
     """With base_url "<server>/v1", api_key "sk-test" and model "gpt-realtime", start_session() connects to path
-    "/v1/realtime" with query {"model": "gpt-realtime"} and Authorization "Bearer sk-test"."""
+    "/v1/realtime" with query {"model": "gpt-realtime"}, Authorization "Bearer sk-test" and a User-Agent starting with
+    the agent-framework-python user agent, and offers no permessage-deflate extension."""
     async with RealtimeServer() as server:
         client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
         session = await asyncio.wait_for(client.start_session(), 5)
@@ -410,6 +440,8 @@ async def test_openai_connects_to_the_realtime_path_with_its_model_and_key() -> 
     assert server.path == "/v1/realtime"
     assert server.query == {"model": "gpt-realtime"}
     assert server.headers["Authorization"] == "Bearer sk-test"
+    assert server.headers["User-Agent"].startswith(get_user_agent())
+    assert "Sec-WebSocket-Extensions" not in server.headers
 
 
 async def test_an_openai_organization_is_sent_on_the_handshake() -> None:
@@ -420,6 +452,38 @@ async def test_an_openai_organization_is_sent_on_the_handshake() -> None:
         await session.close()
 
     assert server.headers["OpenAI-Organization"] == "org-1"
+
+
+async def test_an_injected_openai_client_connects_where_it_points() -> None:
+    """OpenAIRealtimeClient("gpt-realtime", async_client=AsyncOpenAI(api_key="sk-injected", base_url="<server>/v1"))
+    connects to path "/v1/realtime" with Authorization "Bearer sk-injected"."""
+    async with RealtimeServer() as server:
+        injected = AsyncOpenAI(api_key="sk-injected", base_url=f"{server.url}/v1")
+        client = OpenAIRealtimeClient("gpt-realtime", async_client=injected)
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert server.path == "/v1/realtime"
+    assert server.headers["Authorization"] == "Bearer sk-injected"
+
+
+async def test_an_injected_openai_client_with_a_credential_is_used_as_it_is() -> None:
+    """With async_client=AsyncOpenAI(api_key="sk-injected", base_url="<server>/openai/v1"), a credential and model
+    "realtime-deployment", the client reports "azure.ai.openai" and connects through the injected client: path
+    "/openai/v1/realtime" with Authorization "Bearer sk-injected", and the credential is never asked for a
+    token."""
+    credential = StaticTokenCredential("token-1")
+
+    async with RealtimeServer() as server:
+        injected = AsyncOpenAI(api_key="sk-injected", base_url=f"{server.url}/openai/v1")
+        client = OpenAIRealtimeClient("realtime-deployment", async_client=injected, credential=credential)
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert client.OTEL_PROVIDER_NAME == "azure.ai.openai"
+    assert server.path == "/openai/v1/realtime"
+    assert server.headers["Authorization"] == "Bearer sk-injected"
+    assert credential.scopes == []
 
 
 async def test_a_session_runs_over_the_connection() -> None:
@@ -459,6 +523,38 @@ async def test_azure_connects_to_the_v1_realtime_path_without_an_api_version() -
     assert credential.scopes == [("https://cognitiveservices.azure.com/.default",)]
 
 
+async def test_an_azure_api_key_is_sent_as_a_bearer_token_without_an_openai_organization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With OPENAI_ORG_ID "org-1" set, azure_endpoint "<server>" and api_key "azure-key", the handshake goes to path
+    "/openai/v1/realtime" with Authorization "Bearer azure-key" and no OpenAI-Organization header."""
+    monkeypatch.setenv("OPENAI_ORG_ID", "org-1")
+
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key="azure-key")
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert server.path == "/openai/v1/realtime"
+    assert server.headers["Authorization"] == "Bearer azure-key"
+    assert "OpenAI-Organization" not in server.headers
+
+
+async def test_azure_token_provider_callable_sends_a_bearer_token() -> None:
+    """With azure_endpoint "<server>" and api_key set to an async callable returning "token-2", the handshake
+    carries Authorization "Bearer token-2"."""
+
+    async def token_provider() -> str:
+        return "token-2"
+
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key=token_provider)
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert server.headers["Authorization"] == "Bearer token-2"
+
+
 async def test_a_sync_token_provider_api_key_sends_a_bearer_token() -> None:
     """With azure_endpoint "<server>" and api_key set to a synchronous callable returning "token-3", as
     azure.identity's get_bearer_token_provider() makes, the handshake carries Authorization "Bearer token-3"."""
@@ -468,6 +564,21 @@ async def test_a_sync_token_provider_api_key_sends_a_bearer_token() -> None:
         await session.close()
 
     assert server.headers["Authorization"] == "Bearer token-3"
+
+
+async def test_a_token_provider_returning_an_awaitable_sends_its_token() -> None:
+    """With api_key set to a plain callable that returns an awaitable of "token-6", the handshake carries
+    Authorization "Bearer token-6"."""
+
+    async def fetch_token() -> str:
+        return "token-6"
+
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key=lambda: fetch_token())
+        session = await asyncio.wait_for(client.start_session(), 5)
+        await session.close()
+
+    assert server.headers["Authorization"] == "Bearer token-6"
 
 
 async def test_a_sync_token_provider_runs_off_the_event_loop() -> None:
@@ -501,6 +612,23 @@ async def test_a_sync_credential_fetches_its_token_off_the_event_loop() -> None:
     assert server.headers["Authorization"] == "Bearer token-5"
     assert credential.threads
     assert threading.get_ident() not in credential.threads
+
+
+async def test_each_connect_fetches_a_fresh_token() -> None:
+    """Two start_session() calls on one Azure client with a credential returning "token-1" then "token-2" send
+    Authorization "Bearer token-1" then "Bearer token-2"."""
+    credential = StaticTokenCredential("token-1", "token-2")
+
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, credential=credential)
+        for _ in range(2):
+            session = await asyncio.wait_for(client.start_session(), 5)
+            await session.close()
+
+    assert [handshake.headers["Authorization"] for handshake in server.handshakes] == [
+        "Bearer token-1",
+        "Bearer token-2",
+    ]
 
 
 async def test_rejected_handshake_raises_a_connection_exception() -> None:
@@ -557,6 +685,25 @@ async def test_normal_server_close_ends_receive() -> None:
     assert kinds == ["session_created"]
 
 
+async def test_closing_the_session_ends_a_blocked_receive() -> None:
+    """While a reader waits in receive(), session.close() ends the iteration without raising."""
+    async with RealtimeServer() as server:
+        client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
+        session = await asyncio.wait_for(client.start_session(), 5)
+        kinds: list[str] = []
+
+        async def read() -> None:
+            async for event in session.receive():
+                kinds.append(event.kind)
+
+        reader = asyncio.create_task(read())
+        await until(lambda: kinds == ["session_created"])
+        await session.close()
+        await asyncio.wait_for(reader, 5)
+
+    assert kinds == ["session_created"]
+
+
 async def test_sending_on_a_dead_socket_raises() -> None:
     """After the server closes the socket with 1011, session.send(Message("user", ["Hi"])) raises
     RealtimeConnectionException."""
@@ -595,194 +742,19 @@ async def test_cancelled_start_closes_the_socket() -> None:
         await asyncio.wait_for(server.socket_closed.wait(), 5)
 
 
+async def test_cancelling_during_the_handshake_leaves_nothing_open() -> None:
+    """When the server holds the handshake and the start_session() task is cancelled, the task raises
+    CancelledError and the server sees its connection closed."""
+    async with RealtimeServer(hold_handshake=True) as server:
+        client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
+        starting = asyncio.create_task(client.start_session())
+        await until(lambda: server.held is not None)
+        starting.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        assert server.held is not None
+        await asyncio.wait_for(server.held.connection_lost_waiter, 5)
+
+
 # endregion
-
-
-class TestVerification:
-    async def test_an_injected_openai_client_with_a_credential_is_used_as_it_is(self) -> None:
-        """With async_client=AsyncOpenAI(api_key="sk-injected", base_url="<server>/openai/v1"), a credential and model
-        "realtime-deployment", the client reports "azure.ai.openai" and connects through the injected client: path
-        "/openai/v1/realtime" with Authorization "Bearer sk-injected", and the credential is never asked for a
-        token."""
-        credential = StaticTokenCredential("token-1")
-
-        async with RealtimeServer() as server:
-            injected = AsyncOpenAI(api_key="sk-injected", base_url=f"{server.url}/openai/v1")
-            client = OpenAIRealtimeClient("realtime-deployment", async_client=injected, credential=credential)
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert client.OTEL_PROVIDER_NAME == "azure.ai.openai"
-        assert server.path == "/openai/v1/realtime"
-        assert server.headers["Authorization"] == "Bearer sk-injected"
-        assert credential.scopes == []
-
-    async def test_azure_api_key_is_sent_as_a_bearer_token(self) -> None:
-        """With azure_endpoint "<server>" and api_key "azure-key", the handshake carries Authorization
-        "Bearer azure-key"."""
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key="azure-key")
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert server.path == "/openai/v1/realtime"
-        assert server.headers["Authorization"] == "Bearer azure-key"
-
-    async def test_azure_token_provider_callable_sends_a_bearer_token(self) -> None:
-        """With azure_endpoint "<server>" and api_key set to an async callable returning "token-2", the handshake
-        carries Authorization "Bearer token-2"."""
-
-        async def token_provider() -> str:
-            return "token-2"
-
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key=token_provider)
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert server.headers["Authorization"] == "Bearer token-2"
-
-    async def test_user_agent_carries_the_agent_framework_prefix(self) -> None:
-        """The handshake's User-Agent starts with the agent-framework-python user agent."""
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert server.headers["User-Agent"].startswith(get_user_agent())
-
-    def test_no_model_anywhere_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With only OPENAI_API_KEY set, OpenAIRealtimeClient() raises SettingNotFoundError."""
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-
-        with pytest.raises(SettingNotFoundError):
-            OpenAIRealtimeClient()
-
-    def test_an_explicit_model_wins_over_the_variables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With OPENAI_API_KEY, OPENAI_REALTIME_MODEL and OPENAI_MODEL set, OpenAIRealtimeClient("gpt-realtime") has
-        model "gpt-realtime"."""
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-mini")
-        monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
-
-        assert OpenAIRealtimeClient("gpt-realtime").model == "gpt-realtime"
-
-    def test_a_credential_routes_to_azure_even_with_an_openai_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_REALTIME_MODEL set, a client given a credential
-        reports "azure.ai.openai" and the Azure deployment as its model."""
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", AZURE_ENDPOINT)
-        monkeypatch.setenv("AZURE_OPENAI_REALTIME_MODEL", "realtime-deployment")
-
-        client = OpenAIRealtimeClient(credential=StaticTokenCredential("token-1"))
-
-        assert client.OTEL_PROVIDER_NAME == "azure.ai.openai"
-        assert client.model == "realtime-deployment"
-
-    async def test_each_connect_fetches_a_fresh_token(self) -> None:
-        """Two start_session() calls on one Azure client with a credential returning "token-1" then "token-2" send
-        Authorization "Bearer token-1" then "Bearer token-2"."""
-        credential = StaticTokenCredential("token-1", "token-2")
-
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, credential=credential)
-            for _ in range(2):
-                session = await asyncio.wait_for(client.start_session(), 5)
-                await session.close()
-
-        assert [handshake.headers["Authorization"] for handshake in server.handshakes] == [
-            "Bearer token-1",
-            "Bearer token-2",
-        ]
-
-    async def test_an_injected_openai_client_connects_where_it_points(self) -> None:
-        """OpenAIRealtimeClient("gpt-realtime", async_client=AsyncOpenAI(api_key="sk-injected", base_url="<server>/v1"))
-        connects to path "/v1/realtime" with Authorization "Bearer sk-injected"."""
-        async with RealtimeServer() as server:
-            injected = AsyncOpenAI(api_key="sk-injected", base_url=f"{server.url}/v1")
-            client = OpenAIRealtimeClient("gpt-realtime", async_client=injected)
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert server.path == "/v1/realtime"
-        assert server.headers["Authorization"] == "Bearer sk-injected"
-
-    async def test_closing_the_session_ends_a_blocked_receive(self) -> None:
-        """While a reader waits in receive(), session.close() ends the iteration without raising."""
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
-            session = await asyncio.wait_for(client.start_session(), 5)
-            kinds: list[str] = []
-
-            async def read() -> None:
-                async for event in session.receive():
-                    kinds.append(event.kind)
-
-            reader = asyncio.create_task(read())
-            await until(lambda: kinds == ["session_created"])
-            await session.close()
-            await asyncio.wait_for(reader, 5)
-
-        assert kinds == ["session_created"]
-
-    async def test_no_compression_is_negotiated(self) -> None:
-        """The handshake offers no permessage-deflate extension."""
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert "Sec-WebSocket-Extensions" not in server.headers
-
-    async def test_cancelling_during_the_handshake_leaves_nothing_open(self) -> None:
-        """When the server holds the handshake and the start_session() task is cancelled, the task raises
-        CancelledError and the server sees its connection closed."""
-        async with RealtimeServer(hold_handshake=True) as server:
-            client = OpenAIRealtimeClient("gpt-realtime", api_key="sk-test", base_url=f"{server.url}/v1")
-            starting = asyncio.create_task(client.start_session())
-            await until(lambda: server.held is not None)
-            starting.cancel()
-
-            with pytest.raises(asyncio.CancelledError):
-                await starting
-            assert server.held is not None
-            await asyncio.wait_for(server.held.connection_lost_waiter, 5)
-
-    async def test_a_token_provider_returning_an_awaitable_sends_its_token(self) -> None:
-        """With api_key set to a plain callable that returns an awaitable of "token-6", the handshake carries
-        Authorization "Bearer token-6"."""
-
-        async def fetch_token() -> str:
-            return "token-6"
-
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient(
-                "realtime-deployment", azure_endpoint=server.url, api_key=lambda: fetch_token()
-            )
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert server.headers["Authorization"] == "Bearer token-6"
-
-    async def test_azure_routing_sends_no_openai_organization(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With OPENAI_ORG_ID "org-1" set, an Azure-routed handshake carries no OpenAI-Organization header."""
-        monkeypatch.setenv("OPENAI_ORG_ID", "org-1")
-
-        async with RealtimeServer() as server:
-            client = OpenAIRealtimeClient("realtime-deployment", azure_endpoint=server.url, api_key="azure-key")
-            session = await asyncio.wait_for(client.start_session(), 5)
-            await session.close()
-
-        assert "OpenAI-Organization" not in server.headers
-
-    def test_client_modules_import_without_websockets(self) -> None:
-        """In a fresh interpreter, importing agent_framework_openai._realtime_client and
-        agent_framework_openai._realtime_options doesn't load websockets."""
-        probe = (
-            "import sys, agent_framework_openai._realtime_client, agent_framework_openai._realtime_options; "
-            "print('websockets' in sys.modules)"
-        )
-
-        completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
-
-        assert completed.stdout.strip() == "False"
