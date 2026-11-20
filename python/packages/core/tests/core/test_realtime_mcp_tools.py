@@ -610,7 +610,8 @@ class TestVerification:
         assert [call[0] for call in client.session.calls] == ["create_response", "update_session"]
 
     async def test_a_server_side_tool_change_waits_for_the_next_update(self) -> None:
-        """A tool the server adds mid-call gets a not-found result until update_session(tools=[orders]) declares it."""
+        """A tool the server adds mid-call gets a not-found result until update_session(tools=[orders]) declares it,
+        and a call after that update runs it on the server."""
         server = _orders_server()
         orders = _InProcessMCPTool(server)
         client = FakeRealtimeClient()
@@ -622,12 +623,18 @@ class TestVerification:
         async with agent, agent.start_conversation() as conversation:
             server.add_tool(cancel_order, description="Cancel an order.")
             await orders.load_tools()
-            client.session.emit(*_response("resp_1", _call("call_1", "cancel_order", order_id="1234")))
+            client.session.emit(
+                *_response("resp_caller", _call("call_1", "cancel_order", response_id="resp_caller", order_id="1234"))
+            )
             await eventually(lambda: bool(client.session.calls))
 
             await conversation.update_session(tools=[orders])
+            # The provider answers the follow-up, which the fake session numbered resp_1, with another call.
+            client.session.emit(*_response("resp_1", _call("call_2", "cancel_order", order_id="5678")))
+            await eventually(lambda: len(client.session.calls) == 3)
 
-        [(_, result)] = _results(client.session)
-        assert "not found" in result
-        assert [call[0] for call in client.session.calls] == ["create_response", "update_session"]
+        [(_, not_found), (_, cancelled)] = _results(client.session)
+        assert "not found" in not_found
+        assert "Cancelled order 5678." in cancelled
+        assert [call[0] for call in client.session.calls] == ["create_response", "update_session", "create_response"]
         assert _names(client.session.calls[1][2]) == ["get_delivery_slots", "book_delivery_slot", "cancel_order"]
