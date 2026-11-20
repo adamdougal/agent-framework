@@ -196,13 +196,20 @@ async def test_an_incomplete_response_finishes_with_its_reason(reason: str, fini
 
 async def test_an_update_keeps_its_realtime_event_as_raw_representation() -> None:
     client = FakeRealtimeClient()
-    signal = event("session_updated")
+    signal = RealtimeEvent(
+        "session_updated",
+        service_event_type="session.updated",
+        raw_representation={"type": "session.updated", "event_id": "event_1"},
+    )
 
     async with RealtimeAgent(client).start_conversation() as conversation:
         client.session.emit(signal)
         update = await next_update(conversation)
 
-    assert update.raw_representation is signal
+    received_event = update.raw_representation
+    assert received_event is signal
+    assert isinstance(received_event, RealtimeEvent)
+    assert received_event.raw_representation == {"type": "session.updated", "event_id": "event_1"}
 
 
 def _provider_error(message: str = "Invalid value", code: str = "invalid_value", param: str = "session.voice") -> Any:
@@ -298,10 +305,11 @@ async def test_a_receive_failure_raises_from_iteration_after_queued_updates() ->
 
     async with RealtimeAgent(client).start_conversation() as conversation:
         client.session.emit(event("session_updated"))
-        client.session.fail(RealtimeConnectionException("socket died"))
-        with pytest.raises(RealtimeConnectionException, match="socket died"):
+        client.session.fail(RealtimeConnectionException("socket died", close_code=1011))
+        with pytest.raises(RealtimeConnectionException, match="socket died") as raised:
             await _read_into(received, conversation)
 
+    assert raised.value.close_code == 1011
     assert _kinds(received) == ["session_updated"]
 
 

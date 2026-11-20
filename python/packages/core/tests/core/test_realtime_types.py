@@ -20,12 +20,6 @@ from agent_framework import (
     UsageDetails,
     add_usage_details,
 )
-from agent_framework.exceptions import (
-    RealtimeActiveResponseException,
-    RealtimeConnectionException,
-    RealtimeControlException,
-    RealtimeControlTimeoutException,
-)
 
 
 def _speech_started_content() -> Content:
@@ -37,12 +31,6 @@ def _speech_started_content() -> Content:
 
 
 # region Text status
-
-
-def test_from_text_sets_status() -> None:
-    content = Content.from_text("Hello", status="completed")
-
-    assert content.status == "completed"
 
 
 def test_text_addition_keeps_the_final_status() -> None:
@@ -158,25 +146,6 @@ def test_from_updates_sums_the_modality_usage_keys() -> None:
 # region RealtimeEvent
 
 
-def test_realtime_event_keeps_its_fields() -> None:
-    content = Content.from_text("Hel", merge_mode="append")
-    wire = {"type": "response.output_audio_transcript.delta", "delta": "Hel"}
-
-    event = RealtimeEvent(
-        "output_text",
-        content=content,
-        service_event_type="response.output_audio_transcript.delta",
-        additional_properties={"core": {"response_id": "resp_1", "item_id": "item_1", "content_index": 0}},
-        raw_representation=wire,
-    )
-
-    assert event.kind == "output_text"
-    assert event.content is content
-    assert event.service_event_type == "response.output_audio_transcript.delta"
-    assert event.additional_properties == {"core": {"response_id": "resp_1", "item_id": "item_1", "content_index": 0}}
-    assert event.raw_representation is wire
-
-
 def test_realtime_event_copies_additional_properties() -> None:
     core = {"item_id": "item_1", "audio_start_ms": 120}
     properties: dict[str, Any] = {"core": core}
@@ -217,35 +186,6 @@ def test_realtime_event_repr_omits_the_raw_representation() -> None:
 # region Realtime-event content
 
 
-def test_from_realtime_event_sets_type_and_kind() -> None:
-    content = Content.from_realtime_event("speech_started")
-
-    assert content.type == "realtime_event"
-    assert content.kind == "speech_started"
-    assert content.service_event_type is None
-
-
-def test_from_realtime_event_keeps_its_fields() -> None:
-    wire = {"type": "input_audio_buffer.speech_started", "audio_start_ms": 120, "item_id": "item_1"}
-
-    content = Content.from_realtime_event(
-        "speech_started",
-        service_event_type="input_audio_buffer.speech_started",
-        additional_properties={
-            "core": {"item_id": "item_1", "audio_start_ms": 120},
-            "openai": {"event_id": "event_1"},
-        },
-        raw_representation=wire,
-    )
-
-    assert content.service_event_type == "input_audio_buffer.speech_started"
-    assert content.additional_properties == {
-        "core": {"item_id": "item_1", "audio_start_ms": 120},
-        "openai": {"event_id": "event_1"},
-    }
-    assert content.raw_representation is wire
-
-
 def test_from_realtime_event_copies_additional_properties() -> None:
     core = {"item_id": "item_1"}
     properties: dict[str, Any] = {"core": core}
@@ -273,19 +213,32 @@ def test_other_content_rejects_realtime_fields(realtime_field: dict[str, Any]) -
         Content("text", text="Hello", **realtime_field)
 
 
-def test_realtime_event_content_to_dict() -> None:
+def test_realtime_event_content_to_dict_keeps_every_metadata_namespace_and_leaves_out_the_raw_event() -> None:
+    wire = {"type": "input_audio_buffer.speech_started"}
     content = Content.from_realtime_event(
         "speech_started",
         service_event_type="input_audio_buffer.speech_started",
-        additional_properties={"core": {"item_id": "item_1", "audio_start_ms": 120}},
-        raw_representation={"type": "input_audio_buffer.speech_started"},
+        additional_properties={
+            "core": {"item_id": "item_1", "audio_start_ms": 120},
+            "openai": {"event_id": "event_1"},
+        },
+        raw_representation=wire,
     )
 
+    assert content.raw_representation is wire
     assert content.to_dict() == {
         "type": "realtime_event",
         "kind": "speech_started",
         "service_event_type": "input_audio_buffer.speech_started",
-        "additional_properties": {"core": {"item_id": "item_1", "audio_start_ms": 120}},
+        "additional_properties": {
+            "core": {"item_id": "item_1", "audio_start_ms": 120},
+            "openai": {"event_id": "event_1"},
+        },
+    }
+    assert Content.from_realtime_event("speech_started").to_dict() == {
+        "type": "realtime_event",
+        "kind": "speech_started",
+        "additional_properties": {},
     }
 
 
@@ -386,37 +339,6 @@ def test_content_unpickled_from_older_state_has_no_realtime_fields() -> None:
 
     assert restored.kind is None
     assert restored.service_event_type is None
-
-
-# endregion
-
-# region Exceptions
-
-
-def test_realtime_control_exception_keeps_code_and_param() -> None:
-    rejected = RealtimeControlException("Invalid voice.", code="invalid_value", param="session.voice")
-    plain = RealtimeControlException("Rejected.")
-
-    assert str(rejected) == "Invalid voice."
-    assert (rejected.code, rejected.param) == ("invalid_value", "session.voice")
-    assert (plain.code, plain.param) == (None, None)
-
-
-def test_control_exception_subclasses_keep_code_and_param() -> None:
-    busy = RealtimeActiveResponseException("Busy.", code="conversation_already_has_active_response")
-    timed_out = RealtimeControlTimeoutException("No acknowledgement.")
-
-    assert busy.code == "conversation_already_has_active_response"
-    assert (timed_out.code, timed_out.param) == (None, None)
-
-
-def test_realtime_connection_exception_keeps_close_code() -> None:
-    closed = RealtimeConnectionException("The provider closed the connection.", close_code=1011)
-    failed = RealtimeConnectionException("Couldn't connect.")
-
-    assert str(closed) == "The provider closed the connection."
-    assert closed.close_code == 1011
-    assert failed.close_code is None
 
 
 # endregion
