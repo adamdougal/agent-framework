@@ -39,6 +39,35 @@ def event(
     )
 
 
+def call_event(call_id: str, name: str, *, response_id: str = "resp_1", **arguments: Any) -> RealtimeEvent:
+    """A provider event for a call to ``name``, in an item of its own within ``response_id``."""
+    return event(
+        "function_call",
+        content=Content.from_function_call(call_id=call_id, name=name, arguments=arguments),
+        response_id=response_id,
+        item_id=f"item_{call_id}",
+    )
+
+
+def response_events(response_id: str, *events: RealtimeEvent, status: str = "completed") -> list[RealtimeEvent]:
+    """The events of one response: created, ``events``, then done with ``status``."""
+    return [
+        event("response_created", response_id=response_id),
+        *events,
+        event("response_done", response_id=response_id, status=status),
+    ]
+
+
+def tool_messages(session: FakeRealtimeSession) -> list[Message]:
+    """The tool-result messages ``session`` was sent, one per write."""
+    return [message for message in session.sent if isinstance(message, Message) and message.role == "tool"]
+
+
+def sent_results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
+    """The ``(call_id, result)`` of each tool result ``session`` was sent, in the order sent."""
+    return [(content.call_id, content.result) for message in tool_messages(session) for content in message.contents]
+
+
 async def eventually(condition: Callable[[], bool], timeout: float = 5.0) -> None:
     """Wait until ``condition`` holds, failing the test if it doesn't in time."""
 

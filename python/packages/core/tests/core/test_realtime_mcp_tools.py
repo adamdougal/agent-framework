@@ -10,18 +10,21 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 
 from agent_framework import (
-    Content,
     FunctionInvocationContext,
     FunctionTool,
-    Message,
     RealtimeAgent,
-    RealtimeEvent,
     tool,
 )
 from agent_framework._mcp import MCPTool
 from agent_framework.exceptions import RealtimeConversationClosedException, ToolException
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually
+from .realtime_helpers import (
+    FakeRealtimeClient,
+    call_event,
+    eventually,
+    response_events,
+    sent_results,
+)
 
 
 def _orders_server() -> MCPServer:
@@ -129,32 +132,6 @@ def get_time() -> str:
 def hang_up() -> str:
     """End the call."""
     return "Goodbye."
-
-
-def _call(call_id: str, name: str, *, response_id: str = "resp_1", **arguments: str) -> RealtimeEvent:
-    return event(
-        "function_call",
-        content=Content.from_function_call(call_id=call_id, name=name, arguments=arguments),
-        response_id=response_id,
-        item_id=f"item_{call_id}",
-    )
-
-
-def _response(response_id: str, *calls: RealtimeEvent) -> list[RealtimeEvent]:
-    return [
-        event("response_created", response_id=response_id),
-        *calls,
-        event("response_done", response_id=response_id, status="completed"),
-    ]
-
-
-def _results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
-    return [
-        (content.call_id, content.result)
-        for message in session.sent
-        if isinstance(message, Message) and message.role == "tool"
-        for content in message.contents
-    ]
 
 
 # region Agent lifecycle
@@ -377,15 +354,17 @@ async def test_an_mcp_tool_a_tool_adds_declares_functions_that_run_on_the_server
 
     agent = RealtimeAgent(client, tools=[offer_orders])
     async with agent, agent.start_conversation():
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_orders")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_orders")))
         await eventually(lambda: ("create_response", None) in client.session.calls)
         client.session.emit(
-            *_response("resp_2", _call("call_2", "get_delivery_slots", response_id="resp_2", order_id="1234"))
+            *response_events(
+                "resp_2", call_event("call_2", "get_delivery_slots", response_id="resp_2", order_id="1234")
+            )
         )
-        await eventually(lambda: len(_results(client.session)) == 2)
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
     assert _names(client.session.calls[0][2]) == ["offer_orders", "get_delivery_slots", "book_delivery_slot"]
-    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in _results(client.session)[1][1]
+    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in sent_results(client.session)[1][1]
 
 
 async def test_batches_finishing_while_an_added_mcp_tool_is_declared_leave_its_functions_runnable() -> None:
@@ -409,22 +388,24 @@ async def test_batches_finishing_while_an_added_mcp_tool_is_declared_leave_its_f
     agent = RealtimeAgent(client, tools=[offer_orders, offer_search, get_time])
     async with agent, agent.start_conversation():
         acknowledge = client.session.hold("update_session")
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_orders")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_orders")))
         await orders.listing.wait()
-        client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
+        client.session.emit(*response_events("resp_2", call_event("call_2", "get_time", response_id="resp_2")))
         await asyncio.sleep(0.01)  # the time batch has finished its call
         orders.release.set()
         await eventually(lambda: bool(client.session.calls))
-        client.session.emit(*_response("resp_3", _call("call_3", "offer_search", response_id="resp_3")))
+        client.session.emit(*response_events("resp_3", call_event("call_3", "offer_search", response_id="resp_3")))
         await asyncio.sleep(0.01)  # the search batch has finished its call
         acknowledge.set()
-        await eventually(lambda: len(_results(client.session)) == 3)
+        await eventually(lambda: len(sent_results(client.session)) == 3)
         client.session.emit(
-            *_response("resp_4", _call("call_4", "get_delivery_slots", response_id="resp_4", order_id="1234"))
+            *response_events(
+                "resp_4", call_event("call_4", "get_delivery_slots", response_id="resp_4", order_id="1234")
+            )
         )
-        await eventually(lambda: len(_results(client.session)) == 4)
+        await eventually(lambda: len(sent_results(client.session)) == 4)
 
-    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in dict(_results(client.session))["call_4"]
+    assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in dict(sent_results(client.session))["call_4"]
 
 
 @pytest.mark.parametrize(
@@ -454,12 +435,12 @@ async def test_a_tool_change_that_cannot_be_declared_leaves_the_declared_tools(r
         return "time offered"
 
     async with RealtimeAgent(client, tools=[offer_refused, offer_time]).start_conversation():
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_refused")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_refused")))
         await eventually(lambda: ("create_response", None) in client.session.calls)
-        client.session.emit(*_response("resp_2", _call("call_2", "offer_time", response_id="resp_2")))
-        await eventually(lambda: len(_results(client.session)) == 2)
+        client.session.emit(*response_events("resp_2", call_event("call_2", "offer_time", response_id="resp_2")))
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
-    assert _results(client.session) == [("call_1", "refused offered"), ("call_2", "time offered")]
+    assert sent_results(client.session) == [("call_1", "refused offered"), ("call_2", "time offered")]
     updates = [call for call in client.session.calls if call[0] == "update_session"]
     assert updates == [("update_session", {}, [offer_refused, offer_time, get_time])]
 
@@ -521,10 +502,10 @@ class TestVerification:
         agent = RealtimeAgent(client, tools=[_InProcessMCPTool(_orders_server())])
 
         async with agent, agent.start_conversation():
-            client.session.emit(*_response("resp_1", _call("call_1", "get_delivery_slots", order_id="1234")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_delivery_slots", order_id="1234")))
             await eventually(lambda: bool(client.session.calls))
 
-        [(call_id, result)] = _results(client.session)
+        [(call_id, result)] = sent_results(client.session)
         assert call_id == "call_1"
         assert "Order 1234 can be delivered on Thursday from 9 to 11 AM." in result
         assert ("create_response", None) in client.session.calls
@@ -535,10 +516,10 @@ class TestVerification:
         agent = RealtimeAgent(client, tools=[get_time, _InProcessMCPTool(_orders_server())])
 
         async with agent, agent.start_conversation():
-            client.session.emit(*_response("resp_1", _call("call_1", "get_time")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_time")))
             await eventually(lambda: bool(client.session.calls))
 
-        assert _results(client.session) == [("call_1", "noon")]
+        assert sent_results(client.session) == [("call_1", "noon")]
         assert [call[0] for call in client.session.calls] == ["create_response"]
 
     async def test_a_second_conversation_reuses_the_connection(self) -> None:
@@ -574,7 +555,7 @@ class TestVerification:
 
         async with agent, agent.start_conversation() as conversation:
             await conversation.update_session(tools=[_InProcessMCPTool(_orders_server())])
-            client.session.emit(*_response("resp_1", _call("call_1", "get_delivery_slots", order_id="1234")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_delivery_slots", order_id="1234")))
             await eventually(lambda: len(client.session.calls) == 2)
 
         assert [call[0] for call in client.session.calls] == ["update_session", "create_response"]
@@ -624,16 +605,18 @@ class TestVerification:
             server.add_tool(cancel_order, description="Cancel an order.")
             await orders.load_tools()
             client.session.emit(
-                *_response("resp_caller", _call("call_1", "cancel_order", response_id="resp_caller", order_id="1234"))
+                *response_events(
+                    "resp_caller", call_event("call_1", "cancel_order", response_id="resp_caller", order_id="1234")
+                )
             )
             await eventually(lambda: bool(client.session.calls))
 
             await conversation.update_session(tools=[orders])
             # The provider answers the follow-up, which the fake session numbered resp_1, with another call.
-            client.session.emit(*_response("resp_1", _call("call_2", "cancel_order", order_id="5678")))
+            client.session.emit(*response_events("resp_1", call_event("call_2", "cancel_order", order_id="5678")))
             await eventually(lambda: len(client.session.calls) == 3)
 
-        [(_, not_found), (_, cancelled)] = _results(client.session)
+        [(_, not_found), (_, cancelled)] = sent_results(client.session)
         assert "not found" in not_found
         assert "Cancelled order 5678." in cancelled
         assert [call[0] for call in client.session.calls] == ["create_response", "update_session", "create_response"]

@@ -34,7 +34,16 @@ from agent_framework.exceptions import (
     RealtimeConversationClosedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
+from .realtime_helpers import (
+    FakeRealtimeClient,
+    call_event,
+    event,
+    eventually,
+    next_update,
+    response_events,
+    sent_results,
+    shorten_timeouts,
+)
 
 
 @tool
@@ -113,32 +122,6 @@ class _Briefing(ContextProvider):
         context.extend_instructions(self.source_id, "Be brief.")
         context.extend_tools(self.source_id, [get_time])
         context.extend_middleware(self.source_id, [_recorder("briefing", self.seen)])
-
-
-def _call(call_id: str, name: str, *, response_id: str = "resp_1") -> RealtimeEvent:
-    return event(
-        "function_call",
-        content=Content.from_function_call(call_id=call_id, name=name, arguments={}),
-        response_id=response_id,
-        item_id=f"item_{call_id}",
-    )
-
-
-def _response(response_id: str, *calls: RealtimeEvent) -> list[RealtimeEvent]:
-    return [
-        event("response_created", response_id=response_id),
-        *calls,
-        event("response_done", response_id=response_id, status="completed"),
-    ]
-
-
-def _results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
-    return [
-        (content.call_id, content.result)
-        for message in session.sent
-        if isinstance(message, Message) and message.role == "tool"
-        for content in message.contents
-    ]
 
 
 # region driving
@@ -299,10 +282,12 @@ async def test_after_a_handoff_the_targets_tools_run_and_the_sources_do_not() ->
 
     async with _receptionist(client).start_conversation() as conversation:
         await conversation.handoff(_billing(client))
-        client.session.emit(*_response("resp_1", _call("call_1", "get_balance"), _call("call_2", "greet")))
-        await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(
+            *response_events("resp_1", call_event("call_1", "get_balance"), call_event("call_2", "greet"))
+        )
+        await eventually(lambda: bool(sent_results(client.session)))
 
-    [(_, balance), (_, greeting)] = _results(client.session)
+    [(_, balance), (_, greeting)] = sent_results(client.session)
     assert balance == "£42"
     assert "not found" in greeting
 
@@ -364,11 +349,13 @@ async def test_a_call_runs_through_the_function_middleware_of_the_agent_active_w
     billing = _billing(client, middleware=[_recorder("billing", seen)])
 
     async with receptionist.start_conversation() as conversation:
-        client.session.emit(*_response("resp_greet", _call("call_1", "greet", response_id="resp_greet")))
-        await eventually(lambda: len(_results(client.session)) == 1)
+        client.session.emit(*response_events("resp_greet", call_event("call_1", "greet", response_id="resp_greet")))
+        await eventually(lambda: len(sent_results(client.session)) == 1)
         await conversation.handoff(billing)
-        client.session.emit(*_response("resp_balance", _call("call_2", "get_balance", response_id="resp_balance")))
-        await eventually(lambda: len(_results(client.session)) == 2)
+        client.session.emit(
+            *response_events("resp_balance", call_event("call_2", "get_balance", response_id="resp_balance"))
+        )
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
     assert seen == [("receptionist", "greet"), ("billing", "get_balance")]
 
@@ -380,8 +367,10 @@ async def test_start_middleware_wraps_every_call_inside_the_participants() -> No
 
     async with _receptionist(client).start_conversation(middleware=[_recorder("start", seen)]) as conversation:
         await conversation.handoff(billing)
-        client.session.emit(*_response("resp_balance", _call("call_1", "get_balance", response_id="resp_balance")))
-        await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(
+            *response_events("resp_balance", call_event("call_1", "get_balance", response_id="resp_balance"))
+        )
+        await eventually(lambda: bool(sent_results(client.session)))
 
     assert seen == [("billing", "get_balance"), ("start", "get_balance")]
 
@@ -393,8 +382,10 @@ async def test_a_context_providers_function_middleware_wraps_a_targets_calls_ins
 
     async with _receptionist(client, context_providers=[_Briefing(seen)]).start_conversation() as conversation:
         await conversation.handoff(billing)
-        client.session.emit(*_response("resp_balance", _call("call_1", "get_balance", response_id="resp_balance")))
-        await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(
+            *response_events("resp_balance", call_event("call_1", "get_balance", response_id="resp_balance"))
+        )
+        await eventually(lambda: bool(sent_results(client.session)))
 
     assert seen == [("billing", "get_balance"), ("briefing", "get_balance")]
 
@@ -412,8 +403,10 @@ async def test_a_targets_stateful_middleware_gets_a_conversation_local_session()
 
     async with _receptionist(client).start_conversation() as conversation:
         await conversation.handoff(_billing(client, middleware=[SessionStateMiddleware()]))
-        client.session.emit(*_response("resp_balance", _call("call_1", "get_balance", response_id="resp_balance")))
-        await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(
+            *response_events("resp_balance", call_event("call_1", "get_balance", response_id="resp_balance"))
+        )
+        await eventually(lambda: bool(sent_results(client.session)))
 
     [session] = sessions
     assert isinstance(session, AgentSession)
@@ -425,14 +418,14 @@ async def test_calls_of_one_response_split_by_a_handoff_run_through_each_agents_
     billing = _billing(client, middleware=[_recorder("billing", seen)])
 
     async with _receptionist(client, middleware=[_recorder("receptionist", seen)]).start_conversation() as conversation:
-        client.session.emit(event("response_created", response_id="resp_1"), _call("call_1", "greet"))
+        client.session.emit(event("response_created", response_id="resp_1"), call_event("call_1", "greet"))
         await next_update(conversation)
         await next_update(conversation)  # the call has arrived
         await conversation.handoff(billing)
         client.session.emit(
-            _call("call_2", "get_balance"), event("response_done", response_id="resp_1", status="completed")
+            call_event("call_2", "get_balance"), event("response_done", response_id="resp_1", status="completed")
         )
-        await eventually(lambda: len(_results(client.session)) == 2)
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
     assert sorted(seen) == [("billing", "get_balance"), ("receptionist", "greet")]
 
@@ -489,11 +482,13 @@ class TestVerification:
             with pytest.raises(RealtimeControlException):
                 await conversation.handoff(_billing(client))
             active = conversation.active_agent
-            client.session.emit(*_response("resp_1", _call("call_1", "greet"), _call("call_2", "get_balance")))
-            await eventually(lambda: len(_results(client.session)) == 2)
+            client.session.emit(
+                *response_events("resp_1", call_event("call_1", "greet"), call_event("call_2", "get_balance"))
+            )
+            await eventually(lambda: len(sent_results(client.session)) == 2)
 
         updates = [update async for update in conversation]
-        [(_, greeting), (_, balance)] = _results(client.session)
+        [(_, greeting), (_, balance)] = sent_results(client.session)
         assert active is receptionist
         assert greeting == "Hello"
         assert "not found" in balance
@@ -575,11 +570,11 @@ class TestVerification:
             session.on_call("send", record_write)
             results_as_each_follow_up_began: list[list[tuple[str | None, Any]]] = []
             session.on_call(
-                "create_response", lambda options: results_as_each_follow_up_began.append(_results(session))
+                "create_response", lambda options: results_as_each_follow_up_began.append(sent_results(session))
             )
             handoff_acknowledged = session.hold("update_session")
             result_written = session.hold("send")
-            session.emit(*_response("resp_caller", _call("call_1", "transfer", response_id="resp_caller")))
+            session.emit(*response_events("resp_caller", call_event("call_1", "transfer", response_id="resp_caller")))
             await eventually(lambda: bool(session.calls))
             assert (conversation.active_agent, writes) == (receptionist, [])
 
@@ -590,7 +585,7 @@ class TestVerification:
             result_written.set()
             await eventually(lambda: len(session.calls) == 2)
             # A second follow-up would wait for the first, which the fake session numbered resp_1, to finish.
-            session.emit(*_response("resp_1"))
+            session.emit(*response_events("resp_1"))
             while not (
                 updates
                 and updates[-1].response_id == "resp_1"
@@ -629,10 +624,12 @@ class TestVerification:
             client, name="receptionist", tools=[transfer], function_invocation_configuration={"max_iterations": 2}
         )
         async with receptionist.start_conversation():
-            client.session.emit(*_response("resp_caller", _call("call_1", "transfer", response_id="resp_caller")))
+            client.session.emit(
+                *response_events("resp_caller", call_event("call_1", "transfer", response_id="resp_caller"))
+            )
             await eventually(lambda: len(client.session.calls) == 2)
             # The provider answers the first follow-up, which the fake session numbered resp_1, with another call.
-            client.session.emit(*_response("resp_1", _call("call_2", "get_balance")))
+            client.session.emit(*response_events("resp_1", call_event("call_2", "get_balance")))
             await eventually(lambda: len(client.session.calls) == 3)
 
         assert client.session.calls[-1] == ("create_response", {"tool_choice": "none"})

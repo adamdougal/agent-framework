@@ -8,12 +8,9 @@ from typing import Any
 import pytest
 
 from agent_framework import (
-    Content,
     FunctionInvocationContext,
     FunctionTool,
-    Message,
     RealtimeAgent,
-    RealtimeEvent,
     function_middleware,
     tool,
 )
@@ -25,7 +22,16 @@ from agent_framework.exceptions import (
     RealtimeUnsupportedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
+from .realtime_helpers import (
+    FakeRealtimeClient,
+    call_event,
+    event,
+    eventually,
+    next_update,
+    response_events,
+    sent_results,
+    shorten_timeouts,
+)
 
 
 @tool
@@ -38,32 +44,6 @@ def get_weather(city: str) -> str:
 def get_time() -> str:
     """Get the time."""
     return "noon"
-
-
-def _call(call_id: str, name: str, *, response_id: str = "resp_1", **arguments: str) -> RealtimeEvent:
-    return event(
-        "function_call",
-        content=Content.from_function_call(call_id=call_id, name=name, arguments=arguments),
-        response_id=response_id,
-        item_id=f"item_{call_id}",
-    )
-
-
-def _response(response_id: str, *calls: RealtimeEvent) -> list[RealtimeEvent]:
-    return [
-        event("response_created", response_id=response_id),
-        *calls,
-        event("response_done", response_id=response_id, status="completed"),
-    ]
-
-
-def _results(session: FakeRealtimeSession) -> list[tuple[str | None, Any]]:
-    return [
-        (content.call_id, content.result)
-        for message in session.sent
-        if isinstance(message, Message) and message.role == "tool"
-        for content in message.contents
-    ]
 
 
 # region update_session
@@ -93,12 +73,14 @@ async def test_update_session_tools_replace_the_executable_tools() -> None:
     async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
         await conversation.update_session(tools=[get_time])
         client.session.emit(
-            *_response("resp_1", _call("call_1", "get_time"), _call("call_2", "get_weather", city="Paris"))
+            *response_events(
+                "resp_1", call_event("call_1", "get_time"), call_event("call_2", "get_weather", city="Paris")
+            )
         )
-        await eventually(lambda: bool(_results(client.session)))
+        await eventually(lambda: bool(sent_results(client.session)))
 
     assert client.session.calls[0] == ("update_session", {}, [get_time])
-    [(_, time_result), (_, weather_result)] = _results(client.session)
+    [(_, time_result), (_, weather_result)] = sent_results(client.session)
     assert time_result == "noon"
     assert "not found" in weather_result
 
@@ -123,11 +105,11 @@ async def test_update_session_with_empty_tools_clears_them() -> None:
 
     async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
         await conversation.update_session(tools=[])
-        client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
-        await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "get_weather", city="Paris")))
+        await eventually(lambda: bool(sent_results(client.session)))
 
     assert client.session.calls[0] == ("update_session", {}, [])
-    [(_, weather_result)] = _results(client.session)
+    [(_, weather_result)] = sent_results(client.session)
     assert "not found" in weather_result
 
 
@@ -145,15 +127,15 @@ async def test_update_session_replaces_the_live_tool_list_in_place() -> None:
         return "offered"
 
     async with RealtimeAgent(client, tools=[offer_time]).start_conversation() as conversation:
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
         await started.wait()
         await conversation.update_session(tools=[offer_time, get_weather])
         release.set()
-        await eventually(lambda: len(_results(client.session)) == 1)
-        client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
-        await eventually(lambda: len(_results(client.session)) == 2)
+        await eventually(lambda: len(sent_results(client.session)) == 1)
+        client.session.emit(*response_events("resp_2", call_event("call_2", "get_time", response_id="resp_2")))
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
-    assert _results(client.session)[1] == ("call_2", "noon")
+    assert sent_results(client.session)[1] == ("call_2", "noon")
 
 
 async def test_update_session_rejects_duplicate_tool_names_before_sending() -> None:
@@ -179,11 +161,13 @@ async def test_a_rejected_update_raises_and_leaves_the_executable_tools_unchange
         with pytest.raises(RealtimeControlException):
             await conversation.update_session(tools=[get_time])
         client.session.emit(
-            *_response("resp_1", _call("call_1", "get_weather", city="Paris"), _call("call_2", "get_time"))
+            *response_events(
+                "resp_1", call_event("call_1", "get_weather", city="Paris"), call_event("call_2", "get_time")
+            )
         )
-        await eventually(lambda: bool(_results(client.session)))
+        await eventually(lambda: bool(sent_results(client.session)))
 
-    [(_, weather_result), (_, time_result)] = _results(client.session)
+    [(_, weather_result), (_, time_result)] = sent_results(client.session)
     assert weather_result == "Sunny in Paris"
     assert "not found" in time_result
 
@@ -268,10 +252,10 @@ async def _weather_follow_up_after_a_filler_line(
         client.session.say_events = [event("response_created", response_id="resp_said")]
         client.session.emit(
             event("speech_started", item_id="item_9", audio_start_ms=100),
-            *_response("resp_1", _call("call_1", "get_weather", city="Paris")),
-            *_response("resp_2", _call("call_2", "check_account", response_id="resp_2")),
+            *response_events("resp_1", call_event("call_1", "get_weather", city="Paris")),
+            *response_events("resp_2", call_event("call_2", "check_account", response_id="resp_2")),
         )
-        await eventually(lambda: _results(client.session) == [("call_1", "Sunny in Paris")])
+        await eventually(lambda: sent_results(client.session) == [("call_1", "Sunny in Paris")])
         say_filler.set()
         await eventually(lambda: bool(client.session.calls))
         client.session.emit(
@@ -319,13 +303,13 @@ async def test_tools_a_tool_adds_reach_the_session_before_its_result() -> None:
 
     async with RealtimeAgent(client, tools=[offer_time]).start_conversation():
         acknowledge = client.session.hold("update_session")
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
         await eventually(lambda: bool(client.session.calls))
         await asyncio.sleep(0.01)
-        assert _results(client.session) == []
+        assert sent_results(client.session) == []
 
         acknowledge.set()
-        await eventually(lambda: bool(_results(client.session)))
+        await eventually(lambda: bool(sent_results(client.session)))
 
     assert client.session.calls[0] == ("update_session", {}, [offer_time, get_time])
 
@@ -356,8 +340,8 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
     async with RealtimeAgent(client, tools=[offer_time, offer_weather]).start_conversation():
         acknowledge = client.session.hold("update_session")
         client.session.emit(
-            *_response("resp_1", _call("call_1", "offer_time")),
-            *_response("resp_2", _call("call_2", "offer_weather", response_id="resp_2")),
+            *response_events("resp_1", call_event("call_1", "offer_time")),
+            *response_events("resp_2", call_event("call_2", "offer_weather", response_id="resp_2")),
         )
         await eventually(lambda: time_offered.is_set() and weather_offered.is_set())
         release_time.set()
@@ -365,7 +349,7 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
         release_weather.set()
         await asyncio.sleep(0.01)  # the weather batch's results now wait behind the update
         acknowledge.set()
-        await eventually(lambda: len(_results(client.session)) == 2)
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
     updates = [call for call in client.session.calls if call[0] == "update_session"]
     assert updates == [("update_session", {}, [offer_time, offer_weather, get_time, get_weather])]
@@ -392,14 +376,14 @@ async def test_an_acknowledged_tool_update_keeps_changes_another_batch_made_mean
 
     async with RealtimeAgent(client, tools=[offer_time, offer_weather]).start_conversation():
         acknowledge = client.session.hold("update_session")
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
         await eventually(lambda: bool(client.session.calls))
-        client.session.emit(*_response("resp_2", _call("call_2", "offer_weather", response_id="resp_2")))
+        client.session.emit(*response_events("resp_2", call_event("call_2", "offer_weather", response_id="resp_2")))
         await weather_offered.wait()
         acknowledge.set()
-        await eventually(lambda: len(_results(client.session)) == 1)
+        await eventually(lambda: len(sent_results(client.session)) == 1)
         release_weather.set()
-        await eventually(lambda: len(_results(client.session)) == 2)
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
     updates = [call for call in client.session.calls if call[0] == "update_session"]
     assert updates == [
@@ -421,11 +405,11 @@ async def test_a_tool_update_queued_behind_an_app_update_declares_the_tools_as_t
         acknowledge = client.session.hold("update_session")
         clearing = asyncio.create_task(conversation.update_session(tools=[]))
         await eventually(lambda: bool(client.session.calls))
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
         await asyncio.sleep(0.01)  # the batch's own update now waits behind the app's
         acknowledge.set()
         await clearing
-        await eventually(lambda: bool(_results(client.session)))
+        await eventually(lambda: bool(sent_results(client.session)))
 
     updates = [call for call in client.session.calls if call[0] == "update_session"]
     assert updates == [("update_session", {}, [])]
@@ -442,12 +426,12 @@ async def test_a_rejected_tool_update_restores_the_tools_and_still_sends_the_res
 
     async with RealtimeAgent(client, tools=[offer_time]).start_conversation():
         client.session.update_session_error = RealtimeControlException("Invalid tool schema.", code="invalid_value")
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
         await eventually(lambda: ("create_response", None) in client.session.calls)
-        client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
-        await eventually(lambda: len(_results(client.session)) == 2)
+        client.session.emit(*response_events("resp_2", call_event("call_2", "get_time", response_id="resp_2")))
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
-    [first, (_, time_result)] = _results(client.session)
+    [first, (_, time_result)] = sent_results(client.session)
     assert first == ("call_1", "offered")
     assert "not found" in time_result
 
@@ -464,13 +448,13 @@ async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resen
     async with RealtimeAgent(client, tools=[offer_time]).start_conversation() as conversation:
         shorten_timeouts(conversation)
         acknowledge = client.session.hold("update_session")
-        client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
-        await eventually(lambda: bool(_results(client.session)))
+        client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
+        await eventually(lambda: bool(sent_results(client.session)))
         acknowledge.set()
-        client.session.emit(*_response("resp_2", _call("call_2", "get_time", response_id="resp_2")))
-        await eventually(lambda: len(_results(client.session)) == 2)
+        client.session.emit(*response_events("resp_2", call_event("call_2", "get_time", response_id="resp_2")))
+        await eventually(lambda: len(sent_results(client.session)) == 2)
 
-    assert _results(client.session)[1] == ("call_2", "noon")
+    assert sent_results(client.session)[1] == ("call_2", "noon")
     updates = [call for call in client.session.calls if call[0] == "update_session"]
     assert updates == [("update_session", {}, [offer_time, get_time])] * 2
 
@@ -484,7 +468,7 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
             await conversation.update_session(tools=[get_time])
-            client.session.emit(*_response("resp_1", _call("call_1", "get_time")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_time")))
             await eventually(lambda: ("create_response", None) in client.session.calls)
 
         assert client.session.calls == [("update_session", {}, [get_time]), ("create_response", None)]
@@ -493,7 +477,7 @@ class TestVerification:
         client = FakeRealtimeClient()
 
         async with RealtimeAgent(client, tools=[get_weather]).start_conversation():
-            client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_weather", city="Paris")))
             await eventually(lambda: ("create_response", None) in client.session.calls)
 
         assert client.session.calls == [("create_response", None)]
@@ -503,10 +487,10 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
             await conversation.update_session(options={"instructions": "Speak Spanish."})
-            client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
-            await eventually(lambda: bool(_results(client.session)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_weather", city="Paris")))
+            await eventually(lambda: bool(sent_results(client.session)))
 
-        assert _results(client.session) == [("call_1", "Sunny in Paris")]
+        assert sent_results(client.session) == [("call_1", "Sunny in Paris")]
 
     async def test_a_timed_out_update_leaves_the_executable_tools_unchanged(self) -> None:
         client = FakeRealtimeClient()
@@ -516,10 +500,10 @@ class TestVerification:
             client.session.hold("update_session")
             with pytest.raises(RealtimeControlTimeoutException):
                 await conversation.update_session(tools=[get_time])
-            client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
-            await eventually(lambda: bool(_results(client.session)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_weather", city="Paris")))
+            await eventually(lambda: bool(sent_results(client.session)))
 
-        assert _results(client.session) == [("call_1", "Sunny in Paris")]
+        assert sent_results(client.session) == [("call_1", "Sunny in Paris")]
 
     async def test_a_follow_up_due_during_an_update_is_requested_after_it(self) -> None:
         client = FakeRealtimeClient()
@@ -528,8 +512,8 @@ class TestVerification:
             acknowledge = client.session.hold("update_session")
             updating = asyncio.create_task(conversation.update_session(options={"tool_choice": "none"}))
             await eventually(lambda: bool(client.session.calls))
-            client.session.emit(*_response("resp_1", _call("call_1", "get_weather", city="Paris")))
-            await eventually(lambda: bool(_results(client.session)))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "get_weather", city="Paris")))
+            await eventually(lambda: bool(sent_results(client.session)))
             await asyncio.sleep(0.01)
             assert client.session.calls == [("update_session", {"tool_choice": "none"}, None)]
 
@@ -604,13 +588,13 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[get_weather, retire_weather]).start_conversation():
             acknowledge = client.session.hold("update_session")
-            client.session.emit(*_response("resp_1", _call("call_1", "retire_weather")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "retire_weather")))
             await eventually(lambda: bool(client.session.calls))
             await asyncio.sleep(0.01)
-            assert _results(client.session) == []
+            assert sent_results(client.session) == []
 
             acknowledge.set()
-            await eventually(lambda: bool(_results(client.session)))
+            await eventually(lambda: bool(sent_results(client.session)))
 
         assert client.session.calls[0] == ("update_session", {}, [retire_weather])
 
@@ -625,7 +609,7 @@ class TestVerification:
 
         async with RealtimeAgent(client, tools=[offer_time]).start_conversation() as conversation:
             client.session.hold("update_session")
-            client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
+            client.session.emit(*response_events("resp_1", call_event("call_1", "offer_time")))
             await eventually(lambda: bool(client.session.calls))
 
             await conversation.close()
@@ -633,4 +617,4 @@ class TestVerification:
 
         streamed = [content for update in updates for content in update.contents if content.type == "function_result"]
         assert [(result.call_id, result.result) for result in streamed] == [("call_1", "offered")]
-        assert _results(client.session) == []
+        assert sent_results(client.session) == []
