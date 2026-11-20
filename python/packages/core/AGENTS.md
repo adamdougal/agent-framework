@@ -101,84 +101,41 @@ agent_framework/
 ### Realtime agents (`_realtime/`)
 
 Realtime agents hold live, two-way speech conversations with speech-to-speech models. Every public realtime API is
-experimental under `REALTIME`, and the contract is
-[spec 006](../../../docs/specs/006-python-realtime-agents.md). Each concern has its own module, exported lazily from
-the root package:
+experimental under `REALTIME`. Its types are exported lazily from the root package, and its exceptions live in
+`exceptions.py`, under `RealtimeException`. The contract is
+[spec 006](../../../docs/specs/006-python-realtime-agents.md).
 
-- `_kinds.py` - `RealtimeKindLiteral`, the open `RealtimeKind`, and one `Realtime<Kind>Attributes` TypedDict per kind
-  with neutral attributes. The module omits `from __future__ import annotations` so `Required[...]` keys stay visible
-  at runtime.
-- `_events.py` - `RealtimeEvent`, which carries one provider event from a session to the conversation, or a raw
-  command whose `raw_representation` is the wire event.
-- `_options.py` - `RealtimeOptions` and its turn-detection, transcription and noise-reduction TypedDicts.
-- `_clients.py` - `RealtimeClientProtocol` and `RealtimeClientSessionProtocol`. A session's `send()` takes a raw
-  `RealtimeEvent` or a `Message`, which it maps by content type.
-- `_agent.py` - `RawRealtimeAgent` and `RealtimeAgent`, and `start_conversation(...)`, which merges the conversation's
-  options, tools and function middleware over the agent's, and adds an `InMemoryHistoryProvider` for a session as
-  `Agent` does. `async with agent` connects the agent's MCP tools that aren't connected yet and closes, on exit, every
-  MCP tool the agent connected; it never closes one the app connected. Two protected hooks let an agent that owns a
-  handoff topology start its calls with another participant speaking and add each participant's handoff tools. A third,
-  `_middleware_categories()`, names the middleware an agent's conversations run: function middleware on the raw
-  agent, and conversation middleware too on `RealtimeAgent`, which is the realtime middleware layer. A fourth,
-  `_conversation_telemetry()`, returns `None` on the raw agent; `RealtimeAgent`, also the telemetry layer, returns a
-  recorder while instrumentation is enabled. `FoundryVoiceAgent` derives from `RealtimeAgent`, so it has both layers.
-- `_middleware.py` - `ConversationMiddleware` and `ConversationContext`, the public conversation-middleware types.
-  `_middleware.py` in the package root imports them to categorize middleware, so this module imports nothing from it.
-- `_middleware_chain.py` - Runs a conversation's middleware: the chain around opening, which opens the conversation
-  once, and the send, update and close hooks in onion order.
-- `_handoffs.py` - What a participant brings when it starts speaking (instructions, tools, voice, tool choice,
-  reasoning effort) and `CallSettings`, what holds for the whole call. Starting a conversation and `handoff(...)` both
-  compute the session's settings here.
-- `_conversation.py` - `RealtimeConversation`: the single receive loop, the control calls, including `handoff(...)`,
-  and the close sequence. It owns the acknowledgement timeout and deduplicates unclaimed errors, tracks the active
-  agent, and its `_dispatch` hands each event kind to the concern modules below. Opening runs context providers'
-  `before_run`, whose instructions, tools and function middleware hold for the whole call, and replays the history
-  they load. Conversation middleware wraps opening; `send()` runs the send hooks before anything else, the reader runs
-  the update hooks as each update leaves the queue, after history has recorded it, and close runs the close hooks
-  last. A hook failure ends the call. At start, on `update_session(tools=...)` and on `handoff(...)` it resolves its
-  tools through `_append_tools_with_mcp_functions(...)` in `_agents.py`, which `RawAgent` shares: each MCP tool is
-  replaced by its current functions in a list the conversation owns, connected on first use into the starting agent's
-  exit stack, so server-side tool-list changes wait for the next update.
-- `_acknowledgements.py` - `await_acknowledgement(...)`, which awaits a control call's acknowledgement within the
-  timeout and until close starts, and lets a cancelled session call finish unwinding.
-- `_update_stream.py` - `UpdateStream`, the bounded update buffer whose end and failure live outside it.
-- `_updates.py` - Maps each `RealtimeEvent` to one `AgentResponseUpdate`: role, author, ids and `finish_reason`.
-- `_responses.py` - `ResponseLedger`, which tracks each response's agent, calls and active state, and which responses
-  can count as a tool batch's follow-up.
-- `_tool_loop.py` - `ToolLoop`, which runs each finished response's calls through `_execute_function_calls(...)`,
-  sends the results, requests one follow-up per batch, and settles unfinished calls on close. It keeps the tools it
-  runs in step with the tools the provider declares: tool-list changes a call makes with `ctx.add_tools()` or
-  `ctx.remove_tools()` go out as a session update before that batch's results. Each call runs through the function
-  middleware of the agent active when it arrived. A batch waits for the app where a call needs it: approvals first,
-  before any of its calls run, then the results of declaration-only calls and of tools that raised
-  `UserInputRequiredException`.
-- `_app_input.py` - `AppInput`, the conversation's record of what it asked the app: approval requests and app-run
-  calls. `send()` routes function results and approval responses through it, and refuses an answer to anything it
-  didn't ask, before sending anything.
-- `_barge_in.py` - `AudioLedger`, which measures output audio from its bytes and media type and turns `played_ms` or
-  a provider truncation into truncates. It remembers where each response was cut, so the conversation can delete the
-  response's later text-only messages, which truncation can't reach.
-- `_history.py` - `CallHistory`, the ordered item registry behind `RealtimeConversation.history`. It records caller
-  turns (`user` items with `input_audio`), app input as it's written, agent turns and calls, and splits them into
-  exchanges. `user` and `system` items without audio are echoes of app input or replay, so it ignores them.
-- `_reporting.py` - `report_exchanges`, which close uses to report each exchange to the context providers'
-  `after_run` in order. A provider that fails skips the later exchanges, and the others carry on.
-- `_telemetry.py` - `ConversationTelemetry`, the recorder behind a conversation's `invoke_agent` span and a
-  `realtime_inference` span per response, with finish reasons, usage and the operation-duration and token-usage
-  metrics. The conversation hands it each event, with the active agent, before the event's update is queued, so it
-  records what came from the provider before update hooks change it. The span opens inside conversation middleware,
-  around the session's opening, so the receive loop, tool batches and the provider's handshake nest under it, and
-  close runs in a copy of the context captured there. Attribute keys, usage mapping and metrics come from public-named
-  helpers in `observability.py`, shared with chat.
+A live call, from a sample to a handoff tool's result:
 
-Tool calls see the conversation as `FunctionInvocationContext.realtime_conversation`. The executor takes it, the
-live tool list, and an `on_call_finished` callback that keeps a cancelled batch's finished results, as private
-keywords; chat passes none of them.
+1. The app calls `start_conversation(...)` on the agent that owns the call, whose history, context providers and
+   conversation middleware hold for the whole call. A `RealtimeHandoffBuilder` agent owns the call but never speaks;
+   its participants do. `start_conversation(...)` returns an unopened `RealtimeConversation`.
+2. Entering it runs conversation middleware, opens the conversation span while instrumentation is on, runs context
+   providers' `before_run`, resolves tools and awaits the client's `start_session(...)`, which applies the initial
+   settings. It then replays history and starts the one receive loop.
+3. The receive loop hands each provider event, already tagged with a kind, to telemetry, history and the tool loop,
+   then queues one `AgentResponseUpdate`. The app's iteration runs the update hooks.
+4. A tool call binds to its tool and the speaker's function middleware when its `function_call` arrives. At
+   `response_done`, `ToolLoop` runs the response's calls as one batch in a separate task, so the receive loop stays
+   free to acknowledge the control calls they make.
+5. A handoff tool calls `ctx.realtime_conversation.handoff(target)`, which sends a session update and waits. The
+   provider's `session.updated`, read by the receive loop, releases it. Only then does the conversation switch the
+   tools it runs and the active agent, and emit `handoff_completed`.
+6. The batch then sends the old speaker's tool result and requests a follow-up response, which the new speaker gives.
 
-A kind's neutral attributes live under `additional_properties["core"]`, on both the `RealtimeEvent` and the
-`realtime_event` content built with `Content.from_realtime_event(...)`, whose `kind` and `service_event_type` are
-`Content` fields serialized only for that content type. The realtime exceptions live in `exceptions.py`, under
-`RealtimeException`.
+Ownership:
+
+- The conversation owns the provider session once `start_session(...)` returns, and only its receive loop reads it.
+  Control calls resolve only while that loop reads, so nothing that awaits one may run on it.
+- Control calls run one at a time, each waiting for the provider's acknowledgement. The conversation's `handoff(...)`
+  and `interrupt(played_ms=...)` are built from the session's `update_session(...)`, `cancel_response()`,
+  `truncate(...)` and `delete_item(...)`. The tools and the active agent change only once the provider acknowledges.
+- Provider clients own the wire protocol; core acts on event kinds.
+- `RealtimeAgent`, not the client, is the middleware and telemetry layer. History records app input after the send
+  hooks, and history and telemetry record provider events before the update hooks.
+- Realtime reuses chat's private helpers, such as `_append_tools_with_mcp_functions(...)`,
+  `_execute_function_calls(...)` and `observability`'s span and metric helpers, through line-level `reportPrivateUsage`
+  suppressions. It never makes a helper public just for the checker.
 
 ### Tools (`_tools.py`)
 

@@ -302,14 +302,15 @@ async def test_bad_credentials_raise() -> None:
 
 class TestVerification:
     async def test_replayed_history_reaches_the_model(self) -> None:
-        """Voice Live uses a different assistant-text wire type, so verify replay against the service."""
+        """With replayed history in which only the assistant names the booking, Quentin, alongside a replayed tool
+        call and result, asking which name the table is under gets a new answer naming Quentin, and no error."""
         history = InMemoryHistoryProvider()
         agent_session = AgentSession()
         await history.save_messages(
             agent_session.session_id,
             [
-                Message("user", ["Hi, my name is Ada."]),
-                Message("assistant", ["Nice to meet you, Ada."]),
+                Message("user", ["Please book a table for two tonight."]),
+                Message("assistant", ["Done. Your table for two is booked under the name Quentin."]),
                 Message("assistant", [Content.from_function_call("call_1", "get_time", arguments='{"city": "Paris"}')]),
                 Message("tool", [Content.from_function_result("call_1", result="12:00")]),
             ],
@@ -330,7 +331,7 @@ class TestVerification:
             conversation = await stack.enter_async_context(
                 agent.start_conversation(session=agent_session, options=options)
             )
-            await conversation.send("What's my name?")
+            await conversation.send("Which name is my table booked under?")
             updates = []
             async for update in conversation:
                 updates.append(update)
@@ -341,9 +342,9 @@ class TestVerification:
             recorded = conversation.history
 
         assert not [content for update in updates for content in update.contents if content.type == "error"]
-        reply = " ".join(message.text for message in recorded if message.role == "assistant")
-        assert "ada" in reply.lower()
-        assert recorded[0].text == "What's my name?"
+        question, *answer = recorded
+        assert question.text == "Which name is my table booked under?"
+        assert "quentin" in " ".join(message.text for message in answer if message.role == "assistant").lower()
 
     async def test_delete_item_is_acknowledged(self) -> None:
         async with asyncio.timeout(TURN_TIMEOUT):

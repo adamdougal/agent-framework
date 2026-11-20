@@ -119,7 +119,8 @@ class ConversationMiddleware(ABC):
 
         Note:
             Raising ``MiddlewareTermination`` before ``call_next()``, or returning without calling it, refuses the
-            realtime session: entering the conversation raises ``MiddlewareTermination`` and nothing connects. Any
+            realtime session: entering the conversation raises ``MiddlewareTermination`` and nothing connects. As in
+            chat, returning lets outer middleware finish, while raising skips their code after ``call_next()``. Any
             exception raised after ``call_next()`` closes the conversation, and entering raises it.
         """
 
