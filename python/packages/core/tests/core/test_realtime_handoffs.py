@@ -33,7 +33,7 @@ from agent_framework.exceptions import (
     RealtimeConversationClosedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
+from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
 
 
 @tool
@@ -506,7 +506,8 @@ class TestVerification:
         client = FakeRealtimeClient()
         receptionist = _receptionist(client)
 
-        async with receptionist.start_conversation(control_timeout=0.05) as conversation:
+        async with receptionist.start_conversation() as conversation:
+            shorten_timeouts(conversation)
             client.session.hold("update_session")
             with pytest.raises(RealtimeControlTimeoutException):
                 await asyncio.wait_for(conversation.handoff(_billing(client)), 5)

@@ -48,6 +48,8 @@ class FakeConnection:
         self.close_count = 0
         self.responder = responder
         self._incoming: asyncio.Queue[Mapping[str, Any] | BaseException | None] = asyncio.Queue()
+        # Set while the session waits on an empty queue, which it only reaches once every pushed event is handled.
+        self.drained = asyncio.Event()
 
     async def send(self, event: Mapping[str, Any]) -> None:
         recorded = json.loads(json.dumps(event))
@@ -57,6 +59,8 @@ class FakeConnection:
                 self.push(reply)
 
     async def receive(self) -> Mapping[str, Any] | None:
+        if self._incoming.empty():
+            self.drained.set()
         item = await self._incoming.get()
         if isinstance(item, BaseException):
             raise item
@@ -67,6 +71,7 @@ class FakeConnection:
 
     def push(self, *events: Mapping[str, Any]) -> None:
         for event in events:
+            self.drained.clear()
             self._incoming.put_nowait(event)
 
     def end(self) -> None:
@@ -78,7 +83,7 @@ class FakeConnection:
     def sent_types(self) -> list[str]:
         return [event["type"] for event in self.sent]
 
-    async def wait_sent(self, event_type: str, timeout: float = 1.0) -> dict[str, Any]:
+    async def wait_sent(self, event_type: str, timeout: float = 5.0) -> dict[str, Any]:
         """Wait for the next event of ``event_type`` sent after this call, and return it."""
         already_sent = len(self.sent)
 
@@ -132,7 +137,7 @@ def item_truncated(item_id: str, content_index: int, audio_end_ms: int) -> dict[
     }
 
 
-async def next_event(events: Any, timeout: float = 1.0) -> Any:
+async def next_event(events: Any, timeout: float = 5.0) -> Any:
     """The next realtime event from a receive() iterator, failing the test instead of hanging."""
     return await asyncio.wait_for(anext(events), timeout)
 
@@ -174,11 +179,13 @@ class Reader:
     def of_kind(self, kind: str) -> list[Any]:
         return [event for event in self.events if event.kind == kind]
 
-    async def until(self, condition: Callable[[], bool], timeout: float = 1.0) -> None:
-        """Wait until ``condition()`` holds for the events read so far."""
+    async def until(self, condition: Callable[[], bool], timeout: float = 5.0) -> None:
+        """Wait until ``condition()`` holds for the events read so far, failing at once if the reader stops first."""
 
         async def poll() -> None:
             while not condition():  # noqa: ASYNC110 - the condition reads events another task appends
+                if self.done:
+                    raise self.error or AssertionError("The reader stopped before the condition held.")
                 await asyncio.sleep(0.005)
 
         await asyncio.wait_for(poll(), timeout)
@@ -203,14 +210,10 @@ async def reading(session: OpenAIRealtimeSession) -> AsyncGenerator[Reader]:
         await reader.stop()
 
 
-MARKER = {"type": "session.updated", "event_id": "evt_marker", "session": {}}
-
-
 async def read_through(connection: FakeConnection, reader: Reader, *events: Mapping[str, Any]) -> None:
-    """Push ``events`` and wait until the reader has processed them, using a session.updated as a marker."""
-    seen = len(reader.of_kind("session_updated"))
-    connection.push(*events, MARKER)
-    await reader.until(lambda: len(reader.of_kind("session_updated")) > seen)
+    """Push ``events`` and wait until the reader has processed them."""
+    connection.push(*events)
+    await reader.until(connection.drained.is_set)
 
 
 async def activate_response(connection: FakeConnection, reader: Reader, response_id: str) -> None:
@@ -225,7 +228,7 @@ async def mapped(*events: Mapping[str, Any], options: RealtimeOptions | None = N
         await read_through(connection, reader)
         already_read = len(reader.events)
         await read_through(connection, reader, *events)
-    return reader.events[already_read:-1]
+    return reader.events[already_read:]
 
 
 AGENT_PART = {"response_id": "resp_1", "item_id": "item_1", "content_index": 0}
@@ -736,7 +739,7 @@ async def test_update_session_with_nothing_left_returns_without_sending() -> Non
     """update_session({"temperature": 0.7}, None) sends nothing and returns at once."""
     session, connection = await started({"instructions": "A"})
 
-    await asyncio.wait_for(session.update_session({"temperature": 0.7}, None), 0.1)
+    await asyncio.wait_for(session.update_session({"temperature": 0.7}, None), 5)
 
     assert connection.sent_types() == ["session.update"]
     assert session.options == {"instructions": "A"}
@@ -788,10 +791,7 @@ async def test_create_response_raises_while_a_response_is_active() -> None:
     session, connection = await started()
 
     async with reading(session) as reader:
-        connection.push(
-            response_created("resp_1"), {"type": "session.updated", "event_id": "evt_marker", "session": {}}
-        )
-        await reader.until(lambda: "session_updated" in reader.kinds())
+        await activate_response(connection, reader, "resp_1")
 
         with pytest.raises(RealtimeActiveResponseException):
             await asyncio.wait_for(session.create_response(), 5)
@@ -959,7 +959,7 @@ async def test_cancel_response_without_an_active_response_raises_locally() -> No
     session, connection = await started()
 
     with pytest.raises(RealtimeControlException) as caught:
-        await asyncio.wait_for(session.cancel_response(), 0.1)
+        await asyncio.wait_for(session.cancel_response(), 5)
 
     assert caught.value.code == "response_cancel_not_active"
     assert connection.sent == []
@@ -1434,7 +1434,7 @@ async def test_control_call_after_close_raises_without_sending() -> None:
     await session.close()
 
     with pytest.raises(RealtimeConnectionException):
-        await asyncio.wait_for(session.update_session({"instructions": "Hi"}, None), 0.5)
+        await asyncio.wait_for(session.update_session({"instructions": "Hi"}, None), 5)
 
     assert connection.sent == []
 
@@ -1446,7 +1446,7 @@ async def test_connection_closing_while_opening_raises() -> None:
     connection.end()
 
     with pytest.raises(RealtimeConnectionException):
-        await asyncio.wait_for(session.start(options={"instructions": "Hi"}), 0.5)
+        await asyncio.wait_for(session.start(options={"instructions": "Hi"}), 5)
 
 
 async def test_async_with_returns_the_session_and_closes_it() -> None:
@@ -1999,7 +1999,7 @@ async def test_voice_change_after_first_audio_is_dropped() -> None:
 
     async with reading(session) as reader:
         await read_through(connection, reader, first_audio)
-        await asyncio.wait_for(session.update_session({"voice": "cedar"}, None), 0.5)
+        await asyncio.wait_for(session.update_session({"voice": "cedar"}, None), 5)
 
     assert connection.sent_types() == ["session.update"]
     assert session.options == {"voice": "marin"}

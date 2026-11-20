@@ -25,7 +25,7 @@ from agent_framework.exceptions import (
     RealtimeUnsupportedException,
 )
 
-from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update
+from .realtime_helpers import FakeRealtimeClient, FakeRealtimeSession, event, eventually, next_update, shorten_timeouts
 
 
 @tool
@@ -224,7 +224,8 @@ async def test_update_session_after_close_raises_conversation_closed() -> None:
 async def test_an_unacknowledged_update_raises_control_timeout() -> None:
     client = FakeRealtimeClient()
 
-    async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+    async with RealtimeAgent(client).start_conversation() as conversation:
+        shorten_timeouts(conversation)
         client.session.hold("update_session")
 
         with pytest.raises(RealtimeControlTimeoutException):
@@ -331,6 +332,8 @@ async def test_tools_a_tool_adds_reach_the_session_before_its_result() -> None:
 
 async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
     client = FakeRealtimeClient()
+    time_offered = asyncio.Event()
+    weather_offered = asyncio.Event()
     release_time = asyncio.Event()
     release_weather = asyncio.Event()
 
@@ -338,6 +341,7 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
     async def offer_time(ctx: FunctionInvocationContext) -> str:
         """Start offering the time tool."""
         ctx.add_tools(get_time)
+        time_offered.set()
         await release_time.wait()
         return "time offered"
 
@@ -345,6 +349,7 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
     async def offer_weather(ctx: FunctionInvocationContext) -> str:
         """Start offering the weather tool."""
         ctx.add_tools(get_weather)
+        weather_offered.set()
         await release_weather.wait()
         return "weather offered"
 
@@ -353,7 +358,7 @@ async def test_concurrent_batches_declare_their_tool_changes_once() -> None:
             *_response("resp_1", _call("call_1", "offer_time")),
             *_response("resp_2", _call("call_2", "offer_weather", response_id="resp_2")),
         )
-        await asyncio.sleep(0.01)  # both tools have added theirs
+        await eventually(lambda: time_offered.is_set() and weather_offered.is_set())
         release_time.set()
         await eventually(lambda: len(_results(client.session)) == 1)
         release_weather.set()
@@ -453,7 +458,8 @@ async def test_a_timed_out_tool_update_keeps_the_change_and_the_next_batch_resen
         ctx.add_tools(get_time)
         return "offered"
 
-    async with RealtimeAgent(client, tools=[offer_time]).start_conversation(control_timeout=0.05):
+    async with RealtimeAgent(client, tools=[offer_time]).start_conversation() as conversation:
+        shorten_timeouts(conversation)
         acknowledge = client.session.hold("update_session")
         client.session.emit(*_response("resp_1", _call("call_1", "offer_time")))
         await eventually(lambda: bool(_results(client.session)))
@@ -502,7 +508,8 @@ class TestVerification:
     async def test_a_timed_out_update_leaves_the_executable_tools_unchanged(self) -> None:
         client = FakeRealtimeClient()
 
-        async with RealtimeAgent(client, tools=[get_weather]).start_conversation(control_timeout=0.05) as conversation:
+        async with RealtimeAgent(client, tools=[get_weather]).start_conversation() as conversation:
+            shorten_timeouts(conversation)
             client.session.hold("update_session")
             with pytest.raises(RealtimeControlTimeoutException):
                 await conversation.update_session(tools=[get_time])
@@ -543,7 +550,8 @@ class TestVerification:
     async def test_an_unacknowledged_say_raises_control_timeout(self) -> None:
         client = FakeRealtimeClient()
 
-        async with RealtimeAgent(client).start_conversation(control_timeout=0.05) as conversation:
+        async with RealtimeAgent(client).start_conversation() as conversation:
+            shorten_timeouts(conversation)
             client.session.hold("say")
 
             with pytest.raises(RealtimeControlTimeoutException):

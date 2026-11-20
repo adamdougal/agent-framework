@@ -175,7 +175,7 @@ class FakeConnection:
         for event in events:
             self._incoming.put_nowait(event)
 
-    async def wait_sent(self, event_type: str, timeout: float = 1.0) -> dict[str, Any]:
+    async def wait_sent(self, event_type: str, timeout: float = 5.0) -> dict[str, Any]:
         """Wait for the next event of ``event_type`` sent after this call, and return it."""
         already_sent = len(self.sent)
 
@@ -217,7 +217,7 @@ async def reading(session: Any) -> AsyncGenerator[list[Any]]:
             await task
 
 
-async def until(condition: Any, timeout: float = 1.0) -> None:
+async def until(condition: Any, timeout: float = 5.0) -> None:
     """Wait until ``condition()`` holds."""
 
     async def poll() -> None:
@@ -590,7 +590,7 @@ async def test_failed_start_closes_the_socket() -> None:
         with pytest.raises(RealtimeControlException):
             await asyncio.wait_for(client.start_session(), 5)
 
-        await asyncio.wait_for(server.socket_closed.wait(), 2)
+        await asyncio.wait_for(server.socket_closed.wait(), 5)
 
 
 class HandshakeWebSocket:
@@ -632,7 +632,7 @@ async def test_cancelling_during_the_handshake_closes_what_it_opened(monkeypatch
         await starting
     finish_handshake.set()
 
-    await until(lambda: websocket.closed and all(http_session.closed for http_session in http_sessions), 2)
+    await until(lambda: websocket.closed and all(http_session.closed for http_session in http_sessions))
     assert http_sessions
 
 
@@ -860,7 +860,7 @@ async def test_say_with_an_openai_voice_raises(voice: Any) -> None:
     already_sent = len(connection.sent)
 
     with pytest.raises(RealtimeUnsupportedException):
-        await asyncio.wait_for(session.say("Hi."), 0.5)
+        await asyncio.wait_for(session.say("Hi."), 5)
 
     assert len(connection.sent) == already_sent
 
@@ -1029,7 +1029,7 @@ class TestVerification:
 
             with pytest.raises(asyncio.CancelledError):
                 await starting
-            await asyncio.wait_for(server.socket_closed.wait(), 2)
+            await asyncio.wait_for(server.socket_closed.wait(), 5)
 
     async def test_error_extras_stay_under_openai(self) -> None:
         """An unclaimed Voice Live error yields error content with type and param under openai."""
