@@ -735,7 +735,7 @@ invoke_agent {owner}                 INTERNAL: the conversation span
   map to `item_added`.
 - **Packages.** `agent-framework-openai[realtime]` installs `openai[realtime]`, with `websockets>=13,<16`.
   `agent-framework-foundry[realtime]` adds `azure-ai-voicelive[aiohttp]>=1.3.1,<2` and raises `azure-ai-projects` to
-  `>=2.7,<2.10`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
+  `>=2.7,<2.11`. Without the extra, the Azure clients raise an install hint. `agent_framework.openai` and
   `agent_framework.foundry` re-export the classes. Fields the base session writes go in the `openai` metadata namespace,
   and Voice Live's and Foundry's extras in `foundry`, because
   [spec 005](005-python-content-identity-and-protocol-metadata.md#metadata-namespaces) names a namespace after its

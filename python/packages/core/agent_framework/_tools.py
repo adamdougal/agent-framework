@@ -4597,13 +4597,13 @@ class _ApprovalCallOccurrence:
 
 def approval_rejection_result(function_call: Content, *, id: str | None) -> Content:
     """The result a call gets when its approval is rejected; it never ran, and compaction recognises the marker."""
-    from ._types import APPROVAL_REJECTION_RESULT_KEY, Content
+    from ._types import _APPROVAL_REJECTION_RESULT_KEY, Content  # pyright: ignore[reportPrivateUsage]
 
     return Content.from_function_result(
         call_id=function_call.call_id or "",
         id=id,
         result="Error: Tool call invocation was rejected by user.",
-        additional_properties={**function_call.additional_properties, APPROVAL_REJECTION_RESULT_KEY: True},
+        additional_properties={**function_call.additional_properties, _APPROVAL_REJECTION_RESULT_KEY: True},
     )
 
 
