@@ -41,9 +41,9 @@ from ._handoff import (
     HandoffAgentExecutor,
     HandoffAgentUserRequest,
     HandoffBuilder,
-    HandoffConfiguration,
     HandoffSentEvent,
 )
+from ._handoff_topology import HandoffConfiguration
 from ._magentic import (
     MAGENTIC_MANAGER_NAME,
     ORCH_MSG_KIND_INSTRUCTION,
