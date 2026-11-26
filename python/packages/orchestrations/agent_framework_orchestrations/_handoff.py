@@ -54,6 +54,7 @@ from agent_framework._workflows._workflow_context import WorkflowContext
 
 from ._base_group_chat_orchestrator import TerminationCondition
 from ._feature_usage import FeatureIndex
+from ._handoff_topology import HandoffConfiguration, HandoffTopologyBuilder
 from ._orchestrator_helpers import clean_conversation_for_handoff
 from ._participant_output_config import (
     UNSET,
@@ -89,40 +90,6 @@ class HandoffSentEvent:
 # endregion
 
 
-@dataclass
-class HandoffConfiguration:
-    """Configuration for handoff routing between agents.
-
-    Attributes:
-        target_id: Identifier of the target agent to hand off to
-        description: Optional human-readable description of the handoff
-    """
-
-    target_id: str
-    description: str | None = None
-
-    def __init__(self, *, target: str | SupportsAgentRun, description: str | None = None) -> None:
-        """Initialize HandoffConfiguration.
-
-        Args:
-            target: Target agent identifier or SupportsAgentRun instance
-            description: Optional human-readable description of the handoff
-        """
-        self.target_id = resolve_agent_id(target) if isinstance(target, SupportsAgentRun) else target
-        self.description = description
-
-    def __eq__(self, other: Any) -> bool:
-        """Determine equality based on source_id and target_id."""
-        if not isinstance(other, HandoffConfiguration):
-            return False
-
-        return self.target_id == other.target_id
-
-    def __hash__(self) -> int:
-        """Compute hash based on source_id and target_id."""
-        return hash(self.target_id)
-
-
 _INVALID_TOOL_NAME_CHARACTERS = re.compile(r"[^a-zA-Z0-9_-]")
 _MAX_TOOL_NAME_LENGTH = 64
 
@@ -134,6 +101,11 @@ def get_handoff_tool_name(target_id: str) -> str:
     and the name is cut to the 64 characters that providers allow.
     """
     return f"handoff_to_{_INVALID_TOOL_NAME_CHARACTERS.sub('_', target_id)}"[:_MAX_TOOL_NAME_LENGTH]
+
+
+def handoff_tool_description(target_id: str, description: str | None) -> str:
+    """The description a handoff tool gives the model, naming its target when none was configured."""
+    return description or f"Handoff to the {target_id} agent."
 
 
 HANDOFF_FUNCTION_RESULT_KEY = "handoff_to"
@@ -397,7 +369,7 @@ class HandoffAgentExecutor(AgentExecutor):
     def _create_handoff_tool(self, target_id: str, description: str | None = None) -> FunctionTool:
         """Construct the synthetic handoff tool that signals routing to `target_id`."""
         tool_name = get_handoff_tool_name(target_id)
-        doc = description or f"Handoff to the {target_id} agent."
+        doc = handoff_tool_description(target_id, description)
         # Note: approval_mode is set to "never_require" for handoff tools because
         # they are framework-internal signals that trigger routing logic, not
         # actual function executions. They are automatically intercepted by
@@ -640,7 +612,7 @@ class HandoffAgentExecutor(AgentExecutor):
 # region Handoff workflow builder
 
 
-class HandoffBuilder:
+class HandoffBuilder(HandoffTopologyBuilder[Agent]):
     r"""Fluent builder for conversational handoff workflows with multiple agents.
 
     The handoff pattern enables a group of agents to route control among themselves.
@@ -709,15 +681,7 @@ class HandoffBuilder:
         self._name = name or DEFAULT_WORKFLOW_NAME
         self._description = description
 
-        # Participant related members
-        self._participants: dict[str, Agent] = {}
-        self._start_id: str | None = None
-
-        if participants:
-            self.participants(participants)
-
-        # Handoff related members
-        self._handoff_config: dict[str, set[HandoffConfiguration]] = {}
+        super().__init__(participants)
         self._return_to_previous: bool = True
 
         # Checkpoint related members
@@ -734,164 +698,18 @@ class HandoffBuilder:
         self._output_from = _coalesce_output_from(output_from=output_from)
         self._intermediate_output_from = _coerce_intermediate_output_from(intermediate_output_from)
 
-    def participants(self, participants: Sequence[Agent]) -> "HandoffBuilder":
-        """Register the agents that will participate in the handoff workflow.
+    def _check_participant(self, participant: Agent) -> None:
+        if not isinstance(participant, Agent):
+            raise TypeError(
+                f"Participants must be Agent instances. Got {type(participant).__name__}. "
+                "Handoff workflows require Agent because they rely on cloning, tool injection, "
+                "and middleware capabilities."
+            )
 
-        Args:
-            participants: Sequence of ``Agent`` instances. Each must have a unique identifier.
-                (`.name` is preferred if set, otherwise `.id` is used).
-
-        Returns:
-            Self for method chaining.
-
-        Raises:
-            ValueError: If participants is empty, contains duplicates, or `.participants()`
-                        has already been called.
-            TypeError: If participants are not ``Agent`` instances.
-
-        Example:
-
-        .. code-block:: python
-
-            from agent_framework_orchestrations import HandoffBuilder
-            from agent_framework.openai import OpenAIChatClient
-
-            client = OpenAIChatClient()
-            triage = client.as_agent(instructions="...", name="triage_agent")
-            refund = client.as_agent(instructions="...", name="refund_agent")
-            billing = client.as_agent(instructions="...", name="billing_agent")
-
-            builder = HandoffBuilder().participants([triage, refund, billing])
-            builder.with_start_agent(triage)
-        """
-        if self._participants:
-            raise ValueError("participants have already been assigned")
-
-        if not participants:
-            raise ValueError("participants cannot be empty")
-
-        named: dict[str, Agent] = {}
-        for participant in participants:
-            if not isinstance(participant, Agent):
-                raise TypeError(
-                    f"Participants must be Agent instances. Got {type(participant).__name__}. "
-                    "Handoff workflows require Agent because they rely on cloning, tool injection, "
-                    "and middleware capabilities."
-                )
-            resolved_id = self._resolve_to_id(participant)
-
-            if resolved_id in named:
-                raise ValueError(f"Duplicate participant name '{resolved_id}' detected")
-            named[resolved_id] = participant
-
-        self._participants = named
-
-        return self
-
-    def add_handoff(
-        self,
-        source: Agent,
-        targets: Sequence[Agent],
-        *,
-        description: str | None = None,
-    ) -> "HandoffBuilder":
-        """Add handoff routing from a source agent to one or more target agents.
-
-        This method enables agent-to-agent handoffs by configuring which agents
-        can hand off to which others. Call this method multiple times to build a
-        complete routing graph. If no handoffs are specified, all agents can hand off
-        to all others by default (mesh topology).
-
-        Args:
-            source: The agent that can initiate the handoff.
-            targets: One or more target agents that the source can hand off to.
-            description: Optional custom description for the handoff. If not provided, the description
-                         of the target agent(s) will be used. If the target agent has no description,
-                         no description will be set for the handoff tool, which is not recommended.
-                         If multiple targets are provided, description will be shared among all handoff
-                         tools. To configure distinct descriptions for multiple targets, call add_handoff()
-                         separately for each target.
-
-        Returns:
-            Self for method chaining.
-
-        Raises:
-            ValueError: If source or targets are not in the participants list, or if
-                        participants(...) hasn't been called yet.
-
-        Examples:
-            Multiple targets (using agent instances):
-
-            .. code-block:: python
-
-                builder.add_handoff(triage, [billing, support, escalation])
-
-            Chain multiple configurations:
-
-            .. code-block:: python
-
-                workflow = (
-                    HandoffBuilder(participants=[triage, replacement, delivery, billing])
-                    .add_handoff(triage, [replacement, delivery, billing])
-                    .add_handoff(replacement, [delivery, billing])
-                    .add_handoff(delivery, [billing])
-                    .build()
-                )
-
-        Note:
-            - Handoff tools are automatically registered for each source agent
-            - If a source agent is configured multiple times via add_handoff, targets are merged
-        """
-        if not self._participants:
-            raise ValueError("Call participants(...) before add_handoff(...)")
-
-        # Resolve source agent ID
-        source_id = self._resolve_to_id(source)
-        if source_id not in self._participants:
-            raise ValueError(f"Source agent '{source}' is not in the participants list")
-
-        # Resolve all target IDs
-        target_ids: list[str] = []
-        for target in targets:
-            target_id = self._resolve_to_id(target)
-            if target_id not in self._participants:
-                raise ValueError(f"Target agent '{target}' is not in the participants list")
-            target_ids.append(target_id)
-
-        # Merge with existing handoff configuration for this source
-        if source_id not in self._handoff_config:
-            self._handoff_config[source_id] = set()
-
-        for t in target_ids:
-            config = HandoffConfiguration(target=t, description=description)
-            if config in self._handoff_config[source_id]:
-                logger.warning(f"Handoff from '{source_id}' to '{t}' is already configured; overwriting.")
-                # Remove old config so the new one (with updated description) takes effect
-                self._handoff_config[source_id].discard(config)
-            self._handoff_config[source_id].add(config)
-
-        return self
-
-    def with_start_agent(self, agent: Agent) -> "HandoffBuilder":
-        """Set the agent that will initiate the handoff workflow.
-
-        If not specified, the first registered participant will be used as the starting agent.
-
-        Args:
-            agent: The agent that will start the workflow.
-
-        Returns:
-            Self for method chaining.
-        """
-        resolved_id = self._resolve_to_id(agent)
-        if self._participants:
-            if resolved_id not in self._participants:
-                raise ValueError(f"Start agent '{resolved_id}' is not in the participants list")
-        else:
-            raise ValueError("Call participants(...) before with_start_agent(...)")
-        self._start_id = resolved_id
-
-        return self
+    def _participant_id(self, participant: Agent) -> str:
+        if isinstance(participant, SupportsAgentRun):
+            return resolve_agent_id(participant)
+        raise TypeError(f"Invalid starting agent reference: {type(participant).__name__}")
 
     def enable_return_to_previous(self, enabled: bool = True) -> "HandoffBuilder":
         """Configure whether user responses return to the agent that requested them.
@@ -1119,66 +937,6 @@ class HandoffBuilder:
 
     # region Internal Helper Methods
 
-    def _resolve_agents(self) -> dict[str, Agent]:
-        """Resolve participant instances into agent instances.
-
-        Returns:
-            Map of executor IDs to ``Agent`` instances
-        """
-        if not self._participants:
-            raise ValueError("No participants provided. Call .participants() first.")
-
-        return self._participants
-
-    def _resolve_handoffs(self, agents: dict[str, Agent]) -> dict[str, list[HandoffConfiguration]]:
-        """Resolve handoff configurations to executor IDs.
-
-        Args:
-            agents: Map of agent IDs to ``Agent`` instances
-
-        Returns:
-            Map of executor IDs to list of HandoffConfiguration instances
-        """
-        # Updated map that used agent resolved IDs as keys
-        updated_handoff_configurations: dict[str, list[HandoffConfiguration]] = {}
-        if self._handoff_config:
-            # Use explicit handoff configuration from add_handoff() calls
-            for source_id, handoff_configurations in self._handoff_config.items():
-                source_agent = agents.get(source_id)
-                if not source_agent:
-                    raise ValueError(
-                        f"Handoff source agent '{source_id}' not found. "
-                        "Please make sure source has been added as a participant."
-                    )
-                for handoff_config in handoff_configurations:
-                    target_agent = agents.get(handoff_config.target_id)
-                    if not target_agent:
-                        raise ValueError(
-                            f"Handoff target agent '{handoff_config.target_id}' not found for source '{source_id}'. "
-                            "Please make sure target has been added as a participant."
-                        )
-
-                    updated_handoff_configurations.setdefault(self._resolve_to_id(source_agent), []).append(
-                        HandoffConfiguration(
-                            target=self._resolve_to_id(target_agent),
-                            description=handoff_config.description or target_agent.description,
-                        )
-                    )
-        else:
-            # Use default handoff configuration: all agents can hand off to all others (mesh topology)
-            for source_id, source_agent in agents.items():
-                for target_id, target_agent in agents.items():
-                    if source_id == target_id:
-                        continue  # Skip self-handoff
-                    updated_handoff_configurations.setdefault(self._resolve_to_id(source_agent), []).append(
-                        HandoffConfiguration(
-                            target=self._resolve_to_id(target_agent),
-                            description=target_agent.description,
-                        )
-                    )
-
-        return updated_handoff_configurations
-
     def _resolve_executors(
         self,
         agents: dict[str, Agent],
@@ -1221,15 +979,6 @@ class HandoffBuilder:
             )
 
         return executors
-
-    def _resolve_to_id(self, candidate: str | SupportsAgentRun) -> str:
-        """Resolve a participant reference into a concrete executor identifier."""
-        if isinstance(candidate, SupportsAgentRun):
-            return resolve_agent_id(candidate)
-        if isinstance(candidate, str):
-            return candidate
-
-        raise TypeError(f"Invalid starting agent reference: {type(candidate).__name__}")
 
     # endregion Internal Helper Methods
 
