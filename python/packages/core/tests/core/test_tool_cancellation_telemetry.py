@@ -54,18 +54,27 @@ async def _cancel_while_running(
     return call
 
 
+class _UnhashableReason(str):
+    def __hash__(self) -> int:
+        raise TypeError("unhashable reason")
+
+
 @pytest.mark.parametrize(
-    "cancel_message",
+    ("cancel_message", "error_type"),
     [
-        pytest.param(None, id="no-message"),
-        pytest.param(ANYIO_CANCEL_MESSAGE, id="with-a-message"),
+        pytest.param(None, "cancelled", id="no-message"),
+        pytest.param("conversation_closed", "conversation_closed", id="conversation-closed"),
+        pytest.param(ANYIO_CANCEL_MESSAGE, "cancelled", id="a-message-agent-framework-does-not-send"),
+        pytest.param({"reason": "conversation_closed"}, "cancelled", id="dict"),
+        pytest.param(_UnhashableReason("conversation_closed"), "cancelled", id="unhashable-str-subclass"),
     ],
 )
-async def test_a_call_cancelled_while_running_records_cancelled_and_stays_cancelled(
-    span_exporter: InMemorySpanExporter, cancel_message: Any
+async def test_a_call_cancelled_while_running_records_its_reason_and_stays_cancelled(
+    span_exporter: InMemorySpanExporter, cancel_message: Any, error_type: str
 ) -> None:
     """The call's execute_tool span ends ERROR and the duration histogram records it once, both with error.type set to
-    'cancelled' whatever the cancel message. Awaiting the call raises CancelledError carrying the original message."""
+    the cancel message when Agent Framework sends it and 'cancelled' otherwise. Awaiting the call raises
+    CancelledError carrying the original message, never a TypeError."""
     slow_tool, started = _slow_tool()
     histogram = Mock()
     slow_tool._invocation_duration_histogram = histogram
@@ -76,14 +85,14 @@ async def test_a_call_cancelled_while_running_records_cancelled_and_stays_cancel
     [span] = span_exporter.get_finished_spans()
     assert span.status.status_code == trace.StatusCode.ERROR
     assert span.attributes is not None
-    assert span.attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
+    assert span.attributes.get(OtelAttr.ERROR_TYPE) == error_type
     histogram.record.assert_called_once()
     assert histogram.record.call_args.kwargs["attributes"] == {
         OtelAttr.OPERATION: OtelAttr.TOOL_EXECUTION_OPERATION,
         OtelAttr.TOOL_NAME: "slow_tool",
         OtelAttr.TOOL_TYPE: "function",
         OtelAttr.MEASUREMENT_FUNCTION_TAG_NAME: "slow_tool",
-        OtelAttr.ERROR_TYPE: "cancelled",
+        OtelAttr.ERROR_TYPE: error_type,
     }
     with pytest.raises(asyncio.CancelledError) as raised:
         await call
@@ -205,7 +214,7 @@ class TestVerification:
 
         run = asyncio.create_task(run_agent())
         await middleware_waiting.wait()
-        run.cancel()
+        run.cancel("conversation_closed")
         await asyncio.wait([run])
 
         tool_span_names = [span.name for span in span_exporter.get_finished_spans() if "execute_tool" in span.name]
