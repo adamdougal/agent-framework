@@ -1,0 +1,212 @@
+# Copyright (c) Microsoft. All rights reserved.
+
+"""Telemetry for tool calls cancelled while running."""
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
+from unittest.mock import Mock
+
+import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from agent_framework import (
+    Agent,
+    ChatResponse,
+    Content,
+    FunctionInvocationContext,
+    FunctionMiddleware,
+    FunctionTool,
+    Message,
+    MiddlewareFailure,
+    tool,
+)
+from agent_framework.observability import OtelAttr
+
+from .conftest import MockBaseChatClient
+
+# anyio cancels with a message naming its cancel scope's id, so it differs on every cancellation.
+ANYIO_CANCEL_MESSAGE = "Cancelled via cancel scope 102d90890; reason: deadline exceeded"
+
+
+def _slow_tool() -> tuple[FunctionTool, asyncio.Event]:
+    """Return a tool that runs until cancelled, and the event it sets once running."""
+    started = asyncio.Event()
+
+    @tool(name="slow_tool", description="A tool that runs until cancelled")
+    async def slow_tool() -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    return slow_tool, started
+
+
+async def _cancel_while_running(
+    slow_tool: FunctionTool, started: asyncio.Event, cancel_message: Any = None
+) -> "asyncio.Task[Any]":
+    """Invoke the tool, cancel the call once its body is running, and return the finished call."""
+    call = asyncio.create_task(slow_tool.invoke(tool_call_id="cancelled_call"))
+    await started.wait()
+    call.cancel(cancel_message)
+    await asyncio.wait([call])
+    return call
+
+
+@pytest.mark.parametrize(
+    "cancel_message",
+    [
+        pytest.param(None, id="no-message"),
+        pytest.param(ANYIO_CANCEL_MESSAGE, id="with-a-message"),
+    ],
+)
+async def test_a_call_cancelled_while_running_records_cancelled_and_stays_cancelled(
+    span_exporter: InMemorySpanExporter, cancel_message: Any
+) -> None:
+    """The call's execute_tool span ends ERROR and the duration histogram records it once, both with error.type set to
+    'cancelled' whatever the cancel message. Awaiting the call raises CancelledError carrying the original message."""
+    slow_tool, started = _slow_tool()
+    histogram = Mock()
+    slow_tool._invocation_duration_histogram = histogram
+    span_exporter.clear()
+
+    call = await _cancel_while_running(slow_tool, started, cancel_message)
+
+    [span] = span_exporter.get_finished_spans()
+    assert span.status.status_code == trace.StatusCode.ERROR
+    assert span.attributes is not None
+    assert span.attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
+    histogram.record.assert_called_once()
+    assert histogram.record.call_args.kwargs["attributes"] == {
+        OtelAttr.OPERATION: OtelAttr.TOOL_EXECUTION_OPERATION,
+        OtelAttr.TOOL_NAME: "slow_tool",
+        OtelAttr.TOOL_TYPE: "function",
+        OtelAttr.MEASUREMENT_FUNCTION_TAG_NAME: "slow_tool",
+        OtelAttr.ERROR_TYPE: "cancelled",
+    }
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await call
+    if cancel_message is None:
+        assert raised.value.args == ()
+    else:
+        [reason] = raised.value.args
+        assert reason is cancel_message
+
+
+class TestVerification:
+    @pytest.mark.parametrize("enable_sensitive_data", [True, False], indirect=True)
+    async def test_cancelled_span_has_no_status_description_or_exception_event(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """A cancelled call's span carries no status description and no exception event."""
+        slow_tool, started = _slow_tool()
+        span_exporter.clear()
+
+        await _cancel_while_running(slow_tool, started, ANYIO_CANCEL_MESSAGE)
+
+        spans = span_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.description is None
+        assert [event.name for event in spans[0].events] == []
+
+    @pytest.mark.usefixtures("span_exporter")
+    async def test_cancellation_does_not_count_toward_max_invocation_exceptions(self) -> None:
+        """A tool limited to one exception still runs after one cancelled call."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        @tool(name="slow_tool", max_invocation_exceptions=1)
+        async def slow_tool() -> str:
+            started.set()
+            await release.wait()
+            return "done"
+
+        await _cancel_while_running(slow_tool, started)
+        release.set()
+        result = await slow_tool.invoke()
+
+        assert [content.text for content in result] == ["done"]
+
+    async def test_chat_batch_sibling_cancelled_after_middleware_failure_records_cancelled(
+        self, span_exporter: InMemorySpanExporter, chat_client_base: MockBaseChatClient
+    ) -> None:
+        """In a chat run, a parallel call cancelled after MiddlewareFailure records 'cancelled' on its span."""
+        slow_tool, started = _slow_tool()
+
+        @tool(name="failing_tool")
+        def failing_tool() -> str:
+            return "never"
+
+        class FailOnceSlowToolRuns(FunctionMiddleware):
+            async def process(
+                self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]
+            ) -> None:
+                if context.function.name == "failing_tool":
+                    await started.wait()
+                    raise MiddlewareFailure("abort the batch")
+                await call_next()
+
+        chat_client_base.run_responses = [
+            ChatResponse(
+                messages=[
+                    Message(
+                        role="assistant",
+                        contents=[
+                            Content.from_function_call(call_id="call_1", name="failing_tool", arguments="{}"),
+                            Content.from_function_call(call_id="call_2", name="slow_tool", arguments="{}"),
+                        ],
+                    )
+                ]
+            )
+        ]
+        agent = Agent(client=chat_client_base, middleware=[FailOnceSlowToolRuns()], tools=[failing_tool, slow_tool])
+        span_exporter.clear()
+
+        with pytest.raises(MiddlewareFailure, match="abort the batch"):
+            await agent.run("run both tools")
+
+        tool_spans = [span for span in span_exporter.get_finished_spans() if span.name == "execute_tool slow_tool"]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].status.status_code == trace.StatusCode.ERROR
+        assert tool_spans[0].attributes is not None
+        assert tool_spans[0].attributes.get(OtelAttr.ERROR_TYPE) == "cancelled"
+
+    async def test_call_cancelled_before_call_next_gets_no_span(
+        self, span_exporter: InMemorySpanExporter, chat_client_base: MockBaseChatClient
+    ) -> None:
+        """A call cancelled before its tool body runs gets no execute_tool span."""
+        slow_tool, _ = _slow_tool()
+        middleware_waiting = asyncio.Event()
+
+        class WaitBeforeCallNext(FunctionMiddleware):
+            async def process(
+                self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]
+            ) -> None:
+                middleware_waiting.set()
+                await asyncio.Event().wait()
+                await call_next()
+
+        chat_client_base.run_responses = [
+            ChatResponse(
+                messages=[
+                    Message(
+                        role="assistant",
+                        contents=[Content.from_function_call(call_id="call_1", name="slow_tool", arguments="{}")],
+                    )
+                ]
+            )
+        ]
+        agent = Agent(client=chat_client_base, middleware=[WaitBeforeCallNext()], tools=[slow_tool])
+        span_exporter.clear()
+
+        async def run_agent() -> None:
+            await agent.run("run the tool")
+
+        run = asyncio.create_task(run_agent())
+        await middleware_waiting.wait()
+        run.cancel()
+        await asyncio.wait([run])
+
+        tool_span_names = [span.name for span in span_exporter.get_finished_spans() if "execute_tool" in span.name]
+        assert tool_span_names == []
