@@ -149,6 +149,8 @@ class OpenAISettings(TypedDict, total=False):
             Can be set via environment variable OPENAI_CHAT_MODEL.
         chat_completion_model: The OpenAIChatCompletionClient model to prefer before OPENAI_MODEL.
             Can be set via environment variable OPENAI_CHAT_COMPLETION_MODEL.
+        realtime_model: The OpenAIRealtimeClient model to prefer before OPENAI_MODEL.
+            Can be set via environment variable OPENAI_REALTIME_MODEL.
 
     Examples:
         .. code-block:: python
@@ -174,6 +176,7 @@ class OpenAISettings(TypedDict, total=False):
     embedding_model: str | None
     chat_model: str | None
     chat_completion_model: str | None
+    realtime_model: str | None
 
 
 class AzureOpenAISettings(TypedDict, total=False):
@@ -186,16 +189,18 @@ class AzureOpenAISettings(TypedDict, total=False):
     embedding_model: str | None
     chat_model: str | None
     chat_completion_model: str | None
+    realtime_model: str | None
     api_version: str | None
 
 
-OpenAIModelSettingName = Literal["model", "embedding_model", "chat_model", "chat_completion_model"]
+OpenAIModelSettingName = Literal["model", "embedding_model", "chat_model", "chat_completion_model", "realtime_model"]
 
 OPENAI_MODEL_ENV_VARS: dict[OpenAIModelSettingName, str] = {
     "model": "OPENAI_MODEL",
     "embedding_model": "OPENAI_EMBEDDING_MODEL",
     "chat_model": "OPENAI_CHAT_MODEL",
     "chat_completion_model": "OPENAI_CHAT_COMPLETION_MODEL",
+    "realtime_model": "OPENAI_REALTIME_MODEL",
 }
 
 AZURE_MODEL_ENV_VARS: dict[OpenAIModelSettingName, str] = {
@@ -203,6 +208,7 @@ AZURE_MODEL_ENV_VARS: dict[OpenAIModelSettingName, str] = {
     "embedding_model": "AZURE_OPENAI_EMBEDDING_MODEL",
     "chat_model": "AZURE_OPENAI_CHAT_MODEL",
     "chat_completion_model": "AZURE_OPENAI_CHAT_COMPLETION_MODEL",
+    "realtime_model": "AZURE_OPENAI_REALTIME_MODEL",
 }
 
 
@@ -270,6 +276,7 @@ def load_openai_service_settings(
     openai_model_fields: Sequence[OpenAIModelSettingName] = ("model",),
     azure_model_fields: Sequence[OpenAIModelSettingName] = ("model",),
     responses_mode: bool = False,
+    azure_v1_route: bool = False,
     timeout: float | None = None,
 ) -> tuple[dict[str, Any], AsyncOpenAI, bool]:
     """Load OpenAI settings, including Azure OpenAI model aliases.
@@ -284,6 +291,9 @@ def load_openai_service_settings(
     ``AZURE_OPENAI_*`` model aliases. An injected ``AsyncOpenAI`` client has no
     deployment metadata, so it still resolves the model from the explicit argument
     or the OpenAI environment variables.
+
+    ``azure_v1_route`` routes Azure through the OpenAI-compatible ``/openai/v1`` API with an
+    ``AsyncOpenAI`` client and no API version, for APIs that only exist there.
     """
     # Merge APP_INFO into the headers
     merged_headers = dict(copy(default_headers)) if default_headers else {}
@@ -390,11 +400,13 @@ def load_openai_service_settings(
     if endpoint := azure_settings.get("endpoint"):
         if responses_mode:
             client_args["base_url"] = f"{endpoint.rstrip('/')}/openai/v1/"
+        elif azure_v1_route:
+            client_args["base_url"] = f"{endpoint.rstrip('/')}/openai/v1"
         else:
             client_args["azure_endpoint"] = endpoint
     if base_url := azure_settings.get("base_url"):
         client_args["base_url"] = base_url
-    if api_version := azure_settings.get("api_version"):
+    if (api_version := azure_settings.get("api_version")) and not azure_v1_route:
         client_args["api_version"] = api_version
     if credential:
         # Both supported SDK majors recognize this sentinel and skip API-key auth without consulting the environment.
