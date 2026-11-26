@@ -1147,6 +1147,10 @@ class FunctionTool(SerializationMixin):
         exceptions follow the existing tool-error handling, including the
         ``include_detailed_errors`` setting. Default parsing retains its string fallback.
 
+        A call cancelled while the tool runs re-raises ``asyncio.CancelledError`` unchanged.
+        With telemetry enabled, its ``execute_tool`` span ends with ERROR status, and the span
+        and the duration metric record ``error.type`` as ``cancelled``.
+
         Parsing can be skipped in two ways: configure the tool with
         ``result_parser=SKIP_PARSING`` to always skip parsing, or pass
         ``skip_parsing=True`` per call. Either way the wrapped function's raw value
@@ -1329,6 +1333,13 @@ class FunctionTool(SerializationMixin):
                 with _suspend_security_argument_materialization():
                     result = await self._invoke_function(call_kwargs)
                 end_time_stamp = perf_counter()
+            except asyncio.CancelledError:
+                end_time_stamp = perf_counter()
+                metric_attributes[OtelAttr.ERROR_TYPE] = "cancelled"
+                span.set_attribute(OtelAttr.ERROR_TYPE, "cancelled")
+                span.set_status(status=trace.StatusCode.ERROR)
+                logger.info("Function %s cancelled.", self.name)
+                raise
             except Exception as exception:
                 end_time_stamp = perf_counter()
                 metric_attributes[OtelAttr.ERROR_TYPE] = type(exception).__name__
