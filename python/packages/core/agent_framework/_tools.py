@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         FunctionMiddlewareTypes,
         MiddlewareTypes,
     )
+    from ._realtime._conversation import RealtimeConversation
     from ._sessions import AgentSession
     from ._types import (
         ChatOptions,
@@ -618,6 +619,19 @@ def _format_tool_parameters(  # pyright: ignore[reportUnusedFunction]
     return "compact", compact
 
 
+# Other cancel messages record "cancelled": error.type is a metric dimension, and some messages, like anyio's,
+# name a per-scope id.
+_CONVERSATION_CLOSED_REASON: Final[str] = "conversation_closed"
+
+
+def _cancellation_error_type(cancellation: asyncio.CancelledError) -> str:
+    reason = cancellation.args[0] if cancellation.args else None
+    # An exact str, so a subclass's own __eq__ can't run, raise, and replace the original cancellation.
+    if type(reason) is str and reason == _CONVERSATION_CLOSED_REASON:
+        return _CONVERSATION_CLOSED_REASON
+    return "cancelled"
+
+
 ClassT = TypeVar("ClassT", bound="SerializationMixin")
 
 
@@ -1149,7 +1163,8 @@ class FunctionTool(SerializationMixin):
 
         A call cancelled while the tool runs re-raises ``asyncio.CancelledError`` unchanged.
         With telemetry enabled, its ``execute_tool`` span ends with ERROR status, and the span
-        and the duration metric record ``error.type`` as ``cancelled``.
+        and the duration metric record ``error.type`` as ``conversation_closed`` when a closing
+        conversation cancelled the call, or ``cancelled`` for any other cancellation.
 
         Parsing can be skipped in two ways: configure the tool with
         ``result_parser=SKIP_PARSING`` to always skip parsing, or pass
@@ -1333,12 +1348,13 @@ class FunctionTool(SerializationMixin):
                 with _suspend_security_argument_materialization():
                     result = await self._invoke_function(call_kwargs)
                 end_time_stamp = perf_counter()
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancellation:
                 end_time_stamp = perf_counter()
-                metric_attributes[OtelAttr.ERROR_TYPE] = "cancelled"
-                span.set_attribute(OtelAttr.ERROR_TYPE, "cancelled")
+                error_type = _cancellation_error_type(cancellation)
+                metric_attributes[OtelAttr.ERROR_TYPE] = error_type
+                span.set_attribute(OtelAttr.ERROR_TYPE, error_type)
                 span.set_status(status=trace.StatusCode.ERROR)
-                logger.info("Function %s cancelled.", self.name)
+                logger.info("Function %s cancelled (%s).", self.name, error_type)
                 raise
             except Exception as exception:
                 end_time_stamp = perf_counter()
@@ -2296,6 +2312,7 @@ async def _auto_invoke_function(
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     live_tools: list[ToolTypes] | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
 ) -> Content:
     """Invoke a function call requested by the agent, applying middleware that is defined.
 
@@ -2311,6 +2328,8 @@ async def _auto_invoke_function(
         live_tools: The live, mutable tools list for the current agent run, exposed on
             the FunctionInvocationContext so tools can add/remove tools at runtime.
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
+        realtime_conversation: The realtime conversation whose tool loop made the call, set on the
+            FunctionInvocationContext.
 
     Returns:
         The function result content.
@@ -2408,6 +2427,7 @@ async def _auto_invoke_function(
                     kwargs=runtime_kwargs.copy(),
                     parent_service_session_state_keys=parent_service_session_state_keys,
                     tools=live_tools,
+                    realtime_conversation=realtime_conversation,
                 )
                 direct_context.metadata[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = parent_approval_source_ids
                 if host_payload_budget is not None:
@@ -2449,6 +2469,7 @@ async def _auto_invoke_function(
         kwargs=runtime_kwargs.copy(),
         parent_service_session_state_keys=parent_service_session_state_keys,
         tools=live_tools,
+        realtime_conversation=realtime_conversation,
     )
     middleware_context.metadata[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = parent_approval_source_ids
     if host_payload_budget is not None:
@@ -2612,6 +2633,7 @@ async def _execute_single_function_call(
     middleware_pipeline: FunctionMiddlewarePipeline | None,
     live_tools: list[ToolTypes] | None,
     host_payload_budget: _FunctionResultPayloadBudget | None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
 ) -> tuple[list[Content], bool]:
     from ._middleware import MiddlewareTermination
     from ._sessions import _suspend_run_persistence_gate  # pyright: ignore[reportPrivateUsage]
@@ -2640,6 +2662,7 @@ async def _execute_single_function_call(
                 config=config,
                 live_tools=live_tools,
                 host_payload_budget=host_payload_budget,
+                realtime_conversation=realtime_conversation,
             )
         return [result], False
     except MiddlewareTermination as exc:
@@ -2682,6 +2705,9 @@ async def _try_execute_function_call_groups(
     approval_session_is_authoritative: bool = True,
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
+    live_tools: list[ToolTypes] | None = None,
+    on_call_finished: Callable[[Content, list[Content]], None] | None = None,
 ) -> tuple[list[list[Content]], bool]:
     """Execute multiple function calls concurrently while preserving per-call result groups.
 
@@ -2694,6 +2720,10 @@ async def _try_execute_function_call_groups(
         approval_session_is_authoritative: Whether the invocation session owns persistent approval state.
         middleware_pipeline: Optional middleware pipeline to apply during execution.
         host_payload_budget: Shared request budget for retained Host-only function result payloads.
+        realtime_conversation: The realtime conversation whose tool loop made the calls, for their contexts.
+        live_tools: The live tools list to expose on each call's context, when it isn't ``tools`` itself.
+        on_call_finished: Called with each executed call and its result group as soon as that call finishes, so a
+            caller that cancels the batch keeps the results of calls that already finished.
 
     Returns:
         A tuple of:
@@ -2716,7 +2746,8 @@ async def _try_execute_function_call_groups(
     tool_map = _get_tool_map(tools)
     # The live tools list (when tools is the run-local list) is exposed on the
     # FunctionInvocationContext so tools can add/remove tools during the run.
-    live_tools: list[ToolTypes] | None = cast("list[ToolTypes]", tools) if isinstance(tools, list) else None
+    if live_tools is None and isinstance(tools, list):
+        live_tools = cast("list[ToolTypes]", tools)
     additional_tools = tuple(config.get("additional_tools") or ())
     approval_tool_names = {
         tool_name for tool_name, tool in tool_map.items() if tool.approval_mode == "always_require"
@@ -2761,20 +2792,24 @@ async def _try_execute_function_call_groups(
 
     # Each locally executable call gets its own task so context changes made by
     # one tool cannot leak into another.
-    def create_execution_task(function_call: Content) -> asyncio.Task[tuple[list[Content], bool]]:
-        return contextvars.copy_context().run(
-            asyncio.create_task,
-            _execute_single_function_call(
-                function_call,
-                custom_args=custom_args,
-                config=config,
-                tool_map=tool_map,
-                invocation_session=invocation_session,
-                middleware_pipeline=middleware_pipeline,
-                live_tools=live_tools,
-                host_payload_budget=host_payload_budget,
-            ),
+    async def execute_and_report(function_call: Content) -> tuple[list[Content], bool]:
+        result = await _execute_single_function_call(
+            function_call,
+            custom_args=custom_args,
+            config=config,
+            tool_map=tool_map,
+            invocation_session=invocation_session,
+            middleware_pipeline=middleware_pipeline,
+            live_tools=live_tools,
+            host_payload_budget=host_payload_budget,
+            realtime_conversation=realtime_conversation,
         )
+        if on_call_finished is not None:
+            on_call_finished(function_call, result[0])
+        return result
+
+    def create_execution_task(function_call: Content) -> asyncio.Task[tuple[list[Content], bool]]:
+        return contextvars.copy_context().run(asyncio.create_task, execute_and_report(function_call))
 
     async def execute_local_calls(function_calls_to_execute: Sequence[Content]) -> list[tuple[list[Content], bool]]:
         execution_results: list[tuple[list[Content], bool]] = []
@@ -2789,9 +2824,12 @@ async def _try_execute_function_call_groups(
                 # is cooperative — a synchronous tool body already running in a worker thread
                 # (asyncio.to_thread) cannot be interrupted and may complete its side effects,
                 # but its result is discarded with the batch and never reaches the transcript,
-                # the model, or history.
+                # the model, or history. A sibling already being cancelled, as when the batch
+                # itself is cancelled and gather forwards that cancellation with its reason, is
+                # left to finish: cancelling it again would cut short its cleanup and drop the reason.
                 for task in execution_tasks:
-                    task.cancel()
+                    if not task.done() and task.cancelling() == 0:
+                        task.cancel()
                 await asyncio.gather(*execution_tasks, return_exceptions=True)
                 raise
         for function_call in function_calls_to_execute:
@@ -2952,6 +2990,9 @@ async def _execute_function_calls(
     approval_session_is_authoritative: bool = True,
     middleware_pipeline: FunctionMiddlewarePipeline | None = None,
     host_payload_budget: _FunctionResultPayloadBudget | None = None,
+    realtime_conversation: RealtimeConversation[Any] | None = None,
+    live_tools: list[ToolTypes] | None = None,
+    on_call_finished: Callable[[Content, list[Content]], None] | None = None,
 ) -> _FunctionExecutionBatch:
     tools = _extract_tools(options)
     if not tools:
@@ -2965,6 +3006,9 @@ async def _execute_function_calls(
         middleware_pipeline=middleware_pipeline,
         config=config,
         host_payload_budget=host_payload_budget,
+        realtime_conversation=realtime_conversation,
+        live_tools=live_tools,
+        on_call_finished=on_call_finished,
     )
     return _FunctionExecutionBatch(
         result_groups=result_groups,
@@ -4551,6 +4595,18 @@ class _ApprovalCallOccurrence:
     closed: bool = False
 
 
+def approval_rejection_result(function_call: Content, *, id: str | None) -> Content:
+    """The result a call gets when its approval is rejected; it never ran, and compaction recognises the marker."""
+    from ._types import _APPROVAL_REJECTION_RESULT_KEY, Content  # pyright: ignore[reportPrivateUsage]
+
+    return Content.from_function_result(
+        call_id=function_call.call_id or "",
+        id=id,
+        result="Error: Tool call invocation was rejected by user.",
+        additional_properties={**function_call.additional_properties, _APPROVAL_REJECTION_RESULT_KEY: True},
+    )
+
+
 def _replace_approval_contents_with_results(
     messages: list[Message],
     pending_approval_responses: dict[str, Content],
@@ -4563,8 +4619,6 @@ def _replace_approval_contents_with_results(
     Returns:
         The terminal contents produced while resolving the approval responses, in response order.
     """
-    from ._types import _APPROVAL_REJECTION_RESULT_KEY, Content  # pyright: ignore[reportPrivateUsage]
-
     result_groups_by_call_id: dict[str, deque[list[Content]]] = {}
     for result_group in approved_function_result_groups:
         call_id = next(
@@ -4686,14 +4740,9 @@ def _replace_approval_contents_with_results(
                     replacements = call_result_groups.popleft() if call_result_groups else None
                 else:
                     replacements = [
-                        Content.from_function_result(
-                            call_id=call_id,
+                        approval_rejection_result(
+                            content.function_call,
                             id=occurrence.function_call.id if occurrence is not None else content.function_call.id,
-                            result="Error: Tool call invocation was rejected by user.",
-                            additional_properties={
-                                **content.function_call.additional_properties,
-                                _APPROVAL_REJECTION_RESULT_KEY: True,
-                            },
                         )
                     ]
                 if not replacements:
