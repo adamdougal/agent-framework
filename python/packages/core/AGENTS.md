@@ -108,8 +108,8 @@ experimental under `REALTIME`. Its types are exported lazily from the root packa
 A live call, from a sample to a handoff tool's result:
 
 1. The app calls `start_conversation(...)` on the agent that owns the call, whose history, context providers and
-   conversation middleware hold for the whole call. `start_conversation(...)` returns an unopened
-   `RealtimeConversation`.
+   conversation middleware hold for the whole call. A `RealtimeHandoffBuilder` agent owns the call but never speaks;
+   its participants do. `start_conversation(...)` returns an unopened `RealtimeConversation`.
 2. Entering it runs conversation middleware, opens the conversation span while instrumentation is on, runs context
    providers' `before_run`, resolves tools and awaits the client's `start_session(...)`, which applies the initial
    settings. It then replays history and starts the one receive loop.
