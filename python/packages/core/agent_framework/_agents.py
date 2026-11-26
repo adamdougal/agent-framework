@@ -180,6 +180,37 @@ def _append_unique_tools(
     )
 
 
+_MCP_DUPLICATE_TOOL_NAME_MESSAGE = "Tool names must be unique. Consider setting `tool_name_prefix` on the MCPTool."
+
+
+async def _append_tools_with_mcp_functions(
+    existing_tools: list[ToolTypes],
+    new_tools: Sequence[ToolTypes],
+    *,
+    exit_stack: AsyncExitStack,
+    connection_kwargs: Mapping[str, Any],
+) -> list[ToolTypes]:
+    """A tool connected here belongs to ``exit_stack``, so it stays open for its owner's lifetime, not one run's."""
+    from ._mcp import MCPTool
+
+    for tool in new_tools:
+        if isinstance(tool, MCPTool):
+            await tool._prepare_for_run(connection_kwargs)  # pyright: ignore[reportPrivateUsage]
+            if not tool.is_connected:
+                # The handshake and discovery requests are issued before any tool call, so the caller's
+                # kwargs must reach header_provider here or those requests go out unauthenticated.
+                await exit_stack.enter_async_context(tool)
+                await tool._prepare_for_run(connection_kwargs)  # pyright: ignore[reportPrivateUsage]
+            _append_unique_tools(
+                existing_tools,
+                tool.functions,
+                duplicate_error_message=_MCP_DUPLICATE_TOOL_NAME_MESSAGE,
+            )
+        else:
+            _append_unique_tools(existing_tools, [tool])
+    return existing_tools
+
+
 def _normalize_tools(
     tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None,
 ) -> list[ToolTypes]:
@@ -1728,14 +1759,12 @@ class RawAgent(BaseAgent, Generic[OptionsCoT]):
             }
 
         agent_name = self._get_agent_name()
-        from ._mcp import MCPTool
         from ._tools import (
             _PARENT_SERVICE_SESSION_STATE_KEYS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
             _PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY,  # pyright: ignore[reportPrivateUsage]
         )
 
         base_tools = _normalize_tools(chat_options.pop("tools", None))
-        mcp_duplicate_message = "Tool names must be unique. Consider setting `tool_name_prefix` on the MCPTool."
 
         # Normalize tools
         normalized_tools = _normalize_tools(tools_)
@@ -1754,35 +1783,12 @@ class RawAgent(BaseAgent, Generic[OptionsCoT]):
         additional_function_arguments = {**effective_function_invocation_kwargs, **existing_additional_args}
 
         # Resolve final tool list (configured tools + runtime provided tools + local MCP server tools)
-        final_tools = list(base_tools)
-        for tool in normalized_tools:
-            if isinstance(tool, MCPTool):
-                await tool._prepare_for_run(additional_function_arguments)  # pyright: ignore[reportPrivateUsage]
-                if not tool.is_connected:
-                    # The handshake and discovery requests are issued before any tool call, so the run's
-                    # kwargs must reach header_provider here or those requests go out unauthenticated.
-                    await self._async_exit_stack.enter_async_context(tool)
-                    await tool._prepare_for_run(additional_function_arguments)  # pyright: ignore[reportPrivateUsage]
-                _append_unique_tools(
-                    final_tools,
-                    tool.functions,
-                    duplicate_error_message=mcp_duplicate_message,
-                )
-            else:
-                _append_unique_tools(final_tools, [tool])
-
-        for mcp_server in self.mcp_tools:
-            await mcp_server._prepare_for_run(additional_function_arguments)  # pyright: ignore[reportPrivateUsage]
-            if not mcp_server.is_connected:
-                await self._async_exit_stack.enter_async_context(mcp_server)
-                await mcp_server._prepare_for_run(  # pyright: ignore[reportPrivateUsage]
-                    additional_function_arguments
-                )
-            _append_unique_tools(
-                final_tools,
-                mcp_server.functions,
-                duplicate_error_message=mcp_duplicate_message,
-            )
+        final_tools = await _append_tools_with_mcp_functions(
+            list(base_tools),
+            [*normalized_tools, *self.mcp_tools],
+            exit_stack=self._async_exit_stack,
+            connection_kwargs=additional_function_arguments,
+        )
 
         # Claims only add isolated keys; they never remove keys declared by this agent's own middleware.
         additional_function_arguments[_PARENT_TOOL_APPROVAL_SOURCE_IDS_CONTEXT_KEY] = (
