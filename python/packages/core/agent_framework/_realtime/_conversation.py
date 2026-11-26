@@ -761,7 +761,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
 
         Raises:
             RealtimeActiveResponseException: If a response is active, or another response started instead.
-            RealtimeUnsupportedException: If the provider can't speak text verbatim with the session's voice, such as
+            RealtimeUnsupportedException: If the provider doesn't support ``say()`` with the session's voice, such as
                 Voice Live with a voice that isn't an Azure text-to-speech voice.
             RealtimeConversationClosedException: If the conversation has started closing.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the request in time; it may still

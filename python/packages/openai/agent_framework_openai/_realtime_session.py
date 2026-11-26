@@ -247,7 +247,7 @@ class OpenAIRealtimeSession(Generic[RealtimeOptionsT]):
 
         Raises:
             RealtimeActiveResponseException: If a response is active, or another response started instead.
-            RealtimeUnsupportedException: If the provider can't speak text verbatim with the session's voice.
+            RealtimeUnsupportedException: If the provider doesn't support ``say()`` with the session's voice.
             RealtimeControlException: If the provider rejects the request.
         """
         return await self._create_response(self._say_payload(text))

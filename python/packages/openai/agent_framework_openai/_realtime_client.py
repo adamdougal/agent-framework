@@ -39,10 +39,12 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
 
     It needs the realtime extra: ``pip install 'agent-framework-openai[realtime]'``. Routing follows the OpenAI chat
     clients: a ``credential`` or an ``azure_endpoint`` routes to Azure OpenAI, where the model is the deployment's
-    name. Otherwise an ``async_client`` or an OpenAI key, ``api_key`` or ``OPENAI_API_KEY``, routes to OpenAI, and
-    without either, the ``AZURE_OPENAI_*`` variables route to Azure OpenAI. The model is read from
-    ``OPENAI_REALTIME_MODEL`` or ``AZURE_OPENAI_REALTIME_MODEL``, then ``OPENAI_MODEL`` or ``AZURE_OPENAI_MODEL``, when
-    not passed. Azure OpenAI is reached on the resource's ``/openai/v1`` route, which takes no API version.
+    name. Otherwise an OpenAI key, ``api_key`` or ``OPENAI_API_KEY``, routes to OpenAI, and without one, the
+    ``AZURE_OPENAI_*`` variables route to Azure OpenAI. The model is read from ``OPENAI_REALTIME_MODEL`` or
+    ``AZURE_OPENAI_REALTIME_MODEL``, then ``OPENAI_MODEL`` or ``AZURE_OPENAI_MODEL``, when not passed. A ``base_url``
+    changes only where the client connects. An ``async_client`` connects wherever it points, and counts as OpenAI
+    unless a ``credential`` or ``azure_endpoint`` is passed too. Azure OpenAI is reached on the resource's
+    ``/openai/v1`` route, which takes no API version.
 
     Examples:
         .. code-block:: python
