@@ -175,6 +175,10 @@ variable.
 | `agent-framework-foundry` | `FoundryChatClient` | `FOUNDRY_MODEL` | `gpt-4o` |
 | `agent-framework-foundry` | `FoundryAgent` | `FOUNDRY_AGENT_NAME` | `travel-planner` |
 | `agent-framework-foundry` | `FoundryAgent` | `FOUNDRY_AGENT_VERSION` | `v1` |
+| `agent-framework-foundry` | `VoiceLiveClient` | `AZURE_VOICELIVE_ENDPOINT` | `https://my-resource.services.ai.azure.com` |
+| `agent-framework-foundry` | `VoiceLiveClient` | `AZURE_VOICELIVE_MODEL` | `gpt-realtime` |
+| `agent-framework-foundry` | `VoiceLiveClient` | `AZURE_VOICELIVE_API_KEY` | `voice-live-key` |
+| `agent-framework-foundry` | `VoiceLiveClient` | `AZURE_VOICELIVE_API_VERSION` | `2026-07-15` |
 | `agent-framework-gemini` | `GeminiChatClient / GeminiEmbeddingClient` | `GOOGLE_API_KEY` | `your-api-key` |
 | `agent-framework-gemini` | `GeminiChatClient` | `GOOGLE_MODEL` | `gemini-2.5-flash-lite` |
 | `agent-framework-gemini` | `GeminiEmbeddingClient` | `GOOGLE_EMBEDDING_MODEL` | `gemini-embedding-2` |
