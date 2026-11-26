@@ -11,6 +11,9 @@ agent_framework_openai/
 ├── _chat_completion_client.py  # OpenAIChatCompletionClient (Chat Completions API) + RawOpenAIChatCompletionClient
 ├── _embedding_client.py        # OpenAIEmbeddingClient
 ├── _exceptions.py              # OpenAI-specific exceptions
+├── _realtime_client.py         # OpenAIRealtimeClient (experimental)
+├── _realtime_options.py        # OpenAIRealtimeOptions and its nested types (experimental)
+├── _realtime_session.py        # OpenAIRealtimeSession + OpenAIRealtimeConnection (experimental)
 └── _shared.py                  # OpenAISettings and shared config helpers
 ```
 
@@ -21,8 +24,22 @@ agent_framework_openai/
 | `OpenAIChatClient` | Responses API | Primary |
 | `OpenAIChatCompletionClient` | Chat Completions API | Primary |
 | `OpenAIEmbeddingClient` | Embeddings API | Primary |
+| `OpenAIRealtimeClient` | OpenAI Realtime and Azure OpenAI Realtime | Experimental; needs the `[realtime]` extra |
+| `OpenAIRealtimeSession` | OpenAI Realtime protocol | Experimental; base session for realtime provider clients |
 
-All clients follow the Raw + Full-Featured pattern (e.g., `RawOpenAIChatClient` + `OpenAIChatClient`).
+All clients except `OpenAIRealtimeClient` follow the Raw + Full-Featured pattern (e.g., `RawOpenAIChatClient` +
+`OpenAIChatClient`). For realtime, core's `RealtimeAgent` owns the middleware and telemetry layers.
+
+`OpenAIRealtimeSession` is the shared realtime session for every service that speaks the OpenAI Realtime protocol,
+including Azure Voice Live in `agent-framework-foundry`. A provider client opens an `OpenAIRealtimeConnection`, builds
+the session on it and awaits `start(...)`. A service's differences go in a subclass that overrides the base's protected
+class attributes and methods, building `_SESSION_OPTION_KEYS` from `_NEUTRAL_OPTION_KEYS` and the service's own
+settings. The module must import without `openai[realtime]` or websockets, because Voice Live brings its own transport.
+
+`OpenAIRealtimeClient` resolves settings through `load_openai_service_settings` with `azure_v1_route=True`, so its
+routing and model fallbacks match the chat clients' and Azure always gets an `AsyncOpenAI` on `/openai/v1`. It opens the
+session through the `openai` SDK's `realtime.connect()`, used only as a transport, and imports `websockets` only inside
+functions.
 
 For Responses API continuation with service-side storage, a prior hosted
 `function_approval_request` is server-issued and must not be replayed inline, while the new hosted

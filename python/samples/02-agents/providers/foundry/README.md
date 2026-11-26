@@ -30,6 +30,31 @@ This folder contains Microsoft Foundry and Foundry Local samples for Agent Frame
 | [`foundry_chat_client_with_toolbox.py`](foundry_chat_client_with_toolbox.py) | Discover and invoke Foundry toolbox tools on demand with `tool_search` and `call_tool` over MCP |
 | [`foundry_chat_client_with_toolbox_skills.py`](foundry_chat_client_with_toolbox_skills.py) | Foundry Chat Client that discovers MCP-based skills from a Foundry Toolbox endpoint via `MCPSkillsSource` (uses an Azure AD bearer token and the toolbox preview header) |
 
+## VoiceLiveClient Samples
+
+These need the realtime extra: `pip install "agent-framework-foundry[realtime]" --pre`.
+
+| File | Description |
+|------|-------------|
+| [`voice_live_session.py`](voice_live_session.py) | Drive a Voice Live realtime session directly: send text, stream the agent's transcript and save its spoken reply to a WAV file |
+| [`voice_live_session_update.py`](voice_live_session_update.py) | Change a live realtime conversation's instructions and voice mid-call with `update_session()`, without reconnecting |
+| [`voice_live_filler_line.py`](voice_live_filler_line.py) | Say a filler line with `say()` from function middleware while a slow tool runs |
+| [`voice_live_history.py`](voice_live_history.py) | Keep a realtime agent's calls in an agent session: print `conversation.history` at hang-up, and replay it into the next call |
+| [`voice_live_mcp_tool.py`](voice_live_mcp_tool.py) | Give a realtime agent a local MCP tool: the conversation declares the MCP server's tools and runs them in the app. Also needs `mcp` and `tenacity` |
+| [`voice_live_handoff.py`](voice_live_handoff.py) | Hand a live call from a receptionist to a billing specialist in the same session with `RealtimeHandoffBuilder`, each in its own voice |
+| [`voice_live_tool_approval.py`](voice_live_tool_approval.py) | Ask for approval before a realtime agent's tool runs: the call waits for the app's decision, sent with `send()`, while the caller keeps talking |
+| [`voice_live_app_tool.py`](voice_live_app_tool.py) | Answer a declaration-only tool from the app's own state: the call waits for the app's result, sent with `send()` |
+| [`voice_live_guardrail.py`](voice_live_guardrail.py) | Guard a live call with conversation middleware: redact card-number patterns in typed text before the model sees it, stop a reply that mentions investing, and report what was blocked when the call ends |
+
+## FoundryVoiceAgent Samples
+
+These need the realtime extra, `pip install "agent-framework-foundry[realtime]" --pre`, and a voice agent published in
+your Foundry project.
+
+| File | Description |
+|------|-------------|
+| [`foundry_voice_agent.py`](foundry_voice_agent.py) | Talk to an agent published in Foundry as a voice agent: its definition supplies the instructions, voice and tools, and the app implements the definition's functions by name |
+
 ## FoundryLocalClient Samples
 
 ### Prerequisites

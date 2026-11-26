@@ -25,6 +25,14 @@ if TYPE_CHECKING:
     )
     from ._embedding_client import OpenAIEmbeddingClient, OpenAIEmbeddingOptions
     from ._exceptions import ContentFilterResultSeverity, OpenAIContentFilterException
+    from ._realtime_client import OpenAIRealtimeClient
+    from ._realtime_options import (
+        OpenAIRealtimeOptions,
+        OpenAIRealtimeTranscription,
+        OpenAIRealtimeTruncation,
+        OpenAIRealtimeTurnDetection,
+    )
+    from ._realtime_session import OpenAIRealtimeConnection, OpenAIRealtimeSession
     from ._shared import OpenAISettings
 
 try:
@@ -44,6 +52,13 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "OpenAIContinuationToken": "._chat_client",
     "OpenAIEmbeddingClient": "._embedding_client",
     "OpenAIEmbeddingOptions": "._embedding_client",
+    "OpenAIRealtimeClient": "._realtime_client",
+    "OpenAIRealtimeConnection": "._realtime_session",
+    "OpenAIRealtimeOptions": "._realtime_options",
+    "OpenAIRealtimeTranscription": "._realtime_options",
+    "OpenAIRealtimeTruncation": "._realtime_options",
+    "OpenAIRealtimeTurnDetection": "._realtime_options",
+    "OpenAIRealtimeSession": "._realtime_session",
     "OpenAISettings": "._shared",
     "RawOpenAIChatClient": "._chat_client",
     "RawOpenAIChatCompletionClient": "._chat_completion_client",
@@ -61,6 +76,13 @@ __all__ = [
     "OpenAIContinuationToken",
     "OpenAIEmbeddingClient",
     "OpenAIEmbeddingOptions",
+    "OpenAIRealtimeClient",
+    "OpenAIRealtimeConnection",
+    "OpenAIRealtimeOptions",
+    "OpenAIRealtimeSession",
+    "OpenAIRealtimeTranscription",
+    "OpenAIRealtimeTruncation",
+    "OpenAIRealtimeTurnDetection",
     "OpenAISettings",
     "RawOpenAIChatClient",
     "RawOpenAIChatCompletionClient",

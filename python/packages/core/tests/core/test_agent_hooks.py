@@ -269,7 +269,7 @@ def test_middleware_bundle_rejects_invalid_members() -> None:
     inner = MiddlewareBundle([AgentShortCircuit(None)])
     with pytest.raises(MiddlewareException, match="nesting"):
         MiddlewareBundle([cast("Any", inner)])
-    with pytest.raises(MiddlewareException, match="must be agent, function, or chat middleware"):
+    with pytest.raises(MiddlewareException, match="must be agent, function, chat, or conversation middleware"):
         MiddlewareBundle([cast("Any", object())])
     with pytest.raises(MiddlewareException):
         # A callable whose middleware category cannot be determined is rejected by the

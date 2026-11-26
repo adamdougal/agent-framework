@@ -1,6 +1,6 @@
 ---
 name: agent-framework-builder-python
-description: Use this skill when building, modifying, reviewing, evaluating, integrating, or hosting Python applications with Microsoft Agent Framework. Use it for Agent Framework agents, harness agents, workflows, orchestrations, declarative definitions, tools, sessions, middleware, evaluation, observability, integrations, or hosting, even when the user has not yet chosen the correct framework pattern.
+description: Use this skill when building, modifying, reviewing, evaluating, integrating, or hosting Python applications with Microsoft Agent Framework. Use it for Agent Framework agents, harness agents, realtime voice agents, workflows, orchestrations, declarative definitions, tools, sessions, middleware, evaluation, observability, integrations, or hosting, even when the user has not yet chosen the correct framework pattern.
 license: MIT
 metadata:
   version: "0.3"
@@ -28,6 +28,9 @@ relying on remembered preview-era syntax.
   model provider and returns chat responses or streaming updates.
 - An **agent** implements the `SupportsAgentRun` protocol. The standard `Agent` implementation combines a chat client
   with instructions, tools, middleware, context providers, and session handling behind one `run(...)` interface.
+- A **realtime agent** (`RealtimeAgent`) holds a live, two-way speech conversation with a speech-to-speech model
+  through `start_conversation()`, and runs only that way. It doesn't implement `SupportsAgentRun`, so workflows,
+  hosting adapters, and `as_tool()` don't accept it.
 - A **harness agent** is a regular `Agent` assembled by `create_harness_agent`. It adds an opinionated set of context
   providers and middleware; it does not introduce a separate agent abstraction.
 - A **workflow** coordinates explicit execution paths. Graph workflows and most orchestration builders can use multiple
@@ -48,6 +51,7 @@ relying on remembered preview-era syntax.
 | --- | --- | --- |
 | Plain agent | One model-driven actor owns the task and tools, sessions, context, and middleware are sufficient. | [Plain agents](references/agent-builder.md) |
 | Harness agent | The product needs an operating loop with todos, modes, memory, approvals, skills, optional file access, background agents, shell, compaction, or repeated execution. | [Harness agents](references/harness-agent-builder.md) |
+| Realtime agent | Callers talk with the agent live, with speech both ways, barge-in, and the provider's turn detection on a speech-to-speech model. | [Realtime agents](references/realtime-agent-builder.md) |
 | Workflow or orchestration | Explicit stages, routing, parallelism, multiple participants, checkpointing, human input, or intermediate outputs are central to correctness. | [Workflows](references/workflow-builder.md) |
 | Declarative definition | YAML or JSON should be the source of truth for a supported agent or workflow. | [Declarative definitions](references/declarative.md) |
 | Evaluation | Expected outputs, tool calls, failed runs, or quality regressions are the main concern. | [Evaluation](references/evaluation.md) |

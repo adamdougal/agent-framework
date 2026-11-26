@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft. All rights reserved.
 
+import sys
 from collections.abc import Callable, Generator
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -14,6 +16,14 @@ from pytest import FixtureRequest, fixture, skip
 OPENAI_INTEGRATION_TESTS_SKIP_REASON: str | None = (
     "OpenAI integration tests are temporarily disabled: the CI OpenAI API key is invalid."
 )
+
+
+def pytest_configure() -> None:
+    """CI's importlib import mode leaves the live modules' helper off sys.path. Only the helper directory goes on it,
+    so another package's bare ``from conftest import`` can't find this conftest."""
+    helpers = str(Path(__file__).resolve().parent / "helpers")
+    if helpers not in sys.path:
+        sys.path.insert(0, helpers)
 
 
 @fixture(autouse=True)

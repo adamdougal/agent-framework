@@ -20,10 +20,12 @@ from agent_framework import (
     ChatResponseUpdate,
     Content,
     ContextProvider,
+    ConversationContext,
     FunctionInvocationContext,
     FunctionMiddleware,
     FunctionTool,
     Message,
+    MiddlewareBundle,
     MiddlewareException,
     MiddlewareFailure,
     MiddlewareTermination,
@@ -3314,3 +3316,40 @@ async def test_losing_run_tool_route_is_never_iterated() -> None:
 
 
 # endregion
+
+# region Conversation middleware
+
+
+async def test_chat_agent_raises_for_a_bundle_with_a_conversation_member() -> None:
+    """Agent(middleware=[MiddlewareBundle([audit_conversation, audit_function])]).run('hi') raises
+    MiddlewareException, because a chat agent can't install the conversation member."""
+
+    async def audit_conversation(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        await call_next()
+
+    async def audit_function(context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        await call_next()
+
+    agent = Agent(client=MockBaseChatClient(), middleware=[MiddlewareBundle([audit_conversation, audit_function])])
+
+    with pytest.raises(MiddlewareException, match="conversation middleware"):
+        await agent.run("hi")
+
+
+# endregion
+
+
+class TestVerification:
+    async def test_chat_agent_does_not_run_conversation_middleware(self) -> None:
+        """Agent(middleware=[conversation_middleware]).run('hi') returns the model's reply, and process() never
+        runs."""
+        opened: list[ConversationContext] = []
+
+        async def audit_conversation(context: ConversationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            opened.append(context)
+            await call_next()
+
+        client = MockBaseChatClient()
+        response = await Agent(client=client, middleware=[audit_conversation]).run("hi")
+
+        assert (response.text, opened) == ("test response - hi", [])

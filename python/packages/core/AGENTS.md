@@ -20,6 +20,7 @@ agent_framework/
 ├── _skills.py           # Agent Skills system (models, executors, provider)
 ├── _mcp.py              # Model Context Protocol support
 ├── _telemetry.py        # User-Agent identity and internal feature-usage mask
+├── _realtime/           # Realtime agents (experimental), one module per concern
 ├── _workflows/          # Workflow orchestration (sequential, concurrent, handoff, etc.)
 ├── openai/              # Built-in OpenAI client
 ├── azure/               # Lazy-loading entry point for Azure integrations
@@ -56,7 +57,8 @@ agent_framework/
 - **`Agent`** - Main agent class wrapping a chat client with tools, instructions, and middleware
 - **`RawAgent.open()` / `close()`** (inherited by `Agent`) - Explicitly enter the client's and configured MCP tools'
   async contexts, then release them along with lazily connected MCP tools. `async with agent` delegates to these
-  methods; a partially failed `open()` closes resources already entered.
+  methods; a partially failed `open()` closes resources already entered. Each run resolves its tools, connecting MCP
+  tools on first use, through `_append_tools_with_mcp_functions(...)`, which realtime conversations share.
 - Providers that store service-owned continuation handles in `AgentSession.state` declare their keys through
   `service_session_state_keys`. `as_tool(propagate_session=True)` combines declarations from the parent and child
   agents and their clients to isolate those handles in both directions while ordinary application-owned state
@@ -88,11 +90,52 @@ agent_framework/
 - **Citation coordinates** - `Annotation.annotated_regions_coordinate_space` distinguishes spans in generated
   `Content.text` (`"content"`, also the default when omitted) from locations in cited source material (`"source"`).
   Protocol adapters must not interpret source-coordinate regions as generated-text offsets.
+- **Text status** - `Content.from_text(status=...)` marks a text's lifecycle, such as a final transcript's
+  `"completed"`. Text merges, through `+` and response aggregation, keep the latest status that isn't `None`.
 - **Computer use** - `ComputerSafetyCheck` and the `Content.from_computer_tool_call` / `from_computer_tool_result`
   constructors are experimental under `COMPUTER_USE`; the rest of `Content` retains its existing stage. Computer
   results can omit screenshots in core; OpenAI-based connectors require them when converting to Responses items.
   Completed call/result pairs remain in the transcript but are not user-input requests.
 - **`ChatOptions`** - TypedDict for chat request options
+
+### Realtime agents (`_realtime/`)
+
+Realtime agents hold live, two-way speech conversations with speech-to-speech models. Every public realtime API is
+experimental under `REALTIME`. Its types are exported lazily from the root package, and its exceptions live in
+`exceptions.py`, under `RealtimeException`. The contract is
+[spec 006](../../../docs/specs/006-python-realtime-agents.md).
+
+A live call, from a sample to a handoff tool's result:
+
+1. The app calls `start_conversation(...)` on the agent that owns the call, whose history, context providers and
+   conversation middleware hold for the whole call. A `RealtimeHandoffBuilder` agent owns the call but never speaks;
+   its participants do. `start_conversation(...)` returns an unopened `RealtimeConversation`.
+2. Entering it runs conversation middleware, opens the conversation span while instrumentation is on, runs context
+   providers' `before_run`, resolves tools and awaits the client's `start_session(...)`, which applies the initial
+   settings. It then replays history and starts the one receive loop.
+3. The receive loop hands each provider event, already tagged with a kind, to telemetry, history and the tool loop,
+   then queues one `AgentResponseUpdate`. The app's iteration runs the update hooks.
+4. A tool call binds to its tool and the speaker's function middleware when its `function_call` arrives. At
+   `response_done`, `ToolLoop` runs the response's calls as one batch in a separate task, so the receive loop stays
+   free to acknowledge the control calls they make.
+5. A handoff tool calls `ctx.realtime_conversation.handoff(target)`, which sends a session update and waits. The
+   provider's `session.updated`, read by the receive loop, releases it. Only then does the conversation switch the
+   tools it runs and the active agent, and emit `handoff_completed`.
+6. The batch then sends the old speaker's tool result and requests a follow-up response, which the new speaker gives.
+
+Ownership:
+
+- The conversation owns the provider session once `start_session(...)` returns, and only its receive loop reads it.
+  Control calls resolve only while that loop reads, so nothing that awaits one may run on it.
+- Control calls run one at a time, each waiting for the provider's acknowledgement. The conversation's `handoff(...)`
+  and `interrupt(played_ms=...)` are built from the session's `update_session(...)`, `cancel_response()`,
+  `truncate(...)` and `delete_item(...)`. The tools and the active agent change only once the provider acknowledges.
+- Provider clients own the wire protocol; core acts on event kinds.
+- `RealtimeAgent`, not the client, is the middleware and telemetry layer. History records app input after the send
+  hooks, and history and telemetry record provider events before the update hooks.
+- Realtime reuses chat's private helpers, such as `_append_tools_with_mcp_functions(...)`,
+  `_execute_function_calls(...)` and `observability`'s span and metric helpers, through line-level `reportPrivateUsage`
+  suppressions. It never makes a helper public just for the checker.
 
 ### Tools (`_tools.py`)
 

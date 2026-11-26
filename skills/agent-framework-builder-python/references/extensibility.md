@@ -97,6 +97,8 @@ Choose the narrowest boundary:
   response transformation, model routing, or per-call usage behavior.
 - **Function middleware** runs around each local tool invocation. Use it for validated-argument checks, authorization
   context, logging, exception handling, or tool-result transformation.
+- **Conversation middleware** runs around a realtime agent's live call, where agent and chat middleware don't apply.
+  See [Realtime agents](realtime-agent-builder.md#live-call-design).
 
 Create middleware either by subclassing `AgentMiddleware`, `ChatMiddleware`, or `FunctionMiddleware`, or by using the
 matching decorator. The implementation receives a context and `call_next`:

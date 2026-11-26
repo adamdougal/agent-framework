@@ -23,8 +23,12 @@ conversation identifiers remain available as `gen_ai.conversation.id`.
 Graph workflows without an application-provided name retain their generated runtime/checkpoint name, but omit it
 from `gen_ai.workflow.name` and use the bare invocation span name. Functional workflows default to their function name.
 
+A realtime agent traces each live call as one conversation span, with its responses and the tools it runs beneath.
+Telemetry never records audio, so call recording stays with the application.
+
 ## Learn more
 
 - [Agent observability](https://learn.microsoft.com/agent-framework/agents/observability)
 - [Workflow observability](https://learn.microsoft.com/agent-framework/workflows/observability)
 - [Observability samples](https://github.com/microsoft/agent-framework/tree/main/python/samples/02-agents/observability)
+- [Realtime agent observability sample](https://github.com/microsoft/agent-framework/blob/main/python/samples/02-agents/observability/realtime_agent_observability.py)

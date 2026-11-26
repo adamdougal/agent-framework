@@ -23,7 +23,8 @@ docstrings for signatures and execution options.
   workflows that share its registered executors, so create stateful executors, such as `AgentExecutor` with its
   `AgentSession`, inside the per-request factory.
 - Builders that accept `SupportsAgentRun` can use custom or remote agent implementations. `HandoffBuilder` accepts
-  concrete `Agent` participants only.
+  concrete `Agent` participants only. For handoffs within a live voice call, use `RealtimeHandoffBuilder`; see
+  [Realtime agents](realtime-agent-builder.md).
 - Use standard sequential, concurrent, handoff, group-chat, or Magentic builders before recreating those patterns.
 - Select caller-facing output separately from intermediate progress.
 - Wrap a workflow as an agent only when callers require the agent contract. Prefer native workflow hosting when the
