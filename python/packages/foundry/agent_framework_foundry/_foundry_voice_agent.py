@@ -71,6 +71,12 @@ class RawFoundryVoiceAgent(RawRealtimeAgent[FoundryVoiceAgentOptions]):
                         for content in update.contents:
                             if content.type == "text" and update.role == "assistant" and content.status == "completed":
                                 print(content.text)
+                        # A failed reply has no finish reason, and one that called a tool is followed by its answer.
+                        if update.finish_reason != "tool_calls" and any(
+                            content.type == "realtime_event" and content.kind == "response_done"
+                            for content in update.contents
+                        ):
+                            break
     """
 
     client: FoundryVoiceAgentClient

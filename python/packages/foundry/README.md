@@ -76,7 +76,8 @@ transcription and noise suppression, echo cancellation, animation, interim respo
 calls and word timestamps. For your own deployment, pass `profile="byom-azure-openai-realtime"` and
 `foundry_resource_override`. Some behaviour differs from OpenAI's realtime API:
 
-- `say(text)` speaks the text verbatim only with an Azure text-to-speech voice, and raises with an OpenAI voice.
+- `say(text)` speaks the text verbatim only with an Azure text-to-speech voice, and raises with any other voice,
+  `azure-realtime-native` voices included.
 - Voice Live changes between Azure voices, ignores a change between OpenAI voices (the session warns and keeps
   the old voice), and rejects a change between Azure and OpenAI voices.
 - Per-response `instructions` are dropped with a warning, because Voice Live ignores them.
