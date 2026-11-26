@@ -170,9 +170,11 @@ async with agent.start_conversation() as conversation:
     await conversation.send("Hello!")
 ```
 
-It routes like the chat clients: a `credential`, an `azure_endpoint` or the Azure variables route to Azure OpenAI, where
-`model` is the deployment's name. Azure OpenAI is reached on the resource's `/openai/v1` route, which takes no API
-version, so an injected `AsyncAzureOpenAI` client is rejected; inject an `AsyncOpenAI` on that route instead.
+It routes like the chat clients: a `credential` or an `azure_endpoint` routes to Azure OpenAI, where `model` is the
+deployment's name. Otherwise an injected client or an OpenAI key, `api_key` or `OPENAI_API_KEY`, routes to OpenAI, and
+without either, the `AZURE_OPENAI_*` variables route to Azure OpenAI. Azure OpenAI is reached on the resource's
+`/openai/v1` route, which takes no API version, so an injected `AsyncAzureOpenAI` client is rejected; inject an
+`AsyncOpenAI` on that route instead.
 `OpenAIRealtimeOptions` adds the GA protocol's session settings to the neutral realtime options: output `speed`,
 `truncation`, `reasoning_effort`, `parallel_tool_calls`, semantic VAD `eagerness`, an `idle_timeout_ms` and a
 transcription `prompt`.

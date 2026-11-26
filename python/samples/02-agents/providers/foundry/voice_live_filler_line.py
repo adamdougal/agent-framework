@@ -23,10 +23,10 @@ say() before the tool starts, so the caller hears "One moment while I look that 
 answers once the tool's result arrives. The sample sends text and saves the spoken replies to
 voice_live_filler_line.wav, so it needs no microphone or speaker.
 
-With an Azure voice, Voice Live speaks the line word for word. A line said from a tool or function middleware doesn't
-count as the response to the tool's result, so the conversation still asks for the answer afterwards. say() raises
-RealtimeActiveResponseException while the agent is speaking, because nothing is queued, so the middleware skips the
-line then.
+With an Azure text-to-speech voice, such as this sample's, Voice Live speaks the line word for word. A line said from a
+tool or function middleware doesn't count as the response to the tool's result, so the conversation still asks for the
+answer afterwards. say() raises RealtimeActiveResponseException while the agent is speaking, because nothing is queued,
+so the middleware skips the line then.
 
 Prerequisites:
 - Install the realtime extra: pip install "agent-framework-foundry[realtime]" --pre

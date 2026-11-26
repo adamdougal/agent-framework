@@ -747,7 +747,8 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         """Have the agent speak ``text`` word for word, and return the response id once it's created.
 
         With an Azure text-to-speech voice, Voice Live and Foundry voice agents speak the text as a pre-generated
-        response. Other providers and voices ask the model to repeat it, which is best effort. Like
+        response. With any other voice, ``azure-realtime-native`` voices included, Voice Live raises, while OpenAI,
+        Azure OpenAI and Foundry voice agents ask the model to repeat the text, which is best effort. Like
         ``create_response(...)``, nothing is queued while a response is active, and a line that a tool or function
         middleware of this conversation says, such as filler while a tool runs, doesn't count as the tool batch's
         follow-up.
@@ -761,7 +762,7 @@ class RealtimeConversation(Generic[RealtimeOptionsT]):
         Raises:
             RealtimeActiveResponseException: If a response is active, or another response started instead.
             RealtimeUnsupportedException: If the provider can't speak text verbatim with the session's voice, such as
-                Voice Live with an OpenAI voice.
+                Voice Live with a voice that isn't an Azure text-to-speech voice.
             RealtimeConversationClosedException: If the conversation has started closing.
             RealtimeControlTimeoutException: If the provider doesn't acknowledge the request in time; it may still
                 speak the text.

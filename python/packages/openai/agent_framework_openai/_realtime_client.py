@@ -38,8 +38,9 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
     """A realtime client for OpenAI Realtime, and for Azure OpenAI Realtime through Azure routing.
 
     It needs the realtime extra: ``pip install 'agent-framework-openai[realtime]'``. Routing follows the OpenAI chat
-    clients: a ``credential``, an ``azure_endpoint`` or the ``AZURE_OPENAI_*`` variables route to Azure OpenAI, where
-    the model is the deployment's name, and ``api_key`` or ``OPENAI_API_KEY`` routes to OpenAI. The model is read from
+    clients: a ``credential`` or an ``azure_endpoint`` routes to Azure OpenAI, where the model is the deployment's
+    name. Otherwise an ``async_client`` or an OpenAI key, ``api_key`` or ``OPENAI_API_KEY``, routes to OpenAI, and
+    without either, the ``AZURE_OPENAI_*`` variables route to Azure OpenAI. The model is read from
     ``OPENAI_REALTIME_MODEL`` or ``AZURE_OPENAI_REALTIME_MODEL``, then ``OPENAI_MODEL`` or ``AZURE_OPENAI_MODEL``, when
     not passed. Azure OpenAI is reached on the resource's ``/openai/v1`` route, which takes no API version.
 
@@ -56,6 +57,11 @@ class OpenAIRealtimeClient(Generic[OpenAIRealtimeOptionsT]):
                     for content in update.contents:
                         if content.type == "text" and update.role == "assistant" and content.merge_mode == "append":
                             print(content.text, end="")
+                    if any(
+                        content.type == "realtime_event" and content.kind == "response_done"
+                        for content in update.contents
+                    ):
+                        break
 
     Attributes:
         model: The model, or on Azure OpenAI the deployment's name.
