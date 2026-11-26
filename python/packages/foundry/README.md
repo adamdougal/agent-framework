@@ -42,6 +42,102 @@ With Application Insights connected to your project, call
 See [the tracing sample](../../samples/02-agents/observability/foundry_agent_tracing.py)
 for streaming and non-streaming examples.
 
+## Voice Live (experimental)
+
+`VoiceLiveClient` opens realtime voice sessions with Azure Voice Live, on a managed model or on your own Azure OpenAI
+realtime deployment. It needs the realtime extra:
+
+```shell
+pip install "agent-framework-foundry[realtime]" --pre
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `AZURE_VOICELIVE_ENDPOINT` | The Voice Live endpoint, such as `https://<resource>.services.ai.azure.com` |
+| `AZURE_VOICELIVE_MODEL` | A managed model, such as `gpt-realtime`, or your deployment's name |
+| `AZURE_VOICELIVE_API_KEY` | The resource key, used when no `credential` is passed |
+| `AZURE_VOICELIVE_API_VERSION` | A dated API version: `2026-07-15`, the default, or later |
+
+```python
+from agent_framework import Message
+from agent_framework.foundry import AzureVoice, VoiceLiveClient, VoiceLiveOptions
+from azure.identity.aio import AzureCliCredential
+
+async with AzureCliCredential() as credential:
+    client = VoiceLiveClient(credential=credential)
+    options: VoiceLiveOptions = {"voice": AzureVoice(type="azure-standard", name="en-US-AvaNeural")}
+    async with await client.start_session(options=options) as session:
+        await session.send(Message("user", ["Hello!"]))
+        ...
+```
+
+`VoiceLiveOptions` adds Voice Live's own settings to the neutral realtime options: Azure voices, Azure turn detection,
+transcription and noise suppression, echo cancellation, animation, interim responses, reasoning effort, parallel tool
+calls and word timestamps. For your own deployment, pass `profile="byom-azure-openai-realtime"` and
+`foundry_resource_override`. Some behaviour differs from OpenAI's realtime API:
+
+- `say(text)` speaks the text verbatim only with an Azure text-to-speech voice, and raises with any other voice,
+  `azure-realtime-native` voices included.
+- Voice Live changes between Azure voices, ignores a change between OpenAI voices (the session warns and keeps
+  the old voice), and rejects a change between Azure and OpenAI voices.
+- Per-response `instructions` are dropped with a warning, because Voice Live ignores them.
+- Audio, both ways, may be 8, 16 or 24 kHz PCM, or G.711. Voice Live rejects a change to the caller audio's
+  sampling rate once the session has started.
+
+See [the Voice Live sample](../../samples/02-agents/providers/foundry/voice_live_session.py), and, for a realtime
+agent's live conversation, the [session update](../../samples/02-agents/providers/foundry/voice_live_session_update.py),
+[filler line](../../samples/02-agents/providers/foundry/voice_live_filler_line.py),
+[MCP tool](../../samples/02-agents/providers/foundry/voice_live_mcp_tool.py),
+[handoff](../../samples/02-agents/providers/foundry/voice_live_handoff.py),
+[tool approval](../../samples/02-agents/providers/foundry/voice_live_tool_approval.py) and
+[app-run tool](../../samples/02-agents/providers/foundry/voice_live_app_tool.py) samples. The
+[realtime observability sample](../../samples/02-agents/observability/realtime_agent_observability.py) traces a call.
+
+## Foundry voice agents (experimental)
+
+`FoundryVoiceAgent` is a realtime agent for an agent published in your Foundry project as a voice agent. The published
+agent definition supplies its instructions, voice, tool choice, reasoning effort and tools, and your app supplies Python
+implementations for the definition's functions, matched by name. It needs the realtime extra, and reads
+`FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` when they aren't passed.
+
+```python
+from agent_framework import tool
+from agent_framework.foundry import FoundryVoiceAgent
+from azure.identity.aio import AzureCliCredential
+
+
+@tool(description="Get the current time.")
+def get_current_time() -> str:
+    return "It's twelve noon."
+
+
+async with AzureCliCredential() as credential:
+    agent = FoundryVoiceAgent(agent_name="receptionist-voice", credential=credential, tools=[get_current_time])
+    async with agent, agent.start_conversation() as conversation:
+        await conversation.send("What time is it?")
+        ...
+```
+
+- Enter the agent with `async with`, or enter the `RealtimeHandoffBuilder` agent it belongs to, before starting a
+  conversation. Entering reads the definition once, through Foundry's agents API, and every call is pinned to that
+  version. Pin `agent_version` to choose the version yourself. Each `FoundryVoiceAgent` reads its own, so an app that
+  creates one per call gets the latest version on every call unless it pins one.
+- Any tool in a call can implement a definition function, such as a handoff tool. The definition's published
+  declarations are the ones sent, and a function nothing implements gets an error result, with a warning when a
+  session starts. Definitions published by Semantic Kernel name their tools `<Plugin>-<function>`, so republish them
+  with your Agent Framework tool names.
+- Settings your options don't set, such as transcription, turn detection and audio formats, stay the definition's.
+- In a handoff topology, other participants are realtime agents on `foundry_agent.client`, and handing back restores
+  the definition. The handoff agent's instructions are appended to the definition's, so a definition that already
+  contains them gets them twice. Foundry rejects a change from an Azure voice to an OpenAI voice, which the client
+  drops with a warning, so keep a topology's voices in one family.
+- Hosted tools in the definition are re-sent as the agents API returns them. Keep their authorization in project
+  connections rather than inline secrets.
+- With instrumentation enabled, calls are traced as `RealtimeAgent`'s are, and each session's handshake carries the
+  conversation span's trace context, so Foundry's own spans for the session join the call's trace.
+
+See [the Foundry voice agent sample](../../samples/02-agents/providers/foundry/foundry_voice_agent.py).
+
 ## Embeddings
 
 `FoundryEmbeddingClient` supports OpenAI text embedding deployments exposed through a Microsoft Foundry project.

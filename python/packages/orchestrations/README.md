@@ -84,7 +84,8 @@ agent = (
 )
 ```
 
-Each `agent.start_conversation()` starts with the start agent speaking.
+Each `agent.start_conversation()` starts with the start agent speaking. See the
+[Voice Live handoff sample](../../samples/02-agents/providers/foundry/voice_live_handoff.py).
 
 ### GroupChatBuilder
 

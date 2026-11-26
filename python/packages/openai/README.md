@@ -191,7 +191,7 @@ audio faster than real time.
 protocol. It translates the neutral realtime options, maps server events to realtime event kinds, and runs the control
 calls: updating the session, creating and cancelling responses, `say(...)` and truncating. Provider clients build it on
 an `OpenAIRealtimeConnection`, a transport with `send`, `receive` and `close`, and subclass it for a service's
-differences.
+differences. `VoiceLiveClient` in `agent-framework-foundry` does this for Azure Voice Live.
 
 ## Concurrent reuse
 

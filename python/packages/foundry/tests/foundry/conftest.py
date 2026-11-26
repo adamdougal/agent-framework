@@ -1,8 +1,25 @@
 # Copyright (c) Microsoft. All rights reserved.
-from typing import Any
+import sys
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from pytest import fixture
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pytest import MonkeyPatch, fixture
+
+
+def pytest_configure() -> None:
+    """Put the helpers directory on sys.path so the tests can import their shared helpers by name.
+
+    Under importlib import mode, which the workspace test run uses, pytest doesn't add a test's directory itself. Only
+    the helpers directory goes on the path, so this conftest can't shadow another package's conftest imported by name.
+    """
+    helpers_dir = str(Path(__file__).resolve().parent / "helpers")
+    if helpers_dir not in sys.path:
+        sys.path.insert(0, helpers_dir)
 
 
 @fixture
@@ -76,3 +93,15 @@ def mock_agents_client() -> MagicMock:
 def mock_azure_credential() -> MagicMock:
     """Fixture that provides a mock AsyncTokenCredential."""
     return MagicMock()
+
+
+@fixture
+def span_exporter(monkeypatch: MonkeyPatch) -> InMemorySpanExporter:
+    """Instrumentation on, with finished spans collected in memory."""
+    from agent_framework import observability
+
+    monkeypatch.setattr(observability.OBSERVABILITY_SETTINGS, "enable_instrumentation", True)
+    trace.set_tracer_provider(TracerProvider())
+    exporter = InMemorySpanExporter()
+    cast(TracerProvider, trace.get_tracer_provider()).add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter

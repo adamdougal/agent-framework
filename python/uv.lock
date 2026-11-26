@@ -722,6 +722,12 @@ dependencies = [
     { name = "httpx" },
 ]
 
+[package.optional-dependencies]
+realtime = [
+    { name = "azure-ai-projects" },
+    { name = "azure-ai-voicelive", extra = ["aiohttp"] },
+]
+
 [package.dev-dependencies]
 test = [
     { name = "agent-framework-ag-ui" },
@@ -734,8 +740,11 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
     { name = "azure-ai-inference", specifier = ">=1.0.0b9,<1.0.0b10" },
     { name = "azure-ai-projects", specifier = ">=2.2.0,<3" },
+    { name = "azure-ai-projects", marker = "extra == 'realtime'", specifier = ">=2.7,<2.11" },
+    { name = "azure-ai-voicelive", extras = ["aiohttp"], marker = "extra == 'realtime'", specifier = ">=1.3.1,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
 ]
+provides-extras = ["realtime"]
 
 [package.metadata.requires-dev]
 test = [{ name = "agent-framework-ag-ui", editable = "packages/ag-ui" }]
@@ -1576,6 +1585,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c7/d7/974be6e67c0245f20718f00e4814a76ea0c30d41975d309728780d7219eb/azure_ai_projects-2.10.0.tar.gz", hash = "sha256:c1edbb1241c973538a85de45a467edf9d6c244916c01cf68751eedbe65e7f37f", size = 40071589, upload-time = "2026-10-30T21:51:18.18Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/be/65/8f5b76467bb778206ef2aa71a7e4d5b44bde0526dcf076fe6349b2f2f9f1/azure_ai_projects-2.10.0-py3-none-any.whl", hash = "sha256:bc549ec352740af8e313bc215b2e8e37d5df59d5f6b3c6a74ee8517104baa952", size = 557162, upload-time = "2026-10-30T21:51:22.549Z" },
+]
+
+[[package]]
+name = "azure-ai-voicelive"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/8a/94f18826b2e6f46883750124a803258bcb421cabb6824bb8d76bcc4c22ad/azure_ai_voicelive-1.3.1.tar.gz", hash = "sha256:4aa957efa4d00115381e5d17c361825e2f15fcfa7715f1e06b115b733f16d5d4", size = 267993, upload-time = "2026-10-23T17:59:14.896Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/47/00b3ab865302a390a8c45c8faa35294984aef8adabaa6c7032fa44df3d62/azure_ai_voicelive-1.3.1-py3-none-any.whl", hash = "sha256:d4a6c6d7899973f6bd86f6f3afcf3b79d4345ceb5e83e00e0a86351495200f09", size = 160772, upload-time = "2026-10-23T17:59:16.834Z" },
+]
+
+[package.optional-dependencies]
+aiohttp = [
+    { name = "aiohttp" },
 ]
 
 [[package]]
